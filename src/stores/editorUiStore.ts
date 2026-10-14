@@ -18,12 +18,14 @@ interface EditorUiState {
   durationTicks: number;
   timelineZoom: number;
   isPlaying: boolean;
+  selectedClipIds: string[];
   statusMessage: string;
   setActivePanel: (panel: EditorPanel) => void;
   setTool: (tool: EditorTool) => void;
   setPlayheadTicks: (ticks: number) => void;
   setTimelineZoom: (zoom: number) => void;
   setPlaying: (playing: boolean) => void;
+  setSelectedClipIds: (ids: string[]) => void;
   setStatusMessage: (message: string) => void;
 }
 
@@ -34,6 +36,7 @@ export const useEditorUiStore = create<EditorUiState>((set) => ({
   durationTicks: 30_000_000,
   timelineZoom: 1,
   isPlaying: false,
+  selectedClipIds: [],
   statusMessage: "Ready — local desktop editor",
   setActivePanel: (activePanel) => set({ activePanel }),
   setTool: (tool) => set({ tool }),
@@ -41,5 +44,6 @@ export const useEditorUiStore = create<EditorUiState>((set) => ({
   setTimelineZoom: (timelineZoom) =>
     set({ timelineZoom: Math.min(4, Math.max(0.4, timelineZoom)) }),
   setPlaying: (isPlaying) => set({ isPlaying }),
+  setSelectedClipIds: (selectedClipIds) => set({ selectedClipIds }),
   setStatusMessage: (statusMessage) => set({ statusMessage }),
 }));
