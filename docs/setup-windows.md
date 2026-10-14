@@ -1,43 +1,31 @@
-# Windows setup (MSVC + FFmpeg)
+# Windows setup
 
-Cutline’s desktop shell needs a C++ linker and FFmpeg on `PATH`. Frontend-only `pnpm dev` works without them; `pnpm tauri:dev` / export do not.
+## Render video without building the desktop app
 
-## 1. Visual Studio Build Tools
-
-1. Install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
-2. Select workload **Desktop development with C++**.
-3. Confirm `link.exe` exists (Developer PowerShell or “x64 Native Tools”).
-
-```powershell
-where.exe link
-```
-
-## 2. FFmpeg / ffprobe
-
-1. Download a release build (prefer an LGPL build for redistribution — see `docs/licensing.md`).
-2. Add the `bin` folder to the user or system `PATH`.
-3. Verify:
+Only **FFmpeg on PATH** is required:
 
 ```powershell
 ffmpeg -version
-ffprobe -version
-```
-
-## 3. Run
-
-```bash
 pnpm install
-pnpm tauri:dev
+pnpm export:video -- path\to\project.cutline.json path\to\out.mp4
+pnpm export:video -- project.json out.mp4 --preset 720 --quality high
+pnpm export:video -- project.json out.mp4 --dry-run
 ```
 
-Package installer (after the above works):
+Project JSON must use real filesystem media paths (not browser `blob:` URLs). Save a project from the editor after desktop import, or hand-author paths.
 
-```bash
-pnpm tauri:build
-```
+## Desktop app (optional — needs MSVC)
 
-NSIS output lands under `src-tauri/target/release/bundle/nsis/`.
+1. Install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with **Desktop development with C++**.
+2. Confirm `where.exe link`.
+3. `pnpm tauri:dev` / `pnpm tauri:build` (NSIS under `src-tauri/target/release/bundle/nsis/`).
 
-## 4. Update strategy (MVP decision)
+## FFmpeg / ffprobe
 
-No auto-updater in MVP. Ship versioned NSIS installers; users install newer builds manually. Revisit after Phase 5 packaging is validated.
+1. Download a release build (prefer LGPL for redistribution — `docs/licensing.md`).
+2. Add `bin` to `PATH`.
+3. `ffmpeg -version` and `ffprobe -version`.
+
+## Update strategy (MVP)
+
+No auto-updater. Ship versioned NSIS installers manually after packaging is validated.
