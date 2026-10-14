@@ -5,6 +5,7 @@ import {
   actionRelinkAsset,
   formatActionError,
 } from "../../lib/projectActions";
+import { VideoThumb } from "../../components/VideoThumb";
 import { canShowThumbnail, resolveMediaUrl } from "../../lib/mediaUrl";
 import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
@@ -129,12 +130,10 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
                   title="Drag to timeline or double-click to add at playhead"
                 >
                   <div className={styles.thumb} data-kind={asset.kind}>
-                    {thumbUrl && (asset.kind === "image" || asset.kind === "video") ? (
-                      asset.kind === "image" ? (
-                        <img src={thumbUrl} alt="" />
-                      ) : (
-                        <video src={thumbUrl} muted preload="metadata" />
-                      )
+                    {thumbUrl && asset.kind === "image" ? (
+                      <img src={thumbUrl} alt="" />
+                    ) : thumbUrl && asset.kind === "video" ? (
+                      <VideoThumb src={thumbUrl} />
                     ) : asset.kind === "audio" ? (
                       "♪"
                     ) : (
