@@ -1,7 +1,15 @@
 import { useMemo } from "react";
+import {
+  addMediaClip,
+  clipDurationTicks,
+  deleteClips,
+  moveClip,
+  splitClipAt,
+  ticksToSeconds,
+} from "../../domain";
+import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
-import { ticksToSeconds } from "../../domain";
 import styles from "./TimelinePanel.module.css";
 
 function formatClock(seconds: number): string {
@@ -11,13 +19,18 @@ function formatClock(seconds: number): string {
 }
 
 export function TimelinePanel() {
-  const tracks = useProjectStore((s) => s.project.tracks);
-  const clips = useProjectStore((s) => s.project.clips);
+  const project = useProjectStore((s) => s.project);
+  const tracks = project.tracks;
+  const clips = project.clips;
+  const assets = project.assets;
   const playheadTicks = useEditorUiStore((s) => s.playheadTicks);
   const durationTicks = useEditorUiStore((s) => s.durationTicks);
   const timelineZoom = useEditorUiStore((s) => s.timelineZoom);
+  const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const setTimelineZoom = useEditorUiStore((s) => s.setTimelineZoom);
   const setPlayheadTicks = useEditorUiStore((s) => s.setPlayheadTicks);
+  const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
+  const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
 
   const pxPerSecond = 64 * timelineZoom;
   const durationSeconds = ticksToSeconds(durationTicks);
@@ -31,17 +44,34 @@ export function TimelinePanel() {
     return out;
   }, [durationSeconds, timelineZoom]);
 
+  function handleSplit() {
+    const id = selectedClipIds[0];
+    if (!id) {
+      setStatusMessage("Select a clip to split");
+      return;
+    }
+    commitProjectChange((p) => splitClipAt(p, id, playheadTicks));
+    setStatusMessage("Split at playhead");
+  }
+
+  function handleDelete() {
+    if (selectedClipIds.length === 0) {
+      setStatusMessage("Select a clip to delete");
+      return;
+    }
+    commitProjectChange((p) => deleteClips(p, selectedClipIds));
+    setSelectedClipIds([]);
+    setStatusMessage("Deleted selected clip(s)");
+  }
+
   return (
     <div className={styles.panel}>
       <div className={styles.toolbar}>
         <div className={styles.toolbarLeft}>
-          <button type="button" disabled title="Split — Milestone 2">
+          <button type="button" onClick={handleSplit} title="Split at playhead">
             ✂
           </button>
-          <button type="button" disabled title="Duplicate — Milestone 2">
-            ▤
-          </button>
-          <button type="button" disabled title="Delete — Milestone 2">
+          <button type="button" onClick={handleDelete} title="Delete selected">
             ⌫
           </button>
           <span className={styles.timecode}>
@@ -87,6 +117,7 @@ export function TimelinePanel() {
               const x = e.clientX - rect.left;
               const seconds = Math.max(0, Math.min(durationSeconds, x / pxPerSecond));
               setPlayheadTicks(Math.round(seconds * 1_000_000));
+              setSelectedClipIds([]);
             }}
           >
             {marks.map((t) => (
@@ -104,26 +135,59 @@ export function TimelinePanel() {
                 className={styles.lane}
                 data-kind={track.kind}
                 style={{ width: laneWidth }}
-              >
-                {trackClips.length === 0 ? (
-                  <div className={styles.emptyLane} />
-                ) : (
-                  trackClips.map((clip) => {
-                    const start = ticksToSeconds(clip.startTicks);
-                    const dur = ticksToSeconds(clip.sourceOutTicks - clip.sourceInTicks);
-                    return (
-                      <div
-                        key={clip.id}
-                        className={styles.clip}
-                        data-kind={track.kind}
-                        style={{
-                          left: start * pxPerSecond,
-                          width: Math.max(24, dur * pxPerSecond),
-                        }}
-                      />
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const assetId = e.dataTransfer.getData("text/cutline-asset");
+                  if (!assetId) return;
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const x = e.clientX - rect.left;
+                  const startTicks = Math.max(0, Math.round((x / pxPerSecond) * 1_000_000));
+                  try {
+                    commitProjectChange((p) =>
+                      addMediaClip(p, assetId, { trackId: track.id, startTicks }),
                     );
-                  })
-                )}
+                    setStatusMessage("Clip dropped on timeline");
+                  } catch {
+                    setStatusMessage("Drop failed — check track type");
+                  }
+                }}
+              >
+                {trackClips.length === 0 ? <div className={styles.emptyLane} /> : null}
+                {trackClips.map((clip) => {
+                  const start = ticksToSeconds(clip.startTicks);
+                  const dur = ticksToSeconds(clipDurationTicks(clip));
+                  const asset = assets.find((a) => a.id === clip.assetId);
+                  const selected = selectedClipIds.includes(clip.id);
+                  return (
+                    <div
+                      key={clip.id}
+                      className={selected ? `${styles.clip} ${styles.clipSelected}` : styles.clip}
+                      data-kind={track.kind}
+                      style={{
+                        left: start * pxPerSecond,
+                        width: Math.max(24, dur * pxPerSecond),
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedClipIds([clip.id]);
+                      }}
+                      draggable
+                      onDragEnd={(e) => {
+                        const lane = (e.target as HTMLElement).closest(`.${styles.lane}`);
+                        if (!lane) return;
+                        const rect = lane.getBoundingClientRect();
+                        const x = e.clientX - rect.left;
+                        if (x < 0) return;
+                        const startTicks = Math.max(0, Math.round((x / pxPerSecond) * 1_000_000));
+                        commitProjectChange((p) => moveClip(p, clip.id, startTicks, track.id));
+                      }}
+                      title={asset?.name ?? clip.id}
+                    >
+                      <span>{asset?.name ?? "Clip"}</span>
+                    </div>
+                  );
+                })}
               </div>
             );
           })}

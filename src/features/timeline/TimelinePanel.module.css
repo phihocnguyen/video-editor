@@ -136,6 +136,25 @@
   height: 32px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  color: #fff;
+  font-size: 11px;
+  user-select: none;
+}
+
+.clip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clipSelected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .clip[data-kind="video"] {
