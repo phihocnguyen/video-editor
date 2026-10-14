@@ -49,6 +49,16 @@ export function PreviewPanel() {
     ? resolveMediaUrl(active.asset.path, active.asset.id)
     : null;
 
+  const activeTexts = useMemo(() => {
+    return clips.filter(
+      (c) =>
+        c.kind === "text" &&
+        c.text &&
+        playheadTicks >= c.startTicks &&
+        playheadTicks < c.startTicks + clipDurationTicks(c),
+    );
+  }, [clips, playheadTicks]);
+
   useEffect(() => {
     if (!isPlaying) return;
     let frame = 0;
@@ -103,6 +113,27 @@ export function PreviewPanel() {
               <span>Active-clip preview — multi-track compositing still limited</span>
             </div>
           )}
+          {activeTexts.map((clip) => {
+            const style = clip.text!;
+            return (
+              <div
+                key={clip.id}
+                className={styles.textOverlay}
+                style={{
+                  left: `${(clip.transform.x / canvas.width) * 100}%`,
+                  top: `${(clip.transform.y / canvas.height) * 100}%`,
+                  transform: "translate(-50%, -50%)",
+                  fontFamily: `"${style.fontFamily}", sans-serif`,
+                  fontSize: `${Math.max(12, Math.round(style.fontSize * 0.4))}px`,
+                  color: style.color,
+                  textAlign: style.align,
+                  opacity: clip.transform.opacity,
+                }}
+              >
+                {style.content}
+              </div>
+            );
+          })}
         </div>
       </div>
 

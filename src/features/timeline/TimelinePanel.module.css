@@ -165,6 +165,10 @@
   background: linear-gradient(90deg, #247a52, var(--track-audio));
 }
 
+.clip[data-kind="text"] {
+  background: linear-gradient(90deg, #6b4dff, var(--track-text));
+}
+
 .playhead {
   position: absolute;
   top: 0;

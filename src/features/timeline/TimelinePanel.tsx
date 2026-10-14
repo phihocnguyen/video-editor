@@ -159,11 +159,15 @@ export function TimelinePanel() {
                   const dur = ticksToSeconds(clipDurationTicks(clip));
                   const asset = assets.find((a) => a.id === clip.assetId);
                   const selected = selectedClipIds.includes(clip.id);
+                  const label =
+                    clip.kind === "text"
+                      ? clip.text?.content || "Text"
+                      : asset?.name ?? "Clip";
                   return (
                     <div
                       key={clip.id}
                       className={selected ? `${styles.clip} ${styles.clipSelected}` : styles.clip}
-                      data-kind={track.kind}
+                      data-kind={clip.kind === "text" ? "text" : track.kind}
                       style={{
                         left: start * pxPerSecond,
                         width: Math.max(24, dur * pxPerSecond),
@@ -182,9 +186,9 @@ export function TimelinePanel() {
                         const startTicks = Math.max(0, Math.round((x / pxPerSecond) * 1_000_000));
                         commitProjectChange((p) => moveClip(p, clip.id, startTicks, track.id));
                       }}
-                      title={asset?.name ?? clip.id}
+                      title={label}
                     >
-                      <span>{asset?.name ?? "Clip"}</span>
+                      <span>{label}</span>
                     </div>
                   );
                 })}
