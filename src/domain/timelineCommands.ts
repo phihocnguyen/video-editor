@@ -103,6 +103,15 @@ export function moveClip(
     const track = project.tracks.find((t) => t.id === nextTrackId);
     if (!track) throw new Error("Unknown trackId");
     if (track.locked) throw new Error("Track is locked");
+    if (clip.kind === "text" && track.kind !== "video") {
+      throw new Error("Text clips require a video track");
+    }
+    if (clip.kind === "media" && clip.assetId) {
+      const asset = project.assets.find((a) => a.id === clip.assetId);
+      if (asset && compatibleTrackKind(asset) !== track.kind) {
+        throw new Error("Asset kind does not match track kind");
+      }
+    }
     return {
       ...clip,
       trackId: nextTrackId,

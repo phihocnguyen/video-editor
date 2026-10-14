@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   addMediaClip,
   addTrack,
@@ -51,6 +58,13 @@ export function TimelinePanel() {
   const pendingTicksRef = useRef(playheadTicks);
   const scrubMoveRef = useRef<(event: PointerEvent) => void>(() => undefined);
   const scrubEndRef = useRef<() => void>(() => undefined);
+  const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
+  const clipDragRef = useRef<{
+    clipId: string;
+    originTrackId: string;
+    grabOffsetTicks: number;
+    lastTrackId: string;
+  } | null>(null);
 
   const pxPerSecond = 64 * timelineZoom;
   const durationSeconds = ticksToSeconds(durationTicks);
@@ -168,6 +182,117 @@ export function TimelinePanel() {
     setSelectedClipIds([]);
     setStatusMessage("Deleted selected clip(s)");
   }
+
+  const trackIdFromClientY = useCallback((clientY: number) => {
+    const lanes = lanesRef.current;
+    if (!lanes) return null;
+    const els = lanes.querySelectorAll<HTMLElement>("[data-track-id]");
+    for (const el of els) {
+      const rect = el.getBoundingClientRect();
+      if (clientY >= rect.top && clientY <= rect.bottom) {
+        return el.dataset.trackId ?? null;
+      }
+    }
+    return null;
+  }, []);
+
+  const beginClipSlide = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>, clipId: string, trackId: string) => {
+      if (event.button !== 0) return;
+      const target = event.target as HTMLElement;
+      if (target.closest(`.${styles.trimHandle}`)) return;
+
+      const track = useProjectStore.getState().project.tracks.find((t) => t.id === trackId);
+      if (track?.locked) {
+        setStatusMessage("Track is locked");
+        return;
+      }
+
+      event.stopPropagation();
+      event.preventDefault();
+      setPlaying(false);
+      setSelectedClipIds([clipId]);
+
+      const clip = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
+      if (!clip) return;
+
+      const pointerTicks = ticksFromClientX(event.clientX);
+      const grabOffsetTicks = pointerTicks - clip.startTicks;
+      const before = useProjectStore.getState().project;
+      useHistoryStore.getState().pushHistory(before);
+
+      clipDragRef.current = {
+        clipId,
+        originTrackId: trackId,
+        grabOffsetTicks,
+        lastTrackId: trackId,
+      };
+      setDraggingClipId(clipId);
+
+      const onMove = (ev: PointerEvent) => {
+        const drag = clipDragRef.current;
+        if (!drag) return;
+        let startTicks = ticksFromClientX(ev.clientX) - drag.grabOffsetTicks;
+        startTicks = Math.max(0, startTicks);
+        const hoverTrackId = trackIdFromClientY(ev.clientY) ?? drag.lastTrackId;
+        drag.lastTrackId = hoverTrackId;
+
+        if (snapEnabled) {
+          const others = useProjectStore
+            .getState()
+            .project.clips.filter((c) => c.id !== drag.clipId);
+          startTicks = snapTicks(startTicks, others, {
+            thresholdTicks: Math.round((0.15 * 1_000_000) / Math.max(0.5, timelineZoom)),
+            extraTargets: [playheadTicks],
+          });
+        }
+
+        try {
+          const next = moveClip(
+            useProjectStore.getState().project,
+            drag.clipId,
+            startTicks,
+            hoverTrackId,
+          );
+          useProjectStore.getState().setProject(next, { dirty: true });
+        } catch {
+          try {
+            const next = moveClip(
+              useProjectStore.getState().project,
+              drag.clipId,
+              startTicks,
+              drag.originTrackId,
+            );
+            useProjectStore.getState().setProject(next, { dirty: true });
+          } catch {
+            /* keep last good position */
+          }
+        }
+      };
+
+      const onUp = () => {
+        clipDragRef.current = null;
+        setDraggingClipId(null);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [
+      playheadTicks,
+      setPlaying,
+      setSelectedClipIds,
+      setStatusMessage,
+      snapEnabled,
+      ticksFromClientX,
+      timelineZoom,
+      trackIdFromClientY,
+    ],
+  );
 
   return (
     <div className={styles.panel}>
@@ -330,6 +455,7 @@ export function TimelinePanel() {
                 key={track.id}
                 className={styles.lane}
                 data-kind={track.kind}
+                data-track-id={track.id}
                 style={{ width: laneWidth }}
                 onPointerDown={(e) => {
                   if (e.button !== 0) return;
@@ -359,6 +485,7 @@ export function TimelinePanel() {
                   const dur = ticksToSeconds(clipDurationTicks(clip));
                   const asset = assets.find((a) => a.id === clip.assetId);
                   const selected = selectedClipIds.includes(clip.id);
+                  const dragging = draggingClipId === clip.id;
                   const label =
                     clip.kind === "text"
                       ? clip.text?.content || "Text"
@@ -366,41 +493,19 @@ export function TimelinePanel() {
                   return (
                     <div
                       key={clip.id}
-                      className={selected ? `${styles.clip} ${styles.clipSelected}` : styles.clip}
+                      className={[
+                        styles.clip,
+                        selected ? styles.clipSelected : "",
+                        dragging ? styles.clipDragging : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
                       data-kind={clip.kind === "text" ? "text" : track.kind}
                       style={{
                         left: start * pxPerSecond,
                         width: Math.max(24, dur * pxPerSecond),
                       }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedClipIds([clip.id]);
-                      }}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      draggable
-                      onDragEnd={(e) => {
-                        if (track.locked) {
-                          setStatusMessage("Track is locked");
-                          return;
-                        }
-                        let startTicks = ticksFromClientX(e.clientX);
-                        if (snapEnabled) {
-                          startTicks = snapTicks(
-                            startTicks,
-                            clips.filter((c) => c.id !== clip.id),
-                            { extraTargets: [playheadTicks] },
-                          );
-                        }
-                        try {
-                          commitProjectChange((p) =>
-                            moveClip(p, clip.id, startTicks, track.id),
-                          );
-                        } catch (error) {
-                          setStatusMessage(
-                            error instanceof Error ? error.message : "Move failed",
-                          );
-                        }
-                      }}
+                      onPointerDown={(e) => beginClipSlide(e, clip.id, track.id)}
                       title={label}
                     >
                       {selected ? (

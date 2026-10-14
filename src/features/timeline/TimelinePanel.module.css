@@ -194,6 +194,19 @@
   color: #fff;
   font-size: 11px;
   user-select: none;
+  touch-action: none;
+  will-change: left;
+  z-index: 1;
+}
+
+.clipDragging {
+  cursor: grabbing;
+  z-index: 5;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  opacity: 0.95;
+  transform: translateY(-1px);
 }
 
 .trimHandle {
