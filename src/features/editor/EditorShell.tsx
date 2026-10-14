@@ -12,6 +12,7 @@ import {
   useEditorUiStore,
   type EditorPanel,
 } from "../../stores/editorUiStore";
+import { useHistoryStore } from "../../stores/historyStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { MediaBinPanel } from "../media-bin/MediaBinPanel";
 import { TimelinePanel } from "../timeline/TimelinePanel";
@@ -42,6 +43,11 @@ export function EditorShell() {
   const tool = useEditorUiStore((s) => s.tool);
   const setTool = useEditorUiStore((s) => s.setTool);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
+  const undo = useHistoryStore((s) => s.undo);
+  const redo = useHistoryStore((s) => s.redo);
+  const clearHistory = useHistoryStore((s) => s.clear);
+  const pastCount = useHistoryStore((s) => s.past.length);
+  const futureCount = useHistoryStore((s) => s.future.length);
 
   const handleOpen = useCallback(async () => {
     try {
@@ -50,6 +56,7 @@ export function EditorShell() {
       setProject(refreshed, { dirty: false });
       setProjectPath(path);
       markClean();
+      clearHistory();
       const missing = refreshed.assets.filter((a) => a.missing).length;
       setStatusMessage(
         missing > 0
@@ -61,7 +68,7 @@ export function EditorShell() {
         setStatusMessage(formatActionError(error));
       }
     }
-  }, [markClean, setProject, setProjectPath, setStatusMessage]);
+  }, [clearHistory, markClean, setProject, setProjectPath, setStatusMessage]);
 
   const handleSave = useCallback(async () => {
     try {
@@ -115,6 +122,28 @@ export function EditorShell() {
     return () => window.clearTimeout(timer);
   }, [dirty, project]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const mod = event.ctrlKey || event.metaKey;
+      if (mod && event.key.toLowerCase() === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undo();
+      } else if (
+        (mod && event.key.toLowerCase() === "y") ||
+        (mod && event.shiftKey && event.key.toLowerCase() === "z")
+      ) {
+        event.preventDefault();
+        redo();
+      } else if (event.key === "Delete" || event.key === "Backspace") {
+        const tag = (event.target as HTMLElement | null)?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA") return;
+        // Timeline panel owns delete via selected clips + toolbar; keep shortcut light.
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [redo, undo]);
+
   return (
     <div className={styles.shell}>
       <header className={styles.topbar}>
@@ -124,6 +153,7 @@ export function EditorShell() {
             className={styles.brandBtn}
             onClick={() => {
               newProject();
+              clearHistory();
               setStatusMessage("New project");
             }}
             title="New project"
@@ -174,10 +204,22 @@ export function EditorShell() {
             </button>
           </div>
           <div className={styles.toolGroup}>
-            <button type="button" className={styles.tool} disabled title="Undo — Milestone 2">
+            <button
+              type="button"
+              className={styles.tool}
+              onClick={() => undo()}
+              disabled={pastCount === 0}
+              title="Undo (Ctrl+Z)"
+            >
               ↶
             </button>
-            <button type="button" className={styles.tool} disabled title="Redo — Milestone 2">
+            <button
+              type="button"
+              className={styles.tool}
+              onClick={() => redo()}
+              disabled={futureCount === 0}
+              title="Redo (Ctrl+Y)"
+            >
               ↷
             </button>
           </div>
