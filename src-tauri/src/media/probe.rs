@@ -11,12 +11,28 @@ pub struct ProbeResult {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub message: String,
+    pub kind_hint: String,
+}
+
+pub fn guess_media_kind(path: &Path) -> &'static str {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "mp3" | "wav" | "aac" | "m4a" | "flac" | "ogg" => "audio",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => "image",
+        _ => "video",
+    }
 }
 
 /// Probes a media file with ffprobe when available.
 /// Uses an explicit argument array — never a shell command string.
 pub fn probe_path(path: &str) -> Result<ProbeResult, String> {
     let file = Path::new(path);
+    let kind_hint = guess_media_kind(file).to_string();
+
     if !file.is_file() {
         return Ok(ProbeResult {
             path: path.to_string(),
@@ -25,6 +41,7 @@ pub fn probe_path(path: &str) -> Result<ProbeResult, String> {
             width: None,
             height: None,
             message: "File does not exist or is not a regular file".into(),
+            kind_hint,
         });
     }
 
@@ -51,6 +68,7 @@ pub fn probe_path(path: &str) -> Result<ProbeResult, String> {
                 width,
                 height,
                 message: "Probed with ffprobe".into(),
+                kind_hint,
             })
         }
         Ok(out) => {
@@ -62,6 +80,7 @@ pub fn probe_path(path: &str) -> Result<ProbeResult, String> {
                 width: None,
                 height: None,
                 message: format!("ffprobe failed: {stderr}"),
+                kind_hint,
             })
         }
         Err(err) => Ok(ProbeResult {
@@ -73,6 +92,7 @@ pub fn probe_path(path: &str) -> Result<ProbeResult, String> {
             message: format!(
                 "ffprobe not available ({err}). Install FFmpeg and ensure ffprobe is on PATH."
             ),
+            kind_hint,
         }),
     }
 }
