@@ -2,10 +2,17 @@ import { useMemo, useState } from "react";
 import {
   addTextClip,
   createDefaultTextStyle,
+  normalizeTextAnimation,
+  TEXT_ANIM_GROUPS,
+  TEXT_ANIM_PRESETS,
+  updateCanvas,
+  updateClipAnimation,
   updateClipText,
   updateClipTransform,
+  type TextAnimId,
   type TextStyle,
 } from "../../domain";
+import { PresetGrid, type PresetItem } from "../effects/PresetGrid";
 import {
   listFontOptions,
   pickBrowserFontFile,
@@ -18,6 +25,21 @@ import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { ClipProps } from "./ClipProps";
 import styles from "./InspectorPanel.module.css";
+
+const TEXT_ANIM_ITEMS: PresetItem[] = TEXT_ANIM_PRESETS.map((p) => ({
+  id: p.id,
+  label: p.label,
+  hint: p.hint,
+  group: p.group,
+}));
+
+const CANVAS_PRESETS: { label: string; width: number; height: number; fps: number }[] = [
+  { label: "16:9 · 1920×1080", width: 1920, height: 1080, fps: 30 },
+  { label: "9:16 · 1080×1920", width: 1080, height: 1920, fps: 30 },
+  { label: "1:1 · 1080×1080", width: 1080, height: 1080, fps: 30 },
+  { label: "4:5 · 1080×1350", width: 1080, height: 1350, fps: 30 },
+  { label: "21:9 · 2560×1080", width: 2560, height: 1080, fps: 30 },
+];
 
 interface InspectorPanelProps {
   mode: "text" | "canvas" | "clip" | "subtitles";
@@ -68,15 +90,107 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
       <div className={styles.panel}>
         <h2>Canvas</h2>
         <div className={styles.section}>
-          <label className={styles.label}>Size</label>
+          <label className={styles.label}>Resolution</label>
           <div className={styles.row}>
-            <Field label="W" value={String(canvas.width)} readOnly />
-            <Field label="H" value={String(canvas.height)} readOnly />
+            <label className={styles.field}>
+              <span>W</span>
+              <input
+                type="number"
+                min={2}
+                max={7680}
+                value={canvas.width}
+                onChange={(e) =>
+                  commitProjectChange((p) =>
+                    updateCanvas(p, { width: Number(e.target.value) || canvas.width }),
+                  )
+                }
+              />
+            </label>
+            <label className={styles.field}>
+              <span>H</span>
+              <input
+                type="number"
+                min={2}
+                max={7680}
+                value={canvas.height}
+                onChange={(e) =>
+                  commitProjectChange((p) =>
+                    updateCanvas(p, { height: Number(e.target.value) || canvas.height }),
+                  )
+                }
+              />
+            </label>
           </div>
-          <label className={styles.label}>Frame rate</label>
-          <Field label="FPS" value={String(canvas.frameRate)} readOnly />
+          <div className={styles.chipRow}>
+            {CANVAS_PRESETS.map((preset) => {
+              const active =
+                canvas.width === preset.width && canvas.height === preset.height;
+              return (
+                <button
+                  key={preset.label}
+                  type="button"
+                  className={active ? styles.chipActive : styles.chip}
+                  title={`Set sequence to ${preset.label}`}
+                  onClick={() =>
+                    commitProjectChange((p) =>
+                      updateCanvas(p, {
+                        width: preset.width,
+                        height: preset.height,
+                        frameRate: preset.fps,
+                      }),
+                    )
+                  }
+                >
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
-        {selectedClip ? <ClipProps clip={selectedClip} /> : null}
+
+        <div className={styles.section}>
+          <label className={styles.label}>Frame rate</label>
+          <label className={styles.field}>
+            <span>FPS</span>
+            <input
+              type="number"
+              min={1}
+              max={240}
+              value={canvas.frameRate}
+              onChange={(e) =>
+                commitProjectChange((p) =>
+                  updateCanvas(p, { frameRate: Number(e.target.value) || canvas.frameRate }),
+                )
+              }
+            />
+          </label>
+        </div>
+
+        <div className={styles.section}>
+          <label className={styles.label}>Background</label>
+          <div className={styles.colorRow}>
+            <input
+              type="color"
+              value={canvas.backgroundColor}
+              onChange={(e) =>
+                commitProjectChange((p) =>
+                  updateCanvas(p, { backgroundColor: e.target.value }),
+                )
+              }
+            />
+            <input
+              value={canvas.backgroundColor}
+              onChange={(e) =>
+                commitProjectChange((p) =>
+                  updateCanvas(p, { backgroundColor: e.target.value }),
+                )
+              }
+            />
+          </div>
+          <p className={styles.hint}>
+            Shown behind every layer in the preview and used as the export base colour.
+          </p>
+        </div>
       </div>
     );
   }
@@ -91,6 +205,7 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
   }
 
   const text = selectedTextClip?.text ?? createDefaultTextStyle();
+  const animation = normalizeTextAnimation(selectedTextClip?.animation);
 
   function applyText(next: TextStyle) {
     if (!selectedTextClip) return;
@@ -276,25 +391,66 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
               </label>
             </div>
           </div>
+
+          <div className={styles.section}>
+            <div className={styles.blockHead}>
+              <label className={styles.label}>In animation</label>
+            </div>
+            <PresetGrid
+              items={TEXT_ANIM_ITEMS}
+              groups={TEXT_ANIM_GROUPS}
+              value={animation.in}
+              media="text"
+              onSelect={(id) =>
+                commitProjectChange((project) =>
+                  updateClipAnimation(project, selectedTextClip.id, {
+                    in: id as TextAnimId,
+                  }),
+                )
+              }
+            />
+            <div className={styles.blockHead}>
+              <label className={styles.label}>Out animation</label>
+            </div>
+            <PresetGrid
+              items={TEXT_ANIM_ITEMS}
+              groups={TEXT_ANIM_GROUPS}
+              value={animation.out}
+              media="text"
+              onSelect={(id) =>
+                commitProjectChange((project) =>
+                  updateClipAnimation(project, selectedTextClip.id, {
+                    out: id as TextAnimId,
+                  }),
+                )
+              }
+              footnote="Một số hiệu ứng dùng mặt nạ (wipe/cắt dán) chỉ được mô phỏng gần đúng khi export."
+            />
+            <label className={styles.sliderField}>
+              <div className={styles.sliderHead}>
+                <span>Duration</span>
+                <span className={styles.sliderValue}>
+                  {(animation.durationTicks / 1_000_000).toFixed(2)}s
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0.1}
+                max={2}
+                step={0.05}
+                value={animation.durationTicks / 1_000_000}
+                onChange={(e) =>
+                  commitProjectChange((project) =>
+                    updateClipAnimation(project, selectedTextClip.id, {
+                      durationTicks: Math.round(Number(e.target.value) * 1_000_000),
+                    }),
+                  )
+                }
+              />
+            </label>
+          </div>
         </>
       )}
     </div>
-  );
-}
-
-function Field({
-  label,
-  value,
-  readOnly = false,
-}: {
-  label: string;
-  value: string;
-  readOnly?: boolean;
-}) {
-  return (
-    <label className={styles.field}>
-      <span>{label}</span>
-      <input value={value} readOnly={readOnly} disabled={readOnly} />
-    </label>
   );
 }

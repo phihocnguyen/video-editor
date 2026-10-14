@@ -63,8 +63,8 @@ export function ClipFilmstrip({
     setPoolFrames(initial);
 
     void (async () => {
-      // Let preview claim the decoder first (UHD import).
-      await new Promise((r) => window.setTimeout(r, 900));
+      // Brief yield so preview can attach after add-to-timeline.
+      await new Promise((r) => window.setTimeout(r, 200));
       if (cancelled) return;
       await whenPreviewDecodeIdle();
       if (cancelled) return;

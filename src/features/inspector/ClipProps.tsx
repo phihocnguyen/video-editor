@@ -5,7 +5,9 @@ import {
   findPreviousClipOnTrack,
   normalizeClipEffects,
   normalizeClipTransition,
-  TRANSITION_OPTIONS,
+  TRANSITION_DEFS,
+  TRANSITION_GROUPS,
+  transitionDef,
   updateClipEffects,
   updateClipSpeed,
   updateClipTransform,
@@ -14,10 +16,18 @@ import {
   type Clip,
   type TransitionType,
 } from "../../domain";
+import { PresetGrid, type PresetItem } from "../effects/PresetGrid";
 import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import styles from "./InspectorPanel.module.css";
+
+const TRANSITION_ITEMS: PresetItem[] = TRANSITION_DEFS.map((d) => ({
+  id: d.type,
+  label: d.label,
+  hint: d.hint,
+  group: d.group,
+}));
 
 interface ClipPropsProps {
   clip: Clip;
@@ -220,42 +230,32 @@ export function ClipProps({ clip }: ClipPropsProps) {
             {!canTransition ? (
               <span className={styles.pillMuted}>Needs previous clip</span>
             ) : (
-              <span className={styles.pill}>
-                {TRANSITION_OPTIONS.find((o) => o.type === transition.type)?.label ?? "Cut"}
-              </span>
+              <span className={styles.pill}>{transitionDef(transition.type).label}</span>
             )}
           </div>
-          <div className={styles.chipRow}>
-            {TRANSITION_OPTIONS.map((opt) => {
-              const active = transition.type === opt.type;
-              return (
-                <button
-                  key={opt.type}
-                  type="button"
-                  className={active ? styles.chipActive : styles.chip}
-                  title={
-                    canTransition || opt.type === "none"
-                      ? opt.hint
-                      : "Place another clip before this one"
-                  }
-                  disabled={!canTransition && opt.type !== "none"}
-                  onClick={() =>
-                    commitProjectChange((p) =>
-                      updateClipTransition(p, clip.id, {
-                        type: opt.type as TransitionType,
-                        durationTicks:
-                          opt.type === "none"
-                            ? transition.durationTicks
-                            : Math.max(transition.durationTicks, 600_000),
-                      }),
-                    )
-                  }
-                >
-                  {opt.label}
-                </button>
+          <PresetGrid
+            items={TRANSITION_ITEMS}
+            groups={TRANSITION_GROUPS}
+            value={transition.type}
+            media="video"
+            onSelect={(id) => {
+              if (!canTransition && id !== "none") return;
+              commitProjectChange((p) =>
+                updateClipTransition(p, clip.id, {
+                  type: id as TransitionType,
+                  durationTicks:
+                    id === "none"
+                      ? transition.durationTicks
+                      : Math.max(transition.durationTicks, 600_000),
+                }),
               );
-            })}
-          </div>
+            }}
+            footnote={
+              canTransition
+                ? undefined
+                : "Place another clip before this one to enable transitions."
+            }
+          />
           {canTransition && transition.type !== "none" ? (
             <SliderField
               label="Duration"

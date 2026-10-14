@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { addMediaClip, relinkAsset, type MediaKind } from "../../domain";
 import {
   actionImportMedia,
@@ -6,9 +6,9 @@ import {
   formatActionError,
 } from "../../lib/projectActions";
 import { VideoThumb } from "../../components/VideoThumb";
-import { beginMediaQuietPeriod } from "../../lib/mediaDecodeGate";
-import { releaseFilmstripDecoders } from "../../lib/mediaFilmstrip";
+import { AudioIcon, MediaIcon } from "../../components/icons";
 import { canShowThumbnail, resolveMediaUrl } from "../../lib/mediaUrl";
+import { warmMediaUrl } from "../../lib/mediaVideoPool";
 import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
@@ -28,6 +28,15 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
   const title =
     filter === "audio" ? "Audio" : filter === "image" ? "Photos" : "Media";
 
+  // Keep preview decoders warm for every video already in the bin.
+  useEffect(() => {
+    for (const asset of assets) {
+      if (asset.kind !== "video" || asset.missing) continue;
+      const url = resolveMediaUrl(asset.path, asset.id);
+      if (url) warmMediaUrl(url);
+    }
+  }, [assets]);
+
   async function handleImport() {
     setBusy(true);
     try {
@@ -37,9 +46,12 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
         return;
       }
       addAssets(imported);
-      // Stop thumbs from grabbing the decoder so Play works immediately.
-      releaseFilmstripDecoders();
-      beginMediaQuietPeriod(3000);
+      // Warm HTML decoders now so Play is ready the moment a clip hits the timeline.
+      for (const asset of imported) {
+        if (asset.kind !== "video" || asset.missing) continue;
+        const url = resolveMediaUrl(asset.path, asset.id);
+        if (url) warmMediaUrl(url);
+      }
       const missing = imported.filter((a) => a.missing).length;
       setStatusMessage(
         missing > 0
@@ -55,8 +67,8 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
 
   function handleAddToTimeline(assetId: string) {
     try {
-      releaseFilmstripDecoders();
-      beginMediaQuietPeriod(2500);
+      // Don't release/restart media-bin thumbs — that steals the decoder from
+      // the newly mounted preview video for ~1–2s after add.
       commitProjectChange((project) =>
         addMediaClip(project, assetId, {
           startTicks: useEditorUiStore.getState().playheadTicks,
@@ -99,7 +111,7 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
           disabled={busy}
           title="Import local media"
         >
-          {busy ? "Importing…" : "+ Import"}
+          {busy ? "Importing…" : "Import"}
         </button>
       </div>
 
@@ -148,9 +160,9 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
                         }
                       />
                     ) : asset.kind === "audio" ? (
-                      "♪"
+                      <AudioIcon size={22} />
                     ) : (
-                      "▶"
+                      <MediaIcon size={22} />
                     )}
                   </div>
                 </button>

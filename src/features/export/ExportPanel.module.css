@@ -1,20 +1,20 @@
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 14px;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
 }
 
 .panel h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 650;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  color: var(--text-strong);
 }
 
 .lead {
-  margin: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-base);
+  line-height: 1.5;
 }
 
 .field {
@@ -22,7 +22,8 @@
   flex-direction: column;
   gap: 6px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-base);
+  font-weight: 600;
 }
 
 .field select {
@@ -32,77 +33,89 @@
 .summary {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  border-radius: 10px;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--radius);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--fs-base);
   color: var(--text-muted);
 }
 
 .summary strong {
   color: var(--text);
   margin-right: 6px;
+  font-family: var(--font-mono);
 }
 
 .warn {
-  margin: 0;
   color: var(--danger);
 }
 
 .ok {
-  margin: 0;
-  color: var(--track-audio);
-  font-size: 12px;
+  color: var(--ok);
+  font-size: var(--fs-base);
+  font-weight: 600;
 }
 
 .job {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 .job p {
-  margin: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-base);
 }
 
 .progressTrack {
-  height: 8px;
-  border-radius: 999px;
-  background: var(--bg-elevated);
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border);
   overflow: hidden;
 }
 
 .progressFill {
   height: 100%;
-  background: var(--accent);
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  border-radius: inherit;
+  transition: width var(--dur) var(--ease);
 }
 
 .actions {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
 }
 
 .exportBtn,
 .cancelBtn {
-  height: 38px;
-  border-radius: 999px;
+  height: 36px;
+  border-radius: var(--radius);
   font-weight: 700;
-  padding: 0 16px;
+  padding: 0 var(--sp-4);
 }
 
 .exportBtn {
   background: var(--accent);
-  color: #041018;
+  color: var(--accent-contrast);
+}
+
+.exportBtn:hover:not(:disabled) {
+  background: var(--accent-strong);
+  color: #fff;
 }
 
 .cancelBtn {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   color: var(--text);
+}
+
+.cancelBtn:hover {
+  background: var(--bg-hover);
 }
 
 .exportBtn:disabled {

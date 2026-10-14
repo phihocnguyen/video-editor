@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -8,19 +9,28 @@ import {
 } from "react";
 import {
   addMediaClip,
+  addRampPointAtPlayhead,
   addTrack,
   applySpeedToRange,
   clipDurationTicks,
   deleteClips,
+  enableSpeedRamp,
+  getRampProfile,
+  hasActiveRamp,
   moveClip,
+  moveClipLayer,
   moveTrack,
+  normalizeClipEffects,
   normalizeClipTransition,
   projectDurationTicks,
   removeTrack,
+  setClipRamp,
   snapTicks,
   splitClipAt,
   ticksToSeconds,
+  TRANSITION_DEFS,
   trimClip,
+  updateClipEffects,
   updateClipTransition,
   updateTrack,
 } from "../../domain";
@@ -35,8 +45,25 @@ import { commitProjectChange, useHistoryStore } from "../../stores/historyStore"
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  DiamondIcon,
+  EyeIcon,
+  EyeOffIcon,
+  LockIcon,
+  LockOpenIcon,
+  MagnetIcon,
+  PlusIcon,
+  SplitIcon,
+  TrashIcon,
+  VolumeIcon,
+  ZoomInIcon,
+  ZoomOutIcon,
+} from "../../components/icons";
 import { ClipFilmstrip } from "./ClipFilmstrip";
 import { ClipWaveform } from "./ClipWaveform";
+import { RampEditor } from "./RampEditor";
 import styles from "./TimelinePanel.module.css";
 
 function formatClock(seconds: number): string {
@@ -62,6 +89,47 @@ export function TimelinePanel() {
     x: number;
     y: number;
   } | null>(null);
+
+  const clipMenuRef = useRef<HTMLDivElement>(null);
+  const trackMenuRef = useRef<HTMLDivElement>(null);
+
+  /** Anchor for a context menu — final top/left is resolved after measure. */
+  function placeCtxMenu(clientX: number, clientY: number): { x: number; y: number } {
+    return { x: clientX, y: clientY };
+  }
+
+  /** Pin menu above the cursor; flip below only if it would clip the top. */
+  function fitCtxMenuAbove(
+    el: HTMLDivElement | null,
+    anchor: { x: number; y: number } | null,
+  ) {
+    if (!el || !anchor) return;
+    const pad = 8;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    let left = anchor.x;
+    let top = anchor.y - h - 4;
+    if (top < pad) top = anchor.y + 4;
+    if (top + h > window.innerHeight - pad) {
+      top = Math.max(pad, window.innerHeight - h - pad);
+    }
+    if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
+    if (left < pad) left = pad;
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+    el.style.visibility = "visible";
+  }
+
+  useLayoutEffect(() => {
+    fitCtxMenuAbove(clipMenuRef.current, clipMenu);
+  }, [clipMenu]);
+
+  useLayoutEffect(() => {
+    fitCtxMenuAbove(
+      trackMenuRef.current,
+      trackMenu ? { x: trackMenu.x, y: trackMenu.y } : null,
+    );
+  }, [trackMenu]);
   const clipClipboard = useEditorUiStore((s) => s.clipClipboard);
   const markInTicks = useEditorUiStore((s) => s.markInTicks);
   const markOutTicks = useEditorUiStore((s) => s.markOutTicks);
@@ -80,6 +148,12 @@ export function TimelinePanel() {
   const setSnapEnabled = useSettingsStore((s) => s.setSnapEnabled);
   const trackLabelWidthPx = useEditorUiStore((s) => s.trackLabelWidthPx);
   const setTrackLabelWidthPx = useEditorUiStore((s) => s.setTrackLabelWidthPx);
+
+  // Single selected media clip — target for the speed-ramp overlay/menu.
+  const rampTargetClip =
+    selectedClipIds.length === 1
+      ? clips.find((c) => c.id === selectedClipIds[0] && c.kind === "media") ?? null
+      : null;
 
   const lanesRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
@@ -152,8 +226,13 @@ export function TimelinePanel() {
 
   const marks = useMemo(() => {
     const step = timelineZoom >= 2 ? 1 : timelineZoom >= 1 ? 2 : 5;
-    const out: number[] = [];
-    for (let t = 0; t <= durationSeconds + 0.001; t += step) out.push(t);
+    const out: { t: number; major: boolean }[] = [];
+    for (let t = 0; t <= durationSeconds + 0.001; t += step) {
+      out.push({ t, major: true });
+      // Light intermediate ticks halfway between labels for finer reading.
+      const half = t + step / 2;
+      if (half <= durationSeconds + 0.001) out.push({ t: half, major: false });
+    }
     return out;
   }, [durationSeconds, timelineZoom]);
 
@@ -271,7 +350,12 @@ export function TimelinePanel() {
     (event: ReactPointerEvent<HTMLDivElement>, clipId: string, trackId: string) => {
       if (event.button !== 0) return;
       const target = event.target as HTMLElement;
-      if (target.closest(`.${styles.trimHandle}`)) return;
+      if (
+        target.closest(`.${styles.trimHandle}`) ||
+        target.closest(`.${styles.fadeHandle}`)
+      ) {
+        return;
+      }
 
       const track = useProjectStore.getState().project.tracks.find((t) => t.id === trackId);
       if (track?.locked) {
@@ -380,37 +464,24 @@ export function TimelinePanel() {
     <div className={styles.panel}>
       <div className={styles.toolbar}>
         <div className={styles.toolbarLeft}>
-          <button type="button" onClick={handleSplit} title="Split at playhead" aria-label="Split">
-            <svg className={styles.toolIcon} viewBox="0 0 16 16" aria-hidden>
-              <path
-                fill="currentColor"
-                d="M4.2 1.8a1.5 1.5 0 1 0-.9 2.8L5.8 7l-2.5 2.4a1.5 1.5 0 1 0 .9 2.8L8 8.7l3.8 3.5a1.5 1.5 0 1 0 .9-2.8L10.2 7l2.5-2.4a1.5 1.5 0 1 0-.9-2.8L8 5.3 4.2 1.8Z"
-              />
-            </svg>
-          </button>
-          <button type="button" onClick={handleDelete} title="Delete selected" aria-label="Delete">
-            <svg className={styles.toolIcon} viewBox="0 0 16 16" aria-hidden>
-              <path
-                fill="currentColor"
-                d="M6.2 2h3.6l.4 1.2H13v1.4H3V3.2h2.8L6.2 2Zm.8 3.4h1.5v7H7V5.4Zm3 0h1.5v7H10V5.4ZM4.8 4.8h6.4l-.5 8.1A1.4 1.4 0 0 1 9.3 14H6.7a1.4 1.4 0 0 1-1.4-1.1L4.8 4.8Z"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className={snapEnabled ? styles.toolOn : undefined}
-            onClick={() => setSnapEnabled(!snapEnabled)}
-            title="Snap to clip edges"
-            aria-label="Snap to clip edges"
-            aria-pressed={snapEnabled}
-          >
-            <svg className={styles.toolIcon} viewBox="0 0 16 16" aria-hidden>
-              <path
-                fill="currentColor"
-                d="M3.2 1.8h2.3v5c0 1.5-.9 2.5-2.2 2.5S1.1 8.3 1.1 6.8V4.8h1.6v2c0 .5.2.8.6.8s.6-.3.6-.8v-5Zm7.3 0h2.3v5c0 .5.2.8.6.8s.6-.3.6-.8v-2h1.6v2c0 1.5-.9 2.5-2.2 2.5s-2.2-1-2.2-2.5v-5ZM2.8 11h10.4v1.5H2.8V11Zm1.8 2.2h6.8V15H4.6v-1.8Z"
-              />
-            </svg>
-          </button>
+          <div className={styles.toolGroup}>
+            <button type="button" onClick={handleSplit} title="Split at playhead" aria-label="Split">
+              <SplitIcon className={styles.toolIcon} />
+            </button>
+            <button type="button" onClick={handleDelete} title="Delete selected" aria-label="Delete">
+              <TrashIcon className={styles.toolIcon} />
+            </button>
+            <button
+              type="button"
+              className={snapEnabled ? styles.toolOn : undefined}
+              onClick={() => setSnapEnabled(!snapEnabled)}
+              title="Snap to clip edges"
+              aria-label="Snap to clip edges"
+              aria-pressed={snapEnabled}
+            >
+              <MagnetIcon className={styles.toolIcon} />
+            </button>
+          </div>
           <span className={styles.timecode}>
             <span ref={timecodeRef}>
               {formatClock(ticksToSeconds(useEditorUiStore.getState().playheadTicks))}
@@ -418,33 +489,58 @@ export function TimelinePanel() {
             <span> / {formatClock(durationSeconds)}</span>
           </span>
         </div>
-        <div className={styles.zoom}>
-          <button
-            type="button"
-            title="Add video track"
-            onClick={() => {
-              commitProjectChange((p) => addTrack(p, "video"));
-              setStatusMessage("Added video track");
-            }}
-          >
-            +V
-          </button>
-          <button
-            type="button"
-            title="Add audio track"
-            onClick={() => {
-              commitProjectChange((p) => addTrack(p, "audio"));
-              setStatusMessage("Added audio track");
-            }}
-          >
-            +A
-          </button>
-          <button type="button" onClick={() => setTimelineZoom(timelineZoom - 0.2)} title="Zoom out">
-            −
-          </button>
-          <button type="button" onClick={() => setTimelineZoom(timelineZoom + 0.2)} title="Zoom in">
-            +
-          </button>
+        <div className={styles.toolbarRight}>
+          <div className={styles.toolGroup}>
+            <button
+              type="button"
+              title="Add video track"
+              onClick={() => {
+                commitProjectChange((p) => addTrack(p, "video"));
+                setStatusMessage("Added video track");
+              }}
+            >
+              +V
+            </button>
+            <button
+              type="button"
+              title="Add audio track"
+              onClick={() => {
+                commitProjectChange((p) => addTrack(p, "audio"));
+                setStatusMessage("Added audio track");
+              }}
+            >
+              +A
+            </button>
+          </div>
+          <div className={styles.toolGroup}>
+            <button
+              type="button"
+              onClick={() => setTimelineZoom(timelineZoom - 0.2)}
+              title="Zoom out"
+              aria-label="Zoom out"
+            >
+              <ZoomOutIcon className={styles.toolIcon} />
+            </button>
+            <input
+              type="range"
+              className={styles.zoomSlider}
+              min={0.4}
+              max={4}
+              step={0.1}
+              value={timelineZoom}
+              onChange={(e) => setTimelineZoom(Number(e.target.value))}
+              title={`Zoom ${timelineZoom.toFixed(1)}×`}
+              aria-label="Timeline zoom"
+            />
+            <button
+              type="button"
+              onClick={() => setTimelineZoom(timelineZoom + 0.2)}
+              title="Zoom in"
+              aria-label="Zoom in"
+            >
+              <ZoomInIcon className={styles.toolIcon} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -489,16 +585,21 @@ export function TimelinePanel() {
               onContextMenu={(e) => {
                 e.preventDefault();
                 setClipMenu(null);
-                setTrackMenu({ trackId: track.id, x: e.clientX, y: e.clientY });
+                setTrackMenu({
+                  trackId: track.id,
+                  ...placeCtxMenu(e.clientX, e.clientY),
+                });
               }}
             >
               <div className={styles.labelTop}>
                 <strong>{track.name}</strong>
+                <span className={styles.labelKind}>{track.kind}</span>
               </div>
               <div className={styles.trackControls}>
                 <button
                   type="button"
                   title="Move up"
+                  aria-label="Move track up"
                   onClick={() => {
                     try {
                       commitProjectChange((p) => moveTrack(p, track.id, "up"));
@@ -509,11 +610,12 @@ export function TimelinePanel() {
                     }
                   }}
                 >
-                  ↑
+                  <ChevronUpIcon size={13} />
                 </button>
                 <button
                   type="button"
                   title="Move down"
+                  aria-label="Move track down"
                   onClick={() => {
                     try {
                       commitProjectChange((p) => moveTrack(p, track.id, "down"));
@@ -524,43 +626,46 @@ export function TimelinePanel() {
                     }
                   }}
                 >
-                  ↓
+                  <ChevronDownIcon size={13} />
                 </button>
                 <button
                   type="button"
                   className={track.muted ? styles.trackCtrlOn : undefined}
                   title={track.muted ? "Unmute" : "Mute"}
+                  aria-label="Toggle mute"
                   onClick={() =>
                     commitProjectChange((p) =>
                       updateTrack(p, track.id, { muted: !track.muted }),
                     )
                   }
                 >
-                  M
+                  <VolumeIcon size={13} />
                 </button>
                 <button
                   type="button"
                   className={!track.visible ? styles.trackCtrlOn : undefined}
                   title={track.visible ? "Hide" : "Show"}
+                  aria-label="Toggle visibility"
                   onClick={() =>
                     commitProjectChange((p) =>
                       updateTrack(p, track.id, { visible: !track.visible }),
                     )
                   }
                 >
-                  V
+                  {track.visible ? <EyeIcon size={13} /> : <EyeOffIcon size={13} />}
                 </button>
                 <button
                   type="button"
                   className={track.locked ? styles.trackCtrlOn : undefined}
                   title={track.locked ? "Unlock" : "Lock"}
+                  aria-label="Toggle lock"
                   onClick={() =>
                     commitProjectChange((p) =>
                       updateTrack(p, track.id, { locked: !track.locked }),
                     )
                   }
                 >
-                  L
+                  {track.locked ? <LockIcon size={13} /> : <LockOpenIcon size={13} />}
                 </button>
               </div>
             </div>
@@ -577,11 +682,22 @@ export function TimelinePanel() {
               beginScrub(e.clientX);
             }}
           >
-            {marks.map((t) => (
-              <span key={t} className={styles.mark} style={{ left: t * pxPerSecond }}>
-                {formatClock(t).slice(0, 5)}
-              </span>
-            ))}
+            {marks.map((m) =>
+              m.major ? (
+                <span key={`m-${m.t}`}>
+                  <span className={styles.rulerTickMajor} style={{ left: m.t * pxPerSecond }} />
+                  <span className={styles.mark} style={{ left: m.t * pxPerSecond }}>
+                    {formatClock(m.t).slice(0, 5)}
+                  </span>
+                </span>
+              ) : (
+                <span
+                  key={`t-${m.t}`}
+                  className={styles.rulerTick}
+                  style={{ left: m.t * pxPerSecond }}
+                />
+              ),
+            )}
           </div>
 
           {tracks.map((track) => {
@@ -643,11 +759,8 @@ export function TimelinePanel() {
                       : null;
                   const sourceInSec = ticksToSeconds(clip.sourceInTicks);
                   const sourceOutSec = ticksToSeconds(clip.sourceOutTicks);
-                  const showFilmstrip =
-                    clip.kind === "media" &&
-                    track.kind === "video" &&
-                    mediaUrl &&
-                    (asset?.kind === "video" || asset?.kind === "image");
+                  // Temporarily disabled — filmstrip seeks were contending with preview Play.
+                  const showFilmstrip = false;
                   const showWaveform =
                     clip.kind === "media" &&
                     track.kind === "audio" &&
@@ -672,17 +785,12 @@ export function TimelinePanel() {
                         onPointerDown={(e) => e.stopPropagation()}
                         onClick={(e) => {
                           e.stopPropagation();
-                          const cycle = [
-                            "none",
-                            "dissolve",
-                            "fade",
-                            "wipeLeft",
-                            "wipeRight",
-                          ] as const;
+                          const cycle = TRANSITION_DEFS.map((d) => d.type);
                           const idx = cycle.indexOf(
                             tin.type === "none" ? "none" : tin.type,
                           );
-                          const nextType = cycle[(idx + 1) % cycle.length];
+                          const nextType =
+                            cycle[(idx + 1 + cycle.length) % cycle.length] ?? "none";
                           commitProjectChange((p) =>
                             updateClipTransition(p, clip.id, {
                               type: nextType,
@@ -701,7 +809,9 @@ export function TimelinePanel() {
                           );
                         }}
                       >
-                        <span>{tin.type === "none" ? "+" : "◆"}</span>
+                        <span>
+                          {tin.type === "none" ? <PlusIcon size={11} /> : <DiamondIcon size={10} />}
+                        </span>
                       </button>
                     ) : null}
                     <div
@@ -726,7 +836,7 @@ export function TimelinePanel() {
                           ? selectedClipIds
                           : [clip.id];
                         setSelectedClipIds(ids);
-                        setClipMenu({ x: e.clientX, y: e.clientY });
+                        setClipMenu(placeCtxMenu(e.clientX, e.clientY));
                       }}
                       title={label}
                     >
@@ -750,6 +860,124 @@ export function TimelinePanel() {
                           heightPx={40}
                         />
                       ) : null}
+                      {selected && hasActiveRamp(clip.speedRamp) ? (
+                        <RampEditor
+                          clip={clip}
+                          widthPx={clipWidthPx}
+                          heightPx={42}
+                        />
+                      ) : null}
+                      {(() => {
+                        const canFade =
+                          clip.kind === "media" && asset?.kind !== "audio";
+                        if (!canFade) return null;
+                        const fx = normalizeClipEffects(clip.effects);
+                        const durSec = Math.max(
+                          0.05,
+                          ticksToSeconds(clipDurationTicks(clip)),
+                        );
+                        const fadeInPx = Math.min(
+                          clipWidthPx,
+                          fx.fadeInSec * pxPerSecond,
+                        );
+                        const fadeOutPx = Math.min(
+                          clipWidthPx,
+                          fx.fadeOutSec * pxPerSecond,
+                        );
+                        const beginFadeDrag = (
+                          e: ReactPointerEvent<HTMLSpanElement>,
+                          edge: "in" | "out",
+                        ) => {
+                          // Vegas-style: Ctrl/Cmd + drag top corner → black fade.
+                          if (!e.ctrlKey && !e.metaKey) return;
+                          e.stopPropagation();
+                          e.preventDefault();
+                          e.currentTarget.setPointerCapture(e.pointerId);
+                          const originX = e.clientX;
+                          const originIn = fx.fadeInSec;
+                          const originOut = fx.fadeOutSec;
+                          const before = useProjectStore.getState().project;
+                          useHistoryStore.getState().pushHistory(before);
+                          setStatusMessage(
+                            edge === "in"
+                              ? "Fade in (black) — drag right to lengthen"
+                              : "Fade out (black) — drag left to lengthen",
+                          );
+                          const onMove = (ev: PointerEvent) => {
+                            const deltaSec = (ev.clientX - originX) / pxPerSecond;
+                            const maxFade = Math.max(0, durSec - 0.05);
+                            if (edge === "in") {
+                              const fadeInSec = Math.min(
+                                maxFade,
+                                Math.max(0, originIn + deltaSec),
+                              );
+                              const next = updateClipEffects(before, clip.id, {
+                                fadeInSec,
+                                fadeOutSec: Math.min(originOut, maxFade - fadeInSec),
+                              });
+                              useProjectStore.getState().setProject(next, { dirty: true });
+                            } else {
+                              const fadeOutSec = Math.min(
+                                maxFade,
+                                Math.max(0, originOut - deltaSec),
+                              );
+                              const next = updateClipEffects(before, clip.id, {
+                                fadeOutSec,
+                                fadeInSec: Math.min(originIn, maxFade - fadeOutSec),
+                              });
+                              useProjectStore.getState().setProject(next, { dirty: true });
+                            }
+                          };
+                          const onUp = () => {
+                            window.removeEventListener("pointermove", onMove);
+                            window.removeEventListener("pointerup", onUp);
+                            const live = normalizeClipEffects(
+                              useProjectStore
+                                .getState()
+                                .project.clips.find((c) => c.id === clip.id)?.effects,
+                            );
+                            setStatusMessage(
+                              edge === "in"
+                                ? `Fade in ${live.fadeInSec.toFixed(2)}s`
+                                : `Fade out ${live.fadeOutSec.toFixed(2)}s`,
+                            );
+                          };
+                          window.addEventListener("pointermove", onMove);
+                          window.addEventListener("pointerup", onUp);
+                        };
+                        return (
+                          <>
+                            {fadeInPx > 1 ? (
+                              <div
+                                className={styles.fadeShadeIn}
+                                style={{ width: fadeInPx }}
+                                aria-hidden
+                              />
+                            ) : null}
+                            {fadeOutPx > 1 ? (
+                              <div
+                                className={styles.fadeShadeOut}
+                                style={{ width: fadeOutPx }}
+                                aria-hidden
+                              />
+                            ) : null}
+                            {selected ? (
+                              <>
+                                <span
+                                  className={`${styles.fadeHandle} ${styles.fadeHandleLeft}`}
+                                  title="Ctrl+drag: fade in (black)"
+                                  onPointerDown={(e) => beginFadeDrag(e, "in")}
+                                />
+                                <span
+                                  className={`${styles.fadeHandle} ${styles.fadeHandleRight}`}
+                                  title="Ctrl+drag: fade out (black)"
+                                  onPointerDown={(e) => beginFadeDrag(e, "out")}
+                                />
+                              </>
+                            ) : null}
+                          </>
+                        );
+                      })()}
                       {selected ? (
                         <>
                           <span
@@ -817,6 +1045,14 @@ export function TimelinePanel() {
                         </>
                       ) : null}
                       <span className={styles.clipLabel}>{label}</span>
+                      {clip.kind === "media" && Math.abs(clip.speed - 1) > 0.001 ? (
+                        <span
+                          className={styles.clipBadge}
+                          title={`Speed ${clip.speed.toFixed(2)}×`}
+                        >
+                          {clip.speed.toFixed(clip.speed % 1 === 0 ? 0 : 2)}×
+                        </span>
+                      ) : null}
                     </div>
                     </div>
                   );
@@ -840,8 +1076,9 @@ export function TimelinePanel() {
 
       {clipMenu ? (
         <div
+          ref={clipMenuRef}
           className={styles.ctxMenu}
-          style={{ left: clipMenu.x, top: clipMenu.y }}
+          style={{ left: clipMenu.x, top: clipMenu.y, visibility: "hidden" }}
           role="menu"
           onPointerDown={(e) => e.stopPropagation()}
         >
@@ -908,6 +1145,45 @@ export function TimelinePanel() {
             Split at playhead
           </button>
           <div className={styles.ctxSep} />
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const id = useEditorUiStore.getState().selectedClipIds[0];
+              if (!id) return;
+              try {
+                commitProjectChange((p) => moveClipLayer(p, id, "up"));
+                setStatusMessage("Moved layer up");
+              } catch (error) {
+                setStatusMessage(
+                  error instanceof Error ? error.message : "Cannot move layer",
+                );
+              }
+              setClipMenu(null);
+            }}
+          >
+            Move layer up
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const id = useEditorUiStore.getState().selectedClipIds[0];
+              if (!id) return;
+              try {
+                commitProjectChange((p) => moveClipLayer(p, id, "down"));
+                setStatusMessage("Moved layer down");
+              } catch (error) {
+                setStatusMessage(
+                  error instanceof Error ? error.message : "Cannot move layer",
+                );
+              }
+              setClipMenu(null);
+            }}
+          >
+            Move layer down
+          </button>
+          <div className={styles.ctxSep} />
           {[0.5, 2].map((speed) => (
             <button
               key={speed}
@@ -949,6 +1225,76 @@ export function TimelinePanel() {
               Speed {speed}× on In/Out
             </button>
           ))}
+          <div className={styles.ctxSep} />
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!rampTargetClip}
+            onClick={() => {
+              const id = useEditorUiStore.getState().selectedClipIds[0];
+              if (!id) return;
+              try {
+                let added = false;
+                commitProjectChange((p) => {
+                  const clip = p.clips.find((c) => c.id === id);
+                  const already = hasActiveRamp(clip?.speedRamp);
+                  // First time: 2 points centered on playhead. Otherwise clear.
+                  if (already) return setClipRamp(p, id, null);
+                  added = true;
+                  return enableSpeedRamp(
+                    p,
+                    id,
+                    useEditorUiStore.getState().playheadTicks,
+                    1,
+                    2,
+                  );
+                });
+                setStatusMessage(
+                  added
+                    ? "Speed ramp at playhead — drag points to move / change speed"
+                    : "Speed ramp removed",
+                );
+              } catch (error) {
+                setStatusMessage(
+                  error instanceof Error ? error.message : "Speed ramp failed",
+                );
+              }
+              setClipMenu(null);
+            }}
+          >
+            {hasActiveRamp(rampTargetClip?.speedRamp) ? "Remove speed ramp" : "Add speed ramp"}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!rampTargetClip || !hasActiveRamp(rampTargetClip.speedRamp)}
+            onClick={() => {
+              const id = useEditorUiStore.getState().selectedClipIds[0];
+              if (!id) return;
+              try {
+                commitProjectChange(
+                  (p) =>
+                    addRampPointAtPlayhead(
+                      p,
+                      id,
+                      useEditorUiStore.getState().playheadTicks,
+                      getRampProfile(
+                        useProjectStore.getState().project.clips.find((c) => c.id === id)
+                          ?.speedRamp,
+                      )?.speedAtProgress(0.5) ?? 1,
+                    ).project,
+                );
+                setStatusMessage("Ramp point added — drag vertically to change speed");
+              } catch (error) {
+                setStatusMessage(
+                  error instanceof Error ? error.message : "Add point failed",
+                );
+              }
+              setClipMenu(null);
+            }}
+          >
+            Add ramp point at playhead
+          </button>
           <button
             type="button"
             role="menuitem"
@@ -983,8 +1329,9 @@ export function TimelinePanel() {
 
       {trackMenu ? (
         <div
+          ref={trackMenuRef}
           className={styles.ctxMenu}
-          style={{ left: trackMenu.x, top: trackMenu.y }}
+          style={{ left: trackMenu.x, top: trackMenu.y, visibility: "hidden" }}
           role="menu"
           onPointerDown={(e) => e.stopPropagation()}
         >

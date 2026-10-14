@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { deleteClips } from "../../domain";
 import {
   actionAutosave,
@@ -16,6 +16,7 @@ import {
   pasteClipboardClips,
 } from "../../lib/clipClipboard";
 import { getAppInfo, isTauriRuntime } from "../../lib/tauri";
+import { requestPlay, togglePlay } from "../../lib/playback";
 import {
   nudgePlaybackRate,
   useEditorUiStore,
@@ -30,22 +31,99 @@ import { TimelinePanel } from "../timeline/TimelinePanel";
 import { PreviewPanel } from "../preview/PreviewPanel";
 import { InspectorPanel } from "../inspector/InspectorPanel";
 import { ExportPanel } from "../export/ExportPanel";
+import {
+  AudioIcon,
+  CanvasIcon,
+  ExportIcon,
+  MediaIcon,
+  PauseIcon,
+  PhotosIcon,
+  PlayIcon,
+  RedoIcon,
+  SlidersIcon,
+  SubtitlesIcon,
+  TextIcon,
+  UndoIcon,
+} from "../../components/icons";
 import styles from "./EditorShell.module.css";
 
-const RAIL_ITEMS: { id: EditorPanel; label: string; icon: string }[] = [
-  { id: "media", label: "Media", icon: "⬆" },
-  { id: "clip", label: "Clip", icon: "◆" },
-  { id: "canvas", label: "Canvas", icon: "▢" },
-  { id: "text", label: "Text", icon: "T" },
-  { id: "audio", label: "Audio", icon: "♪" },
-  { id: "photos", label: "Photos", icon: "▣" },
-  { id: "subtitles", label: "Subs", icon: "≡" },
+const RAIL_ITEMS: { id: EditorPanel; label: string; Icon: typeof MediaIcon }[] = [
+  { id: "media", label: "Media", Icon: MediaIcon },
+  { id: "clip", label: "Clip", Icon: SlidersIcon },
+  { id: "canvas", label: "Canvas", Icon: CanvasIcon },
+  { id: "text", label: "Text", Icon: TextIcon },
+  { id: "audio", label: "Audio", Icon: AudioIcon },
+  { id: "photos", label: "Photos", Icon: PhotosIcon },
+  { id: "subtitles", label: "Subs", Icon: SubtitlesIcon },
 ];
 
 function shortPath(path: string): string {
   const parts = path.split(/[/\\]/);
   return parts[parts.length - 1] || path;
 }
+
+/* ---------------------------------------------------------------- menu primitives */
+
+interface MenuItem {
+  label: string;
+  shortcut?: string;
+  onSelect: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+  separatorBefore?: boolean;
+}
+
+function MenuDropdown({
+  label,
+  items,
+  open,
+  onToggle,
+  onClose,
+}: {
+  label: string;
+  items: MenuItem[];
+  open: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className={styles.menuRoot}>
+      <button
+        type="button"
+        className={open ? styles.menuTriggerOpen : styles.menuTrigger}
+        onClick={onToggle}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        {label}
+      </button>
+      {open ? (
+        <div className={styles.menuPanel} role="menu">
+          {items.map((item) => (
+            <div key={item.label}>
+              {item.separatorBefore ? <div className={styles.menuSep} /> : null}
+              <button
+                type="button"
+                role="menuitem"
+                className={item.danger ? styles.menuItemDanger : styles.menuItem}
+                disabled={item.disabled}
+                onClick={() => {
+                  item.onSelect();
+                  onClose();
+                }}
+              >
+                <span>{item.label}</span>
+                {item.shortcut ? <kbd className={styles.menuKbd}>{item.shortcut}</kbd> : null}
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- shell */
 
 export function EditorShell() {
   const project = useProjectStore((s) => s.project);
@@ -64,6 +142,8 @@ export function EditorShell() {
   const isPlaying = useEditorUiStore((s) => s.isPlaying);
   const setPlaying = useEditorUiStore((s) => s.setPlaying);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
+  const snapEnabled = useEditorUiStore((s) => s.snapEnabled);
+  const setSnapEnabled = useEditorUiStore((s) => s.setSnapEnabled);
   const undo = useHistoryStore((s) => s.undo);
   const redo = useHistoryStore((s) => s.redo);
   const clearHistory = useHistoryStore((s) => s.clear);
@@ -73,9 +153,30 @@ export function EditorShell() {
   const rememberRecent = useRecentProjectsStore((s) => s.remember);
   const hydrateSettings = useSettingsStore((s) => s.hydrate);
 
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [appInfo, setAppInfo] = useState<{ name: string; version: string } | null>(null);
+  const menuBarRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     document.documentElement.style.setProperty("--timeline-h", `${timelineHeightPx}px`);
   }, [timelineHeightPx]);
+
+  useEffect(() => {
+    if (!openMenu) return;
+    const close = (e: PointerEvent) => {
+      if (menuBarRef.current?.contains(e.target as Node)) return;
+      setOpenMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpenMenu(null);
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [openMenu]);
 
   const loadOpened = useCallback(
     async (opened: { project: typeof project; path: string | null }) => {
@@ -156,6 +257,14 @@ export function EditorShell() {
     setStatusMessage,
   ]);
 
+  const handleNew = useCallback(() => {
+    newProject();
+    clearHistory();
+    setSelectedClipIds([]);
+    setPlaying(false);
+    setStatusMessage("New project");
+  }, [clearHistory, newProject, setPlaying, setSelectedClipIds, setStatusMessage]);
+
   useEffect(() => {
     hydrateSettings();
   }, [hydrateSettings]);
@@ -167,6 +276,7 @@ export function EditorShell() {
         if (isTauriRuntime()) {
           const info = await getAppInfo();
           if (!cancelled) {
+            setAppInfo({ name: info.name, version: info.version });
             setStatusMessage(`${info.name} v${info.version} · offline`);
           }
           const recovered = await actionRecoverAutosave();
@@ -252,7 +362,7 @@ export function EditorShell() {
 
       if (event.key === " " || event.code === "Space") {
         event.preventDefault();
-        setPlaying(!useEditorUiStore.getState().isPlaying);
+        togglePlay();
         return;
       }
 
@@ -262,18 +372,12 @@ export function EditorShell() {
         event.preventDefault();
         const ui = useEditorUiStore.getState();
         if (key === "k") {
-          if (ui.isPlaying) {
-            ui.setPlaying(false);
-          } else {
-            if (Math.abs(ui.playbackRate) < 0.01) ui.setPlaybackRate(1);
-            else if (ui.playbackRate < 0) ui.setPlaybackRate(Math.abs(ui.playbackRate));
-            ui.setPlaying(true);
-          }
+          togglePlay();
           return;
         }
         const next = nudgePlaybackRate(ui.playbackRate, key === "l" ? 1 : -1);
         ui.setPlaybackRate(next);
-        ui.setPlaying(true);
+        requestPlay();
         ui.setStatusMessage(
           next === 1
             ? "Play 1×"
@@ -295,138 +399,170 @@ export function EditorShell() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleOpen, handleSave, redo, setPlaying, setSelectedClipIds, setStatusMessage, undo]);
+  }, [handleOpen, handleSave, redo, setSelectedClipIds, setStatusMessage, undo]);
+
+  const fileMenu: MenuItem[] = [
+    { label: "New project", shortcut: "Ctrl+N", onSelect: handleNew },
+    { label: "Open…", shortcut: "Ctrl+O", onSelect: () => void handleOpen() },
+    { label: "Save", shortcut: "Ctrl+S", onSelect: () => void handleSave() },
+    ...(recent.length > 0 && isTauriRuntime()
+      ? [
+          {
+            label: `Open recent · ${recent[0]!.name || shortPath(recent[0]!.path)}`,
+            onSelect: () => void handleOpenRecent(recent[0]!.path),
+            separatorBefore: true,
+          },
+        ]
+      : []),
+    { label: "Export…", onSelect: () => setActivePanel("export"), separatorBefore: true },
+  ];
+
+  const editMenu: MenuItem[] = [
+    { label: "Undo", shortcut: "Ctrl+Z", onSelect: undo, disabled: pastCount === 0 },
+    { label: "Redo", shortcut: "Ctrl+Y", onSelect: redo, disabled: futureCount === 0 },
+    { label: "Cut", shortcut: "Ctrl+X", onSelect: cutSelectedClips, separatorBefore: true },
+    { label: "Copy", shortcut: "Ctrl+C", onSelect: copySelectedClips },
+    { label: "Paste", shortcut: "Ctrl+V", onSelect: pasteClipboardClips },
+    { label: "Duplicate", shortcut: "Ctrl+D", onSelect: duplicateSelectedClips },
+    {
+      label: "Delete",
+      shortcut: "Del",
+      danger: true,
+      separatorBefore: true,
+      onSelect: () => {
+        const ids = useEditorUiStore.getState().selectedClipIds;
+        if (ids.length === 0) return;
+        commitProjectChange((p) => deleteClips(p, ids));
+        setSelectedClipIds([]);
+        setStatusMessage("Deleted selected clip(s)");
+      },
+    },
+  ];
+
+  const viewMenu: MenuItem[] = [
+    {
+      label: snapEnabled ? "Snapping: on" : "Snapping: off",
+      onSelect: () => setSnapEnabled(!snapEnabled),
+    },
+    {
+      label: tool === "select" ? "Tool: Select" : "Tool: Hand",
+      onSelect: () => setTool(tool === "select" ? "hand" : "select"),
+    },
+    {
+      label: "Reset timeline zoom",
+      separatorBefore: true,
+      onSelect: () => useEditorUiStore.getState().setTimelineZoom(1),
+    },
+  ];
+
+  const helpMenu: MenuItem[] = [
+    {
+      label: appInfo ? `About ${appInfo.name} v${appInfo.version}` : "About Cutline",
+      onSelect: () =>
+        setStatusMessage(
+          appInfo
+            ? `${appInfo.name} v${appInfo.version} — local, offline desktop editor`
+            : "Cutline — local, offline desktop editor",
+        ),
+    },
+  ];
 
   return (
     <div className={styles.shell}>
       <header className={styles.topbar}>
         <div className={styles.topLeft}>
-          <button
-            type="button"
-            className={styles.brandBtn}
-            onClick={() => {
-              newProject();
-              clearHistory();
-              setSelectedClipIds([]);
-              setPlaying(false);
-              setStatusMessage("New project");
-            }}
-            title="New project"
-          >
-            <span className={styles.brandMark}>▶</span>
-          </button>
+          <div className={styles.brand}>
+            <span className={styles.brandMark} aria-hidden>
+              <svg viewBox="0 0 16 16" width="14" height="14">
+                <path d="M4 2.6v10.8l9-5.4-9-5.4Z" fill="currentColor" />
+              </svg>
+            </span>
+            <span className={styles.brandName}>Cutline</span>
+          </div>
           <div className={styles.projectMeta}>
             <input
               className={styles.projectTitle}
               value={project.name}
-              onChange={(e) =>
-                setProject({
-                  ...project,
-                  name: e.target.value,
-                })
-              }
+              onChange={(e) => setProject({ ...project, name: e.target.value })}
               aria-label="Project name"
             />
-            <span className={styles.dirty}>{dirty ? "Unsaved" : "Saved"}</span>
+            <span className={styles.dirty}>
+              <span className={dirty ? styles.dotDirty : styles.dotClean} aria-hidden />
+              {dirty ? "Unsaved" : "Saved"}
+            </span>
           </div>
         </div>
 
-        <div className={styles.topCenter}>
-          <div className={styles.toolGroup}>
+        <nav className={styles.menubar} ref={menuBarRef}>
+          <MenuDropdown
+            label="File"
+            items={fileMenu}
+            open={openMenu === "file"}
+            onToggle={() => setOpenMenu(openMenu === "file" ? null : "file")}
+            onClose={() => setOpenMenu(null)}
+          />
+          <MenuDropdown
+            label="Edit"
+            items={editMenu}
+            open={openMenu === "edit"}
+            onToggle={() => setOpenMenu(openMenu === "edit" ? null : "edit")}
+            onClose={() => setOpenMenu(null)}
+          />
+          <MenuDropdown
+            label="View"
+            items={viewMenu}
+            open={openMenu === "view"}
+            onToggle={() => setOpenMenu(openMenu === "view" ? null : "view")}
+            onClose={() => setOpenMenu(null)}
+          />
+          <MenuDropdown
+            label="Help"
+            items={helpMenu}
+            open={openMenu === "help"}
+            onToggle={() => setOpenMenu(openMenu === "help" ? null : "help")}
+            onClose={() => setOpenMenu(null)}
+          />
+        </nav>
+
+        <div className={styles.topRight}>
+          <div className={styles.historyGroup}>
             <button
               type="button"
-              className={tool === "select" ? styles.toolActive : styles.tool}
-              onClick={() => setTool("select")}
-              title="Select"
-            >
-              ↖
-            </button>
-            <button
-              type="button"
-              className={tool === "hand" ? styles.toolActive : styles.tool}
-              onClick={() => setTool("hand")}
-              title="Hand"
-            >
-              ✋
-            </button>
-          </div>
-          <div className={styles.toolGroup}>
-            <button
-              type="button"
-              className={styles.tool}
-              onClick={() => void handleOpen()}
-              title="Open (Ctrl+O)"
-            >
-              Open
-            </button>
-            <button
-              type="button"
-              className={styles.tool}
-              onClick={() => void handleSave()}
-              title="Save (Ctrl+S)"
-            >
-              Save
-            </button>
-            {recent.length > 0 && isTauriRuntime() && (
-              <label className={styles.recentWrap} title="Recent projects">
-                <span className={styles.recentLabel}>Recent</span>
-                <select
-                  className={styles.recentSelect}
-                  value=""
-                  onChange={(e) => {
-                    const path = e.target.value;
-                    if (path) void handleOpenRecent(path);
-                  }}
-                >
-                  <option value="" disabled>
-                    Open recent…
-                  </option>
-                  {recent.map((entry) => (
-                    <option key={entry.path} value={entry.path}>
-                      {entry.name || shortPath(entry.path)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-          </div>
-          <div className={styles.toolGroup}>
-            <button
-              type="button"
-              className={styles.tool}
+              className={styles.iconBtn}
               onClick={() => undo()}
               disabled={pastCount === 0}
               title="Undo (Ctrl+Z)"
+              aria-label="Undo"
             >
-              ↶
+              <UndoIcon />
             </button>
             <button
               type="button"
-              className={styles.tool}
+              className={styles.iconBtn}
               onClick={() => redo()}
               disabled={futureCount === 0}
               title="Redo (Ctrl+Y)"
+              aria-label="Redo"
             >
-              ↷
-            </button>
-            <button
-              type="button"
-              className={isPlaying ? styles.toolActive : styles.tool}
-              onClick={() => setPlaying(!isPlaying)}
-              title="Play / Pause (Space)"
-            >
-              {isPlaying ? "❚❚" : "▶"}
+              <RedoIcon />
             </button>
           </div>
-        </div>
-
-        <div className={styles.topRight}>
+          <button
+            type="button"
+            className={isPlaying ? styles.playToggleActive : styles.playToggle}
+            onClick={() => togglePlay()}
+            title="Play / Pause (Space)"
+            aria-label="Play or pause"
+          >
+            {isPlaying ? <PauseIcon size={15} /> : <PlayIcon size={15} />}
+          </button>
           <button
             type="button"
             className={styles.exportBtn}
             onClick={() => setActivePanel("export")}
-            title="Export"
+            title="Export (MP4)"
           >
+            <ExportIcon size={14} />
             Export
           </button>
         </div>
@@ -434,19 +570,23 @@ export function EditorShell() {
 
       <div className={styles.body}>
         <nav className={styles.rail} aria-label="Library">
-          {RAIL_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={
-                activePanel === item.id ? styles.railItemActive : styles.railItem
-              }
-              onClick={() => setActivePanel(item.id)}
-            >
-              <span className={styles.railIcon}>{item.icon}</span>
-              <span>{item.label}</span>
-            </button>
-          ))}
+          {RAIL_ITEMS.map((item) => {
+            const Icon = item.Icon;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className={activePanel === item.id ? styles.railItemActive : styles.railItem}
+                onClick={() => setActivePanel(item.id)}
+                title={item.label}
+              >
+                <span className={styles.railIcon}>
+                  <Icon size={18} />
+                </span>
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
         </nav>
 
         <aside className={styles.side}>
@@ -496,6 +636,25 @@ export function EditorShell() {
       <section className={styles.timeline}>
         <TimelinePanel />
       </section>
+
+      <StatusBar />
     </div>
+  );
+}
+
+function StatusBar() {
+  const statusMessage = useEditorUiStore((s) => s.statusMessage);
+  const fps = useProjectStore((s) => s.project.canvas.frameRate);
+  const zoom = useEditorUiStore((s) => s.timelineZoom);
+  return (
+    <footer className={styles.statusBar}>
+      <span className={styles.statusDot} aria-hidden />
+      <span className={styles.statusText}>{statusMessage}</span>
+      <span className={styles.statusRight}>
+        <span>{fps > 0 ? `${fps} fps` : "— fps"}</span>
+        <span>·</span>
+        <span>{zoom.toFixed(1)}× zoom</span>
+      </span>
+    </footer>
   );
 }

@@ -1,31 +1,95 @@
+/* =========================================================================
+   Cutline — design tokens
+   Neutral dark UI, single blue accent, 4px spacing scale, layered elevation.
+   ========================================================================= */
+
 :root {
   color-scheme: dark;
-  --bg-app: #111114;
-  --bg-panel: #1b1b1f;
-  --bg-elevated: #25252b;
-  --bg-rail: #16161a;
-  --bg-track: #141418;
-  --bg-canvas: #0c0c0e;
-  --border: #2a2a30;
-  --border-strong: #3a3a42;
-  --text: #f2f2f4;
-  --text-muted: #8b8b96;
-  --accent: #00baff;
-  --accent-strong: #0099d6;
-  --accent-soft: rgba(0, 186, 255, 0.16);
+
+  /* Surfaces (darkest → lightest) */
+  --bg-app: #0d0d10;
+  --bg-panel: #141418;
+  --bg-elevated: #1c1c22;
+  --bg-hover: #23232a;
+  --bg-rail: #101014;
+  --bg-track: #101014;
+  --bg-canvas: #08080a;
+  --bg-stage: #000;
+
+  /* Lines */
+  --border: #24242b;
+  --border-strong: #33333c;
+  --border-focus: #4a4a55;
+
+  /* Text */
+  --text: #ececf1;
+  --text-strong: #ffffff;
+  --text-muted: #86868f;
+  --text-dim: #5f5f68;
+
+  /* Accent (single brand hue) */
+  --accent: #3ea6ff;
+  --accent-strong: #1f8bf0;
+  --accent-soft: rgba(62, 166, 255, 0.14);
+  --accent-line: rgba(62, 166, 255, 0.55);
+  --accent-contrast: #04121f;
+
+  /* Semantic */
   --danger: #ff5c6c;
-  --track-text: #9b6dff;
-  --track-video: #3d4454;
-  --track-audio: #2f9e6b;
-  --track-sub: #4a8fd4;
-  --radius: 8px;
+  --danger-soft: rgba(255, 92, 108, 0.14);
+  --warn: #f0b429;
+  --ok: #34c77b;
+
+  /* Track hues */
+  --track-video: #3f8cff;
+  --track-video-bg: linear-gradient(180deg, #1f4a68 0%, #173750 100%);
+  --track-audio: #34c77b;
+  --track-audio-bg: linear-gradient(180deg, #1f6b48 0%, #164f37 100%);
+  --track-text: #a07bff;
+  --track-text-bg: linear-gradient(90deg, #5b3fd6, #8a63ff);
+
+  /* Radius */
+  --radius-xs: 4px;
   --radius-sm: 6px;
-  --font-ui: "Manrope Variable", Manrope, sans-serif;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* Spacing scale (4px base) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 6px 16px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --focus-ring: 0 0 0 2px rgba(62, 166, 255, 0.45);
+
+  /* Type */
+  --font-ui: "Manrope Variable", Manrope, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
-  --toolbar-h: 52px;
-  --rail-w: 72px;
-  --side-w: 300px;
-  --timeline-h: 248px;
+  --fs-xs: 10px;
+  --fs-sm: 11px;
+  --fs-base: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+
+  /* Layout */
+  --toolbar-h: 46px;
+  --menubar-h: 30px;
+  --rail-w: 68px;
+  --side-w: 304px;
+  --timeline-h: 260px;
+  --statusbar-h: 26px;
+
+  /* Motion */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 110ms;
+  --dur: 180ms;
 }
 
 *,
@@ -46,9 +110,17 @@ body,
   background: var(--bg-app);
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
 }
 
 button,
@@ -64,11 +136,24 @@ button {
   border: none;
   background: transparent;
   padding: 0;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
 }
 
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.45;
+  opacity: 0.4;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 input,
@@ -79,10 +164,52 @@ select {
   border-radius: var(--radius-sm);
   padding: 6px 8px;
   outline: none;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+input:hover,
+textarea:hover,
+select:hover {
+  border-color: var(--border-strong);
 }
 
 input:focus,
 textarea:focus,
 select:focus {
   border-color: var(--accent);
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+/* Slim, unobtrusive scrollbars that match the chrome. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-pill);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--border-focus);
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
