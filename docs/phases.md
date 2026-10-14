@@ -20,7 +20,7 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 
 ---
 
-## Phase 1 — Project & media foundation (in progress / Milestone 1)
+## Phase 1 — Project & media foundation (Milestone 1)
 
 **Goal:** Local projects and media bin work across restarts.
 
@@ -28,49 +28,53 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Project save/open/validate + autosave paths (Rust)
 - [x] Native dialogs for open/save/import (Tauri plugin)
 - [x] Import → probe → media bin; missing-media flag
-- [ ] Thumbnail generation + disk cache
-- [ ] Relink UX (confirm before swap)
+- [x] Browser import + image/video thumbnails (object URL / convertFileSrc)
+- [x] Relink UX (confirm before swap, desktop)
 - [ ] Verify end-to-end on `pnpm tauri:dev` (needs MSVC)
+- [ ] Disk thumbnail cache via FFmpeg (optional upgrade)
 
 **Exit:** Create → import → save → reopen; originals untouched; missing media flagged.
 
 ---
 
-## Phase 2 — Timeline editing (Milestone 2)
+## Phase 2 — Timeline editing (mostly done / Milestone 2)
 
 **Goal:** Non-destructive multi-track editing with undo/redo.
 
-- Track/clip commands (add/remove/move/trim/split/delete)
-- Timeline UI: selection, playhead, zoom, scroll, snap
-- History stack; keyboard basics for undo/redo
-- Unit tests for invariants and edge cases
+- [x] Track/clip commands (add/remove/move/trim/split/delete)
+- [x] Timeline UI: selection, playhead, zoom, scroll
+- [x] Drag media to timeline; add at playhead
+- [x] History stack; Ctrl+Z / Ctrl+Y
+- [x] Unit tests for invariants and edge cases
+- [ ] Snap-to-edges polish
+- [ ] Trim handles in UI (domain trim exists)
 
 **Exit:** Edit operations preserve model; UI responsive with representative clip count.
 
 ---
 
-## Phase 3 — Preview (Milestone 3)
+## Phase 3 — Preview (in progress / Milestone 3)
 
 **Goal:** Play/pause/seek across the timeline with documented limits.
 
-- Playback clock tied to ticks
-- Active-clip / simple compositing strategy
-- Audio mix strategy (even if limited)
-- Proxy/cache only if profiling requires it
-- Document preview vs export fidelity (`docs/preview-backend.md`)
+- [x] Playback clock tied to ticks
+- [x] Active-clip video/image preview (single top video track)
+- [ ] Audio playback/mixing
+- [ ] Multi-track compositing / proxy cache
+- [x] Document preview limits in UI copy
 
 **Exit:** Seek/playback across clip boundaries for MVP track types.
 
 ---
 
-## Phase 4 — Export (Milestone 4)
+## Phase 4 — Export (in progress / Milestone 4)
 
 **Goal:** Deterministic MP4 export via FFmpeg from Rust.
 
-- Render-plan generator from project snapshot
-- Explicit argv/filter graph; progress + cancel + temp finalize
-- Export dialog presets (source/720p/1080p)
-- ffprobe output validation; structured errors
+- [x] Render-plan generator (TypeScript)
+- [ ] FFmpeg rendering integration through Rust
+- [ ] Export dialog progress, failure diagnostics, cancellation
+- [ ] Output validation with ffprobe
 
 **Exit:** Multi-clip project → valid MP4; cancel leaves no corrupt final; semantics match docs.
 
