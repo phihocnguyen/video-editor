@@ -3,6 +3,7 @@ import { clipDurationTicks, ticksToSeconds } from "../../domain";
 import { resolveMediaUrl } from "../../lib/mediaUrl";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { useTimelineAudio } from "./useTimelineAudio";
 import styles from "./PreviewPanel.module.css";
 
 function formatClock(seconds: number): string {
@@ -63,6 +64,15 @@ export function PreviewPanel() {
     );
   }, [clips, playheadTicks]);
 
+  useTimelineAudio({
+    clips,
+    tracks,
+    assets,
+    playheadTicks,
+    isPlaying,
+    isScrubbing,
+  });
+
   useEffect(() => {
     setMediaReady(false);
   }, [mediaKey]);
@@ -91,6 +101,14 @@ export function PreviewPanel() {
     const video = videoRef.current;
     if (!video || !active || active.asset.kind !== "video") return;
 
+    const track = tracks.find((t) => t.id === active.clip.trackId);
+    const muted = Boolean(track?.muted) || !active.asset.hasAudio;
+    video.muted = muted;
+    video.volume = Math.min(
+      1,
+      Math.max(0, active.clip.volume * (track?.volume ?? 1)),
+    );
+
     const localSec =
       ticksToSeconds(playheadTicks - active.clip.startTicks) +
       ticksToSeconds(active.clip.sourceInTicks);
@@ -115,7 +133,7 @@ export function PreviewPanel() {
     } catch {
       /* ignore seek before ready */
     }
-  }, [active, isPlaying, isScrubbing, playheadTicks]);
+  }, [active, isPlaying, isScrubbing, playheadTicks, tracks]);
 
   return (
     <div className={styles.panel}>
