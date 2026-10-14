@@ -22,6 +22,7 @@ import {
   type RenderQualityPreset,
   type RenderResolutionPreset,
 } from "../src/domain/renderPlan.ts";
+import { ffmpegMissingMessage, resolveFfmpegPath } from "./resolve-ffmpeg.ts";
 
 const PORT = Number(process.env.CUTLINE_EXPORT_PORT ?? 1421);
 const ROOT = resolve(process.cwd(), ".cutline-cache");
@@ -89,12 +90,22 @@ function parseMultipart(
 
 function runFfmpeg(program: string, args: string[]): Promise<void> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(program, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(program, args, {
+      stdio: ["ignore", "ignore", "pipe"],
+      windowsHide: true,
+    });
     let err = "";
     child.stderr?.on("data", (d) => {
       err += String(d);
     });
-    child.on("error", (e) => reject(e));
+    child.on("error", (e) => {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        reject(new Error(ffmpegMissingMessage(program)));
+        return;
+      }
+      reject(e);
+    });
     child.on("close", (code) => {
       if (code === 0) resolvePromise();
       else reject(new Error(err.slice(-800) || `ffmpeg exit ${code}`));
@@ -173,10 +184,11 @@ async function handleExport(req: IncomingMessage, res: ServerResponse) {
 
   void (async () => {
     try {
+      const ffmpeg = resolveFfmpegPath();
       const built = buildFfmpegArgs(plan, outputPath, { fileExists: existsSync });
-      job.message = "Rendering…";
+      job.message = `Rendering with ${ffmpeg}…`;
       job.progress = 0.2;
-      await runFfmpeg(built.program, built.args);
+      await runFfmpeg(ffmpeg, built.args);
       try {
         renameSync(built.tempOutput, outputPath);
       } catch {
@@ -206,7 +218,15 @@ const server = createServer(async (req, res) => {
 
   try {
     if (req.method === "GET" && url.pathname === "/api/health") {
-      sendJson(res, 200, { ok: true, media: MEDIA, exports: EXPORTS });
+      const ffmpeg = resolveFfmpegPath();
+      const ffmpegFound = ffmpeg !== "ffmpeg" && existsSync(ffmpeg);
+      sendJson(res, 200, {
+        ok: true,
+        media: MEDIA,
+        exports: EXPORTS,
+        ffmpeg,
+        ffmpegFound,
+      });
       return;
     }
     if (req.method === "POST" && url.pathname === "/api/import") {
@@ -259,7 +279,14 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
+  const ffmpeg = resolveFfmpegPath();
+  const found = ffmpeg !== "ffmpeg" && existsSync(ffmpeg);
   console.log(`[cutline-export] http://127.0.0.1:${PORT}`);
   console.log(`[cutline-export] media cache: ${MEDIA}`);
   console.log(`[cutline-export] exports: ${EXPORTS}`);
+  console.log(
+    found
+      ? `[cutline-export] ffmpeg: ${ffmpeg}`
+      : `[cutline-export] WARNING: ffmpeg not found — put tools/ffmpeg/bin/ffmpeg.exe or set FFMPEG_PATH`,
+  );
 });

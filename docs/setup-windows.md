@@ -2,15 +2,16 @@
 
 ## Render without building the desktop app
 
-Only **FFmpeg on PATH** is required.
+Needs **FFmpeg**. Prefer the portable copy at `tools/ffmpeg/bin/ffmpeg.exe` (already set up if present), or put FFmpeg on `PATH` / set `FFMPEG_PATH`.
 
 ### Export button in the UI (recommended)
 
 ```powershell
-ffmpeg -version
 pnpm install
 pnpm dev
 ```
+
+Restart `pnpm dev` after installing FFmpeg. Export panel should show `Helper: online · FFmpeg ok`.
 
 `pnpm dev` starts Vite **and** a local export helper on `http://127.0.0.1:1421`.
 

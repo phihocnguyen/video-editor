@@ -3,12 +3,28 @@ import type { ExportJobStatus } from "./tauri";
 
 const BASE = "http://127.0.0.1:1421";
 
-export async function localExportHealth(): Promise<boolean> {
+export interface LocalExportHealth {
+  ok: boolean;
+  ffmpegFound: boolean;
+  ffmpeg: string | null;
+}
+
+export async function localExportHealth(): Promise<LocalExportHealth> {
   try {
     const res = await fetch(`${BASE}/api/health`);
-    return res.ok;
+    if (!res.ok) return { ok: false, ffmpegFound: false, ffmpeg: null };
+    const data = (await res.json()) as {
+      ok?: boolean;
+      ffmpegFound?: boolean;
+      ffmpeg?: string;
+    };
+    return {
+      ok: Boolean(data.ok),
+      ffmpegFound: Boolean(data.ffmpegFound),
+      ffmpeg: data.ffmpeg ?? null,
+    };
   } catch {
-    return false;
+    return { ok: false, ffmpegFound: false, ffmpeg: null };
   }
 }
 

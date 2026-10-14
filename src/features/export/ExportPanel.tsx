@@ -32,6 +32,7 @@ export function ExportPanel() {
   );
   const [busy, setBusy] = useState(false);
   const [helperOnline, setHelperOnline] = useState(false);
+  const [ffmpegFound, setFfmpegFound] = useState(false);
   const plan = useMemo(
     () => buildRenderPlan(project, preset, quality),
     [preset, project, quality],
@@ -45,8 +46,11 @@ export function ExportPanel() {
   useEffect(() => {
     let cancelled = false;
     const ping = () => {
-      void localExportHealth().then((ok) => {
-        if (!cancelled) setHelperOnline(ok);
+      void localExportHealth().then((health) => {
+        if (!cancelled) {
+          setHelperOnline(health.ok);
+          setFfmpegFound(health.ffmpegFound);
+        }
       });
     };
     ping();
@@ -105,8 +109,15 @@ export function ExportPanel() {
         return;
       }
 
-      if (!(await localExportHealth())) {
+      const health = await localExportHealth();
+      if (!health.ok) {
         setStatusMessage("Export helper offline — run `pnpm dev` (Vite + export server)");
+        return;
+      }
+      if (!health.ffmpegFound) {
+        setStatusMessage(
+          "FFmpeg missing — place tools/ffmpeg/bin/ffmpeg.exe or set FFMPEG_PATH, then restart pnpm dev",
+        );
         return;
       }
       const started = await localStartExport(project, preset, quality);
@@ -137,7 +148,7 @@ export function ExportPanel() {
     !busy &&
     !blocked &&
     job?.state !== "running" &&
-    (isTauriRuntime() || helperOnline);
+    (isTauriRuntime() || (helperOnline && ffmpegFound));
 
   return (
     <div className={styles.panel}>
@@ -151,8 +162,13 @@ export function ExportPanel() {
       </p>
 
       {!isTauriRuntime() ? (
-        <p className={helperOnline ? styles.ok : styles.warn}>
-          Helper: {helperOnline ? "online · http://127.0.0.1:1421" : "offline"}
+        <p className={helperOnline && ffmpegFound ? styles.ok : styles.warn}>
+          Helper: {helperOnline ? "online" : "offline"}
+          {helperOnline
+            ? ffmpegFound
+              ? " · FFmpeg ok"
+              : " · FFmpeg missing (tools/ffmpeg/bin)"
+            : " — run pnpm dev"}
         </p>
       ) : null}
 

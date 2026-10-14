@@ -211,7 +211,7 @@ async function pickBrowserMediaFiles(): Promise<MediaAsset[]> {
         return;
       }
       try {
-        const helperUp = await localExportHealth();
+        const helper = await localExportHealth();
         const assets: MediaAsset[] = [];
         for (const file of files) {
           const id = crypto.randomUUID();
@@ -237,7 +237,7 @@ async function pickBrowserMediaFiles(): Promise<MediaAsset[]> {
             durationTicks = 5_000_000;
           }
           let path = url;
-          if (helperUp) {
+          if (helper.ok) {
             try {
               const cached = await localImportFile(file);
               path = cached.path;

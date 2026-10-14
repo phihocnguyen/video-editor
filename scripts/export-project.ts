@@ -21,6 +21,7 @@ import type {
   RenderQualityPreset,
   RenderResolutionPreset,
 } from "../src/domain/renderPlan.ts";
+import { ffmpegMissingMessage, resolveFfmpegPath } from "./resolve-ffmpeg.ts";
 
 function usage(): never {
   console.error(`Usage:
@@ -66,11 +67,17 @@ function parseArgs(argv: string[]) {
 
 function runFfmpeg(program: string, args: string[]): Promise<void> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(program, args, { stdio: ["ignore", "inherit", "inherit"] });
+    const child = spawn(program, args, {
+      stdio: ["ignore", "inherit", "inherit"],
+      windowsHide: true,
+    });
     child.on("error", (err) => {
+      const code = (err as NodeJS.ErrnoException).code;
       reject(
         new Error(
-          `Failed to start ${program} (${err.message}). Install FFmpeg and add it to PATH.`,
+          code === "ENOENT"
+            ? ffmpegMissingMessage(program)
+            : `Failed to start ${program} (${err.message})`,
         ),
       );
     });
@@ -97,20 +104,25 @@ async function main() {
     throw new Error("Project has no clips/text to export");
   }
 
+  const ffmpeg = resolveFfmpegPath();
+  if (ffmpeg === "ffmpeg" || !existsSync(ffmpeg)) {
+    throw new Error(ffmpegMissingMessage(ffmpeg));
+  }
   const built = buildFfmpegArgs(plan, outputPath, { fileExists: existsSync });
   console.log(
     `Export ${plan.width}x${plan.height} @ ${plan.frameRate}fps · ${plan.durationSec.toFixed(2)}s · ${plan.clips.length} media · ${plan.texts.length} text`,
   );
+  console.log(`FFmpeg: ${ffmpeg}`);
 
   if (dryRun) {
     console.log(
-      built.program,
+      ffmpeg,
       built.args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" "),
     );
     return;
   }
 
-  await runFfmpeg(built.program, built.args);
+  await runFfmpeg(ffmpeg, built.args);
 
   try {
     renameSync(built.tempOutput, outputPath);
