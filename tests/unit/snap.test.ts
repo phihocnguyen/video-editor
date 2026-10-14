@@ -20,6 +20,12 @@ describe("snapTicks", () => {
     project = addMediaClip(project, "a1", { startTicks: 2_000_000 });
     expect(snapTicks(2_100_000, project.clips, { thresholdTicks: 200_000 })).toBe(2_000_000);
     expect(snapTicks(6_900_000, project.clips, { thresholdTicks: 200_000 })).toBe(7_000_000);
+    expect(
+      snapTicks(3_050_000, project.clips, {
+        thresholdTicks: 200_000,
+        extraTargets: [3_000_000],
+      }),
+    ).toBe(3_000_000);
   });
 
   it("computes project duration from clips", () => {

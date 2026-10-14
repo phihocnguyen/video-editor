@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   addMediaClip,
+  addTrack,
+  clipDurationTicks,
   deleteClips,
   moveClip,
+  removeTrack,
   splitClipAt,
   trimClip,
+  updateClipSpeed,
+  updateTrack,
 } from "../../src/domain/timelineCommands";
 import { createEmptyProject, type MediaAsset } from "../../src/domain";
 
@@ -71,5 +76,32 @@ describe("timelineCommands", () => {
     const clipId = project.clips[0].id;
     const same = splitClipAt(project, clipId, 0);
     expect(same.clips).toHaveLength(1);
+  });
+
+  it("adds and removes tracks with safeguards", () => {
+    let project = createEmptyProject();
+    expect(project.tracks).toHaveLength(2);
+    project = addTrack(project, "video");
+    expect(project.tracks.filter((t) => t.kind === "video")).toHaveLength(2);
+    const videoId = project.tracks.find((t) => t.name === "V2")!.id;
+    project = removeTrack(project, videoId);
+    expect(project.tracks.filter((t) => t.kind === "video")).toHaveLength(1);
+    const lastVideo = project.tracks.find((t) => t.kind === "video")!;
+    expect(() => removeTrack(project, lastVideo.id)).toThrow(/last video/);
+  });
+
+  it("updates track flags and clip speed duration", () => {
+    let project = addMediaClip(withAsset(), "asset-1");
+    const trackId = project.clips[0].trackId;
+    project = updateTrack(project, trackId, { muted: true, locked: true });
+    expect(project.tracks.find((t) => t.id === trackId)?.muted).toBe(true);
+    expect(project.tracks.find((t) => t.id === trackId)?.locked).toBe(true);
+
+    project = updateTrack(project, trackId, { locked: false });
+    const clipId = project.clips[0].id;
+    expect(clipDurationTicks(project.clips[0])).toBe(10_000_000);
+    project = updateClipSpeed(project, clipId, 2);
+    expect(project.clips[0].speed).toBe(2);
+    expect(clipDurationTicks(project.clips[0])).toBe(5_000_000);
   });
 });

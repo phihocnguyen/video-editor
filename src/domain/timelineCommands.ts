@@ -19,7 +19,9 @@ const DEFAULT_TRANSFORM = {
 };
 
 export function clipDurationTicks(clip: Clip): Tick {
-  return Math.max(0, clip.sourceOutTicks - clip.sourceInTicks);
+  const source = Math.max(0, clip.sourceOutTicks - clip.sourceInTicks);
+  const speed = Number.isFinite(clip.speed) && clip.speed > 0 ? clip.speed : 1;
+  return Math.max(0, Math.round(source / speed));
 }
 
 export function defaultClipDuration(asset: MediaAsset): Tick {
@@ -242,6 +244,97 @@ export function updateClipTransform(
   transform: Clip["transform"],
 ): ProjectDocument {
   return mapClip(project, clipId, (clip) => ({ ...clip, transform }));
+}
+
+export function updateClipVolume(
+  project: ProjectDocument,
+  clipId: string,
+  volume: number,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => ({
+    ...clip,
+    volume: Math.min(2, Math.max(0, volume)),
+  }));
+}
+
+export function updateClipSpeed(
+  project: ProjectDocument,
+  clipId: string,
+  speed: number,
+): ProjectDocument {
+  if (!(speed > 0) || !Number.isFinite(speed)) {
+    throw new Error("Speed must be a positive number");
+  }
+  return mapClip(project, clipId, (clip) => {
+    if (clip.kind === "text") throw new Error("Text clips do not support speed");
+    return { ...clip, speed: Math.min(8, Math.max(0.1, speed)) };
+  });
+}
+
+export function addTrack(
+  project: ProjectDocument,
+  kind: TrackKind,
+  options?: { name?: string },
+): ProjectDocument {
+  const sameKind = project.tracks.filter((t) => t.kind === kind);
+  const index = sameKind.length + 1;
+  const track: Track = {
+    id: crypto.randomUUID(),
+    kind,
+    name: options?.name ?? (kind === "video" ? `V${index}` : `A${index}`),
+    order: project.tracks.reduce((max, t) => Math.max(max, t.order), -1) + 1,
+    muted: false,
+    visible: true,
+    locked: false,
+    volume: 1,
+  };
+  return {
+    ...project,
+    tracks: [...project.tracks, track],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function removeTrack(
+  project: ProjectDocument,
+  trackId: string,
+): ProjectDocument {
+  const track = project.tracks.find((t) => t.id === trackId);
+  if (!track) throw new Error("Unknown trackId");
+  const remainingSameKind = project.tracks.filter(
+    (t) => t.kind === track.kind && t.id !== trackId,
+  );
+  if (remainingSameKind.length === 0) {
+    throw new Error(`Cannot remove the last ${track.kind} track`);
+  }
+  return {
+    ...project,
+    tracks: project.tracks.filter((t) => t.id !== trackId),
+    clips: project.clips.filter((c) => c.trackId !== trackId),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function updateTrack(
+  project: ProjectDocument,
+  trackId: string,
+  patch: Partial<Pick<Track, "muted" | "visible" | "locked" | "volume" | "name">>,
+): ProjectDocument {
+  let found = false;
+  const tracks = project.tracks.map((track) => {
+    if (track.id !== trackId) return track;
+    found = true;
+    return {
+      ...track,
+      ...patch,
+      volume:
+        patch.volume != null
+          ? Math.min(2, Math.max(0, patch.volume))
+          : track.volume,
+    };
+  });
+  if (!found) throw new Error("Unknown trackId");
+  return { ...project, tracks, updatedAt: new Date().toISOString() };
 }
 
 function mapClip(
