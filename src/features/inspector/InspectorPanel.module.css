@@ -11,6 +11,23 @@
   font-weight: 650;
 }
 
+.headerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.secondary {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  white-space: nowrap;
+}
+
 .section {
   display: flex;
   flex-direction: column;
@@ -63,17 +80,17 @@
 
 .colorRow {
   display: grid;
-  grid-template-columns: 28px 1fr 72px;
+  grid-template-columns: 40px 1fr;
   gap: 8px;
   align-items: center;
 }
 
-.swatch {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: #fff;
-  border: 1px solid var(--border);
+.colorRow input[type="color"] {
+  width: 40px;
+  height: 34px;
+  padding: 0;
+  border: none;
+  background: transparent;
 }
 
 .primary {
