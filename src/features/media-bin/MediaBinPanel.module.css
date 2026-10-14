@@ -68,6 +68,14 @@
   background: var(--bg-elevated);
 }
 
+.missing {
+  border-color: rgba(255, 92, 108, 0.55);
+}
+
+.missing .meta span {
+  color: var(--danger);
+}
+
 .thumb {
   aspect-ratio: 16 / 10;
   display: grid;

@@ -1,5 +1,13 @@
-import { useEffect } from "react";
-import { getAppInfo } from "../../lib/tauri";
+import { useCallback, useEffect } from "react";
+import {
+  actionAutosave,
+  actionOpenProject,
+  actionRecoverAutosave,
+  actionRefreshMissing,
+  actionSaveProject,
+  formatActionError,
+} from "../../lib/projectActions";
+import { getAppInfo, isTauriRuntime } from "../../lib/tauri";
 import {
   useEditorUiStore,
   type EditorPanel,
@@ -23,21 +31,68 @@ const RAIL_ITEMS: { id: EditorPanel; label: string; icon: string }[] = [
 
 export function EditorShell() {
   const project = useProjectStore((s) => s.project);
+  const projectPath = useProjectStore((s) => s.projectPath);
   const dirty = useProjectStore((s) => s.dirty);
   const newProject = useProjectStore((s) => s.newProject);
+  const setProject = useProjectStore((s) => s.setProject);
+  const setProjectPath = useProjectStore((s) => s.setProjectPath);
+  const markClean = useProjectStore((s) => s.markClean);
   const activePanel = useEditorUiStore((s) => s.activePanel);
   const setActivePanel = useEditorUiStore((s) => s.setActivePanel);
   const tool = useEditorUiStore((s) => s.tool);
   const setTool = useEditorUiStore((s) => s.setTool);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
 
+  const handleOpen = useCallback(async () => {
+    try {
+      const { project: opened, path } = await actionOpenProject();
+      const refreshed = await actionRefreshMissing(opened);
+      setProject(refreshed, { dirty: false });
+      setProjectPath(path);
+      markClean();
+      const missing = refreshed.assets.filter((a) => a.missing).length;
+      setStatusMessage(
+        missing > 0
+          ? `Opened · ${missing} missing media file(s)`
+          : `Opened${path ? ` · ${path}` : ""}`,
+      );
+    } catch (error) {
+      if (formatActionError(error) !== "Open cancelled") {
+        setStatusMessage(formatActionError(error));
+      }
+    }
+  }, [markClean, setProject, setProjectPath, setStatusMessage]);
+
+  const handleSave = useCallback(async () => {
+    try {
+      const path = await actionSaveProject(project, projectPath);
+      setProjectPath(path);
+      setProject({ ...project, updatedAt: new Date().toISOString() }, { dirty: false });
+      markClean();
+      setStatusMessage(path ? `Saved · ${path}` : "Saved (browser download)");
+    } catch (error) {
+      if (formatActionError(error) !== "Save cancelled") {
+        setStatusMessage(formatActionError(error));
+      }
+    }
+  }, [markClean, project, projectPath, setProject, setProjectPath, setStatusMessage]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const info = await getAppInfo();
-        if (!cancelled) {
-          setStatusMessage(`${info.name} v${info.version} · offline`);
+        if (isTauriRuntime()) {
+          const info = await getAppInfo();
+          if (!cancelled) {
+            setStatusMessage(`${info.name} v${info.version} · offline`);
+          }
+          const recovered = await actionRecoverAutosave();
+          if (!cancelled && recovered && useProjectStore.getState().project.assets.length === 0) {
+            // Offer recovery only as status hint for now; user can Open manually later.
+            setStatusMessage("Autosave available — use Open or continue editing");
+          }
+        } else if (!cancelled) {
+          setStatusMessage("Browser preview · Save downloads JSON; Import needs desktop app");
         }
       } catch {
         if (!cancelled) {
@@ -50,6 +105,16 @@ export function EditorShell() {
     };
   }, [setStatusMessage]);
 
+  useEffect(() => {
+    if (!dirty || !isTauriRuntime()) return;
+    const timer = window.setTimeout(() => {
+      void actionAutosave(useProjectStore.getState().project).catch(() => {
+        /* non-fatal */
+      });
+    }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [dirty, project]);
+
   return (
     <div className={styles.shell}>
       <header className={styles.topbar}>
@@ -57,7 +122,10 @@ export function EditorShell() {
           <button
             type="button"
             className={styles.brandBtn}
-            onClick={() => newProject()}
+            onClick={() => {
+              newProject();
+              setStatusMessage("New project");
+            }}
             title="New project"
           >
             <span className={styles.brandMark}>▶</span>
@@ -67,7 +135,7 @@ export function EditorShell() {
               className={styles.projectTitle}
               value={project.name}
               onChange={(e) =>
-                useProjectStore.getState().setProject({
+                setProject({
                   ...project,
                   name: e.target.value,
                 })
@@ -95,6 +163,14 @@ export function EditorShell() {
               title="Hand"
             >
               ✋
+            </button>
+          </div>
+          <div className={styles.toolGroup}>
+            <button type="button" className={styles.tool} onClick={() => void handleOpen()} title="Open">
+              Open
+            </button>
+            <button type="button" className={styles.tool} onClick={() => void handleSave()} title="Save">
+              Save
             </button>
           </div>
           <div className={styles.toolGroup}>

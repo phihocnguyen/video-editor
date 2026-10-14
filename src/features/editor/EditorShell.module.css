@@ -89,11 +89,12 @@
 
 .tool,
 .toolActive {
-  width: 34px;
+  min-width: 34px;
   height: 30px;
+  padding: 0 8px;
   border-radius: 8px;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .tool:hover:not(:disabled),
