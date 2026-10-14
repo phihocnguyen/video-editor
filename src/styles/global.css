@@ -40,6 +40,8 @@ body,
   margin: 0;
   height: 100%;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow: hidden;
   background: var(--bg-app);
   color: var(--text);

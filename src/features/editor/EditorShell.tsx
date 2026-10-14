@@ -188,6 +188,7 @@ export function EditorShell() {
             type="button"
             className={styles.exportBtn}
             onClick={() => setActivePanel("export")}
+            title="Export"
           >
             Export
           </button>
