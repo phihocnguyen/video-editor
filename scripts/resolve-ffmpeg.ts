@@ -1,5 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import type { RenderPlan } from "../src/domain/renderPlan.ts";
 
 const CANDIDATES = [
   process.env.FFMPEG_PATH,
@@ -25,6 +27,65 @@ export function resolveFfmpegPath(): string {
     if (existsSync(exe)) return exe;
   }
   return "ffmpeg";
+}
+
+export function resolveFfprobePath(): string {
+  const ffmpeg = resolveFfmpegPath();
+  if (ffmpeg !== "ffmpeg") {
+    const sibling = join(
+      dirname(ffmpeg),
+      process.platform === "win32" ? "ffprobe.exe" : "ffprobe",
+    );
+    if (existsSync(sibling)) return sibling;
+  }
+  const pathEnv = process.env.PATH ?? process.env.Path ?? "";
+  for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue;
+    const exe = join(dir, process.platform === "win32" ? "ffprobe.exe" : "ffprobe");
+    if (existsSync(exe)) return exe;
+  }
+  return "ffprobe";
+}
+
+/** True if the media file has at least one audio stream. */
+export function probeHasAudioStream(mediaPath: string): boolean {
+  if (!existsSync(mediaPath)) return false;
+  const ffprobe = resolveFfprobePath();
+  const result = spawnSync(
+    ffprobe,
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "a",
+      "-show_entries",
+      "stream=codec_type",
+      "-of",
+      "csv=p=0",
+      mediaPath,
+    ],
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (result.error || result.status !== 0) return false;
+  return String(result.stdout ?? "")
+    .toLowerCase()
+    .includes("audio");
+}
+
+/**
+ * Clear includeAudio when the file has no audio track.
+ * Avoids FFmpeg: Stream specifier ':a' ... matches no streams.
+ */
+export function sanitizePlanAudio(plan: RenderPlan): RenderPlan {
+  return {
+    ...plan,
+    clips: plan.clips.map((clip) => {
+      if (!clip.includeAudio) return clip;
+      if (clip.kind !== "video" && clip.kind !== "audio") return clip;
+      if (probeHasAudioStream(clip.assetPath)) return clip;
+      return { ...clip, includeAudio: false };
+    }),
+  };
 }
 
 export function ffmpegMissingMessage(tried: string): string {

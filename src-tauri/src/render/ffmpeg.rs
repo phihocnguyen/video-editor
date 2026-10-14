@@ -98,22 +98,40 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
     };
     let duration = plan.duration_sec;
 
-    let mut visuals: Vec<&RenderClipPlan> = plan
+    // Drop include_audio when the file has no audio stream (avoids `[n:a] matches no streams`).
+    let clips: Vec<RenderClipPlan> = plan
+        .clips
+        .iter()
+        .cloned()
+        .map(|mut clip| {
+            if clip.include_audio
+                && (clip.kind == "video" || clip.kind == "audio")
+                && !media_has_audio_stream(&clip.asset_path)
+            {
+                clip.include_audio = false;
+            }
+            clip
+        })
+        .collect();
+    let plan_view = RenderPlan {
+        clips,
+        ..plan.clone()
+    };
+
+    let mut visuals: Vec<&RenderClipPlan> = plan_view
         .clips
         .iter()
         .filter(|c| c.kind == "video" || c.kind == "image")
         .collect();
     visuals.sort_by(|a, b| {
-        a.track_order
-            .cmp(&b.track_order)
-            .then(
-                a.timeline_start_sec
-                    .partial_cmp(&b.timeline_start_sec)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
+        a.track_order.cmp(&b.track_order).then(
+            a.timeline_start_sec
+                .partial_cmp(&b.timeline_start_sec)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
     });
 
-    let audios: Vec<&RenderClipPlan> = plan
+    let audios: Vec<&RenderClipPlan> = plan_view
         .clips
         .iter()
         .filter(|c| c.include_audio && (c.kind == "audio" || c.kind == "video"))
@@ -181,7 +199,7 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
         audio_only_offset += 1;
     }
 
-    let filter = build_filter_complex(plan, &visuals, &audio_only_inputs, width, height)?;
+    let filter = build_filter_complex(&plan_view, &visuals, &audio_only_inputs, width, height)?;
     args.extend(["-filter_complex".into(), filter, "-map".into(), "[outv]".into()]);
 
     if !audios.is_empty() {
@@ -191,7 +209,7 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
             "-c:a".into(),
             "aac".into(),
             "-b:a".into(),
-            plan.audio_bitrate.clone(),
+            plan_view.audio_bitrate.clone(),
         ]);
     } else {
         args.push("-an".into());
@@ -201,7 +219,7 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
         "-c:v".into(),
         "libx264".into(),
         "-b:v".into(),
-        plan.video_bitrate.clone(),
+        plan_view.video_bitrate.clone(),
         "-pix_fmt".into(),
         "yuv420p".into(),
         "-movflags".into(),
@@ -391,6 +409,31 @@ pub fn parse_progress_time(line: &str) -> Option<f64> {
     let minutes: f64 = parts[1].parse().ok()?;
     let seconds: f64 = parts[2].parse().ok()?;
     Some(hours * 3600.0 + minutes * 60.0 + seconds)
+}
+
+fn media_has_audio_stream(path: &str) -> bool {
+    if !Path::new(path).is_file() {
+        return false;
+    }
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "csv=p=0",
+            path,
+        ])
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).to_ascii_lowercase().contains("audio")
+        }
+        _ => false,
+    }
 }
 
 pub fn validate_output_with_ffprobe(path: &Path) -> Result<String, String> {

@@ -254,7 +254,12 @@ async function pickBrowserMediaFiles(): Promise<MediaAsset[]> {
             width,
             height,
             frameRate: null,
-            hasAudio: kind !== "image",
+            hasAudio:
+              kind === "audio"
+                ? true
+                : kind === "video"
+                  ? await detectBrowserVideoHasAudio(url)
+                  : false,
             missing: false,
           });
         }
@@ -285,6 +290,39 @@ function probeBrowserMedia(
       });
     };
     el.onerror = () => resolve({ durationTicks: null, width: null, height: null });
+  });
+}
+
+/** Best-effort; export path also probes with ffprobe before building the filter graph. */
+function detectBrowserVideoHasAudio(url: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.muted = true;
+    video.src = url;
+    const finish = (value: boolean) => {
+      video.removeAttribute("src");
+      video.load();
+      resolve(value);
+    };
+    video.onloadedmetadata = () => {
+      const anyVideo = video as HTMLVideoElement & {
+        mozHasAudio?: boolean;
+        webkitAudioDecodedByteCount?: number;
+        audioTracks?: { length: number };
+      };
+      if (typeof anyVideo.mozHasAudio === "boolean") {
+        finish(anyVideo.mozHasAudio);
+        return;
+      }
+      if (anyVideo.audioTracks && typeof anyVideo.audioTracks.length === "number") {
+        finish(anyVideo.audioTracks.length > 0);
+        return;
+      }
+      // Unknown — assume no audio so silent clips don't break FFmpeg; ffprobe corrects at export.
+      finish(false);
+    };
+    video.onerror = () => finish(false);
   });
 }
 

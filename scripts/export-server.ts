@@ -22,7 +22,11 @@ import {
   type RenderQualityPreset,
   type RenderResolutionPreset,
 } from "../src/domain/renderPlan.ts";
-import { ffmpegMissingMessage, resolveFfmpegPath } from "./resolve-ffmpeg.ts";
+import {
+  ffmpegMissingMessage,
+  resolveFfmpegPath,
+  sanitizePlanAudio,
+} from "./resolve-ffmpeg.ts";
 
 const PORT = Number(process.env.CUTLINE_EXPORT_PORT ?? 1421);
 const ROOT = resolve(process.cwd(), ".cutline-cache");
@@ -185,7 +189,8 @@ async function handleExport(req: IncomingMessage, res: ServerResponse) {
   void (async () => {
     try {
       const ffmpeg = resolveFfmpegPath();
-      const built = buildFfmpegArgs(plan, outputPath, { fileExists: existsSync });
+      const safePlan = sanitizePlanAudio(plan);
+      const built = buildFfmpegArgs(safePlan, outputPath, { fileExists: existsSync });
       job.message = `Rendering with ${ffmpeg}…`;
       job.progress = 0.2;
       await runFfmpeg(ffmpeg, built.args);

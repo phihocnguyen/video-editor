@@ -21,7 +21,11 @@ import type {
   RenderQualityPreset,
   RenderResolutionPreset,
 } from "../src/domain/renderPlan.ts";
-import { ffmpegMissingMessage, resolveFfmpegPath } from "./resolve-ffmpeg.ts";
+import {
+  ffmpegMissingMessage,
+  resolveFfmpegPath,
+  sanitizePlanAudio,
+} from "./resolve-ffmpeg.ts";
 
 function usage(): never {
   console.error(`Usage:
@@ -108,7 +112,9 @@ async function main() {
   if (ffmpeg === "ffmpeg" || !existsSync(ffmpeg)) {
     throw new Error(ffmpegMissingMessage(ffmpeg));
   }
-  const built = buildFfmpegArgs(plan, outputPath, { fileExists: existsSync });
+  const built = buildFfmpegArgs(sanitizePlanAudio(plan), outputPath, {
+    fileExists: existsSync,
+  });
   console.log(
     `Export ${plan.width}x${plan.height} @ ${plan.frameRate}fps · ${plan.durationSec.toFixed(2)}s · ${plan.clips.length} media · ${plan.texts.length} text`,
   );
