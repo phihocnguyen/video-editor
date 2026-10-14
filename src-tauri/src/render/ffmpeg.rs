@@ -67,25 +67,30 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
     };
     let duration = plan.duration_sec;
 
-    let media: Vec<&RenderClipPlan> = plan
+    let visuals: Vec<&RenderClipPlan> = plan
         .clips
         .iter()
         .filter(|c| c.kind == "video" || c.kind == "image")
         .collect();
+    let audios: Vec<&RenderClipPlan> = plan
+        .clips
+        .iter()
+        .filter(|c| c.kind == "audio" || c.kind == "video")
+        .collect();
 
-    for clip in &media {
-        if !Path::new(&clip.asset_path).is_file() {
-            return Err(format!("Media file missing: {}", clip.asset_path));
-        }
+    for clip in visuals.iter().chain(audios.iter()) {
         if clip.asset_path.starts_with("blob:") {
             return Err("Cannot export browser blob URLs; use desktop import paths".into());
+        }
+        if !Path::new(&clip.asset_path).is_file() {
+            return Err(format!("Media file missing: {}", clip.asset_path));
         }
     }
 
     let temp_output = output.with_extension("tmp.mp4");
     let mut args: Vec<String> = vec!["-y".into(), "-hide_banner".into()];
 
-    // Base black canvas
+    // Input 0: black canvas
     args.extend([
         "-f".into(),
         "lavfi".into(),
@@ -93,7 +98,8 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
         format!("color=c=black:s={width}x{height}:d={duration}:r={fps}"),
     ]);
 
-    for clip in &media {
+    // Visual inputs 1..V
+    for clip in &visuals {
         let clip_dur = (clip.timeline_end_sec - clip.timeline_start_sec).max(0.01);
         if clip.kind == "image" {
             args.extend([
@@ -116,13 +122,43 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
         }
     }
 
-    let filter = build_filter_complex(plan, &media, width, height)?;
+    // Dedicated audio-only inputs after visuals (video audio reused from visual inputs)
+    let mut audio_only_offset = 1 + visuals.len();
+    let mut audio_only_inputs: Vec<(usize, &RenderClipPlan)> = Vec::new();
+    for clip in &audios {
+        if clip.kind != "audio" {
+            continue;
+        }
+        let clip_dur = (clip.timeline_end_sec - clip.timeline_start_sec).max(0.01);
+        args.extend([
+            "-ss".into(),
+            format!("{:.3}", clip.source_in_sec.max(0.0)),
+            "-t".into(),
+            format!("{clip_dur:.3}"),
+            "-i".into(),
+            clip.asset_path.clone(),
+        ]);
+        audio_only_inputs.push((audio_only_offset, *clip));
+        audio_only_offset += 1;
+    }
+
+    let filter = build_filter_complex(plan, &visuals, &audio_only_inputs, width, height)?;
+    args.extend(["-filter_complex".into(), filter, "-map".into(), "[outv]".into()]);
+
+    if !audios.is_empty() {
+        args.extend([
+            "-map".into(),
+            "[outa]".into(),
+            "-c:a".into(),
+            "aac".into(),
+            "-b:a".into(),
+            "192k".into(),
+        ]);
+    } else {
+        args.push("-an".into());
+    }
+
     args.extend([
-        "-filter_complex".into(),
-        filter,
-        "-map".into(),
-        "[outv]".into(),
-        "-an".into(),
         "-c:v".into(),
         "libx264".into(),
         "-pix_fmt".into(),
@@ -141,21 +177,21 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
 
 fn build_filter_complex(
     plan: &RenderPlan,
-    media: &[&RenderClipPlan],
+    visuals: &[&RenderClipPlan],
+    audio_only: &[(usize, &RenderClipPlan)],
     width: u32,
     height: u32,
 ) -> Result<String, String> {
     let mut parts: Vec<String> = Vec::new();
     let mut current = "[0:v]".to_string();
 
-    for (index, clip) in media.iter().enumerate() {
+    for (index, clip) in visuals.iter().enumerate() {
         let input_index = index + 1;
         let start = clip.timeline_start_sec.max(0.0);
         let end = clip.timeline_end_sec.max(start + 0.01);
-        let scaled = format!(
+        parts.push(format!(
             "[{input_index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setpts=PTS-STARTPTS[v{index}]"
-        );
-        parts.push(scaled);
+        ));
         let next = format!("[tmp{index}]");
         parts.push(format!(
             "{current}[v{index}]overlay=0:0:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
@@ -163,11 +199,9 @@ fn build_filter_complex(
         current = next;
     }
 
-    // Apply drawtext filters chained
     for (ti, text) in plan.texts.iter().enumerate() {
         let start = text.timeline_start_sec.max(0.0);
-        const EPS: f64 = 0.01;
-        let end = text.timeline_end_sec.max(start + EPS);
+        let end = text.timeline_end_sec.max(start + 0.01);
         let escaped = escape_drawtext(&text.content);
         let fontfile = text
             .font_path
@@ -194,6 +228,51 @@ fn build_filter_complex(
         parts.push(format!("{current}null[outv]"));
     }
 
+    // Audio mix from video visual inputs + dedicated audio inputs
+    let mut audio_labels: Vec<String> = Vec::new();
+    let mut ai = 0usize;
+
+    for (index, clip) in visuals.iter().enumerate() {
+        if clip.kind != "video" {
+            continue;
+        }
+        let input_index = index + 1;
+        let start_ms = (clip.timeline_start_sec.max(0.0) * 1000.0).round() as i64;
+        let vol = clip.volume.clamp(0.0, 2.0);
+        let label = format!("[a{ai}]");
+        // adelay pads start; apad+atrim keeps timeline length stable for amix
+        parts.push(format!(
+            "[{input_index}:a]asetpts=PTS-STARTPTS,volume={vol},adelay={start_ms}|{start_ms},apad,atrim=0:{:.3}{label}",
+            plan.duration_sec
+        ));
+        audio_labels.push(label);
+        ai += 1;
+    }
+
+    for (input_index, clip) in audio_only {
+        let start_ms = (clip.timeline_start_sec.max(0.0) * 1000.0).round() as i64;
+        let vol = clip.volume.clamp(0.0, 2.0);
+        let label = format!("[a{ai}]");
+        parts.push(format!(
+            "[{input_index}:a]asetpts=PTS-STARTPTS,volume={vol},adelay={start_ms}|{start_ms},apad,atrim=0:{:.3}{label}",
+            plan.duration_sec
+        ));
+        audio_labels.push(label);
+        ai += 1;
+    }
+
+    if !audio_labels.is_empty() {
+        if audio_labels.len() == 1 {
+            parts.push(format!("{}anull[outa]", audio_labels[0]));
+        } else {
+            parts.push(format!(
+                "{}amix=inputs={}:dropout_transition=0:normalize=0[outa]",
+                audio_labels.join(""),
+                audio_labels.len()
+            ));
+        }
+    }
+
     Ok(parts.join(";"))
 }
 
@@ -207,7 +286,6 @@ fn escape_drawtext(input: &str) -> String {
 }
 
 fn escape_filter_path(path: &str) -> String {
-    // FFmpeg filter paths on Windows often need forward slashes and escaped drive colon.
     let normalized = path.replace('\\', "/");
     normalized.replace(':', "\\:")
 }
@@ -230,7 +308,6 @@ pub fn spawn_ffmpeg(program: &str, args: &[String]) -> Result<std::process::Chil
 }
 
 pub fn parse_progress_time(line: &str) -> Option<f64> {
-    // time=00:00:03.45
     let idx = line.find("time=")?;
     let raw = line[idx + 5..].split_whitespace().next()?;
     let parts: Vec<&str> = raw.split(':').collect();
@@ -241,4 +318,26 @@ pub fn parse_progress_time(line: &str) -> Option<f64> {
     let minutes: f64 = parts[1].parse().ok()?;
     let seconds: f64 = parts[2].parse().ok()?;
     Some(hours * 3600.0 + minutes * 60.0 + seconds)
+}
+
+pub fn validate_output_with_ffprobe(path: &Path) -> Result<String, String> {
+    if !path.is_file() {
+        return Err("Output file missing after export".into());
+    }
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration:stream=codec_type,codec_name",
+            "-of",
+            "json",
+            path.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .map_err(|e| format!("ffprobe failed ({e})"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }

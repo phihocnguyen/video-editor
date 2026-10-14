@@ -1,5 +1,6 @@
 use crate::render::ffmpeg::{
-    build_export_command, parse_progress_time, spawn_ffmpeg, RenderPlan,
+    build_export_command, parse_progress_time, spawn_ffmpeg, validate_output_with_ffprobe,
+    RenderPlan,
 };
 use crate::render::job::{new_job_id, ExportJobStatus, ExportJobStore, JobState, SharedJobs};
 use std::fs;
@@ -109,12 +110,16 @@ pub fn start_export(
                         return;
                     }
                 }
+                let probe_note = match validate_output_with_ffprobe(&final_path) {
+                    Ok(_) => " · ffprobe ok".to_string(),
+                    Err(err) => format!(" · ffprobe warn: {err}"),
+                };
                 if let Ok(mut guard) = jobs_thread.inner.lock() {
                     if let Some(job) = guard.as_mut() {
                         if job.state != JobState::Cancelled {
                             job.state = JobState::Succeeded;
                             job.progress = 1.0;
-                            job.message = "Export complete".into();
+                            job.message = format!("Export complete{probe_note}");
                             job.temp_path = None;
                         }
                     }
