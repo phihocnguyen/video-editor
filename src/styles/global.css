@@ -1,0 +1,51 @@
+:root {
+  color-scheme: dark;
+  --bg-app: #12141a;
+  --bg-panel: #1a1d26;
+  --bg-elevated: #222633;
+  --bg-track: #161922;
+  --border: #2c3140;
+  --text: #e8eaef;
+  --text-muted: #9aa3b5;
+  --accent: #3d9cf0;
+  --accent-strong: #2f86d6;
+  --danger: #e35d6a;
+  --success: #3fbf8f;
+  --radius: 6px;
+  --font-ui: "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-mono: "Cascadia Code", "Consolas", monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg-app);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
