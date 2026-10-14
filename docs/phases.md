@@ -12,9 +12,9 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Docs stubs + preview ADR
 - [x] Vitest smoke tests for time math
 - [x] CapCut-like editor chrome (Cutline branding)
+- [x] Minimal CI: `pnpm typecheck` + `pnpm test`
 - [ ] Install MSVC Build Tools; `pnpm tauri:dev` launches a window
 - [ ] FFmpeg on PATH; probe/export PoC on sample media
-- [ ] Minimal CI: `pnpm typecheck` + `pnpm test`
 
 **Exit:** App window on Windows; probe sample file; UI stays responsive; no web deploy.
 
@@ -61,7 +61,7 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Playback clock tied to ticks
 - [x] Active-clip video/image preview (single top video track)
 - [x] Reduce black-flash on import/seek (loading gate + scrub-aware seek)
-- [ ] Audio playback/mixing
+- [x] Audio playback from active media/audio clips (Web Audio / HTMLAudio)
 - [ ] Multi-track compositing / proxy cache
 - [x] Document preview limits in UI copy
 
@@ -76,9 +76,9 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Render-plan generator (TypeScript) including text overlays
 - [x] FFmpeg argv builder + job lifecycle (Rust; needs FFmpeg on PATH)
 - [x] Export dialog progress + cancel
+- [x] Audio track mix in export filter graph (`amix` / `[outa]`)
+- [x] Output validation with ffprobe (post-export note on job message)
 - [ ] Verify on `pnpm tauri:dev` (MSVC + FFmpeg)
-- [ ] Output validation with ffprobe
-- [ ] Audio track mix in export filter graph
 
 **Exit:** Multi-clip project → valid MP4; cancel leaves no corrupt final; semantics match docs.
 
@@ -92,7 +92,9 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Browse custom fonts (desktop dialog / browser file picker)
 - [x] Preview text overlays
 - [x] Opacity/volume for selected clips
-- [ ] Shortcuts, settings, recent projects
+- [x] Shortcuts (Space / Ctrl+S / Ctrl+O / Delete / Undo-Redo)
+- [x] Settings persistence (snap toggle)
+- [x] Recent projects (desktop Open Recent)
 - [ ] NSIS installer, icon, versioning
 - [ ] Offline QA pass; README known limitations + licenses
 
