@@ -1,52 +1,103 @@
 .panel {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  padding: 12px;
   gap: 12px;
+  padding: 14px;
+  height: 100%;
 }
 
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
 }
 
 .header h2 {
   margin: 0;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 650;
 }
 
-.header button {
-  border: 1px solid var(--border);
+.importBtn {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
   background: var(--bg-elevated);
+  border: 1px solid var(--border);
   color: var(--text);
-  border-radius: var(--radius);
-  padding: 4px 8px;
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 110px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-muted);
+  text-align: center;
+  padding: 16px;
+}
+
+.dropzone strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .empty {
   margin: 0;
   color: var(--text-muted);
+  font-size: 12px;
 }
 
-.list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
   overflow: auto;
 }
 
-.list li {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px;
+.card {
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 10px;
+  overflow: hidden;
   background: var(--bg-elevated);
+}
+
+.thumb {
+  aspect-ratio: 16 / 10;
+  display: grid;
+  place-items: center;
+  background: #101014;
+  color: var(--text-muted);
+  font-size: 18px;
+}
+
+.thumb[data-kind="audio"] {
+  background: linear-gradient(160deg, #163528, #101014);
+  color: #6ddea8;
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+}
+
+.meta strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.meta span {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: capitalize;
 }

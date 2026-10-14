@@ -1,30 +1,47 @@
 import { useProjectStore } from "../../stores/projectStore";
+import type { MediaKind } from "../../domain";
 import styles from "./MediaBinPanel.module.css";
 
-export function MediaBinPanel() {
+interface MediaBinPanelProps {
+  filter?: MediaKind;
+}
+
+export function MediaBinPanel({ filter }: MediaBinPanelProps) {
   const assets = useProjectStore((s) => s.project.assets);
+  const visible = filter ? assets.filter((a) => a.kind === filter) : assets;
+  const title =
+    filter === "audio" ? "Audio" : filter === "image" ? "Photos" : "Media";
 
   return (
     <div className={styles.panel}>
       <div className={styles.header}>
-        <h2>Media Bin</h2>
-        <button type="button" disabled title="Milestone 1 — import via Tauri dialog">
-          Import
+        <h2>{title}</h2>
+        <button type="button" className={styles.importBtn} disabled title="Milestone 1">
+          + Import
         </button>
       </div>
-      {assets.length === 0 ? (
-        <p className={styles.empty}>
-          No media yet. Import arrives in Milestone 1 (local files only, non-destructive).
-        </p>
+
+      <button type="button" className={styles.dropzone} disabled title="Milestone 1">
+        <strong>Upload files</strong>
+        <span>Video, audio, and images stay on your computer</span>
+      </button>
+
+      {visible.length === 0 ? (
+        <p className={styles.empty}>No {title.toLowerCase()} imported yet.</p>
       ) : (
-        <ul className={styles.list}>
-          {assets.map((asset) => (
-            <li key={asset.id}>
-              <strong>{asset.name}</strong>
-              <span>{asset.kind}</span>
-            </li>
+        <div className={styles.grid}>
+          {visible.map((asset) => (
+            <article key={asset.id} className={styles.card}>
+              <div className={styles.thumb} data-kind={asset.kind}>
+                {asset.kind === "audio" ? "♪" : asset.kind === "image" ? "▣" : "▶"}
+              </div>
+              <div className={styles.meta}>
+                <strong title={asset.name}>{asset.name}</strong>
+                <span>{asset.kind}</span>
+              </div>
+            </article>
           ))}
-        </ul>
+        </div>
       )}
     </div>
   );
