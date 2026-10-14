@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { buildRenderPlan, type RenderResolutionPreset } from "../../domain";
+import {
+  buildRenderPlan,
+  type RenderQualityPreset,
+  type RenderResolutionPreset,
+} from "../../domain";
 import {
   cancelExport,
   getExportStatus,
@@ -16,9 +20,13 @@ export function ExportPanel() {
   const project = useProjectStore((s) => s.project);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const [preset, setPreset] = useState<RenderResolutionPreset>("1080");
+  const [quality, setQuality] = useState<RenderQualityPreset>("standard");
   const [job, setJob] = useState<ExportJobStatus | null>(null);
   const [busy, setBusy] = useState(false);
-  const plan = useMemo(() => buildRenderPlan(project, preset), [preset, project]);
+  const plan = useMemo(
+    () => buildRenderPlan(project, preset, quality),
+    [preset, project, quality],
+  );
   const blocked =
     plan.missingAssetIds.length > 0 ||
     (plan.clips.length === 0 && plan.texts.length === 0) ||
@@ -76,7 +84,7 @@ export function ExportPanel() {
     <div className={styles.panel}>
       <h2>Export</h2>
       <p className={styles.lead}>
-        Local MP4 via FFmpeg (H.264). Requires desktop app and FFmpeg on PATH.
+        Local MP4 via FFmpeg (H.264 / AAC). Requires desktop app and FFmpeg on PATH.
       </p>
 
       <label className={styles.field}>
@@ -85,9 +93,21 @@ export function ExportPanel() {
           value={preset}
           onChange={(e) => setPreset(e.target.value as RenderResolutionPreset)}
         >
-          <option value="source">Match source</option>
+          <option value="source">Match canvas</option>
           <option value="720">720p</option>
           <option value="1080">1080p</option>
+        </select>
+      </label>
+
+      <label className={styles.field}>
+        <span>Quality</span>
+        <select
+          value={quality}
+          onChange={(e) => setQuality(e.target.value as RenderQualityPreset)}
+        >
+          <option value="draft">Draft (2.5 Mbps)</option>
+          <option value="standard">Standard (6 Mbps)</option>
+          <option value="high">High (12 Mbps)</option>
         </select>
       </label>
 
@@ -96,7 +116,9 @@ export function ExportPanel() {
           <strong>
             {plan.width}×{plan.height}
           </strong>
-          <span>@ {plan.frameRate}fps</span>
+          <span>
+            @ {plan.frameRate}fps · {plan.videoBitrate} / {plan.audioBitrate}
+          </span>
         </div>
         <div>
           <strong>{plan.clips.length}</strong>

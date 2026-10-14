@@ -17,8 +17,11 @@ Export is driven by a **render plan** independent of React UI.
 
 - Container: MP4
 - Video: H.264; Audio: AAC (subject to redistributable FFmpeg build)
-- Presets: source / 720p / 1080p
+- Resolution presets: canvas / 720p / 1080p
+- Quality presets: draft / standard / high (video + audio bitrates)
+- Honors clip opacity, speed, track mute/volume/order, text opacity
 - User-selected output path
+- Post-export `ffprobe` validation note on the job message
 
 ## Safety
 

@@ -7,13 +7,31 @@ use std::process::Command;
 pub struct RenderClipPlan {
     pub clip_id: String,
     pub track_id: String,
+    #[serde(default)]
+    pub track_order: i32,
     pub asset_path: String,
     pub timeline_start_sec: f64,
     pub timeline_end_sec: f64,
     pub source_in_sec: f64,
     pub source_out_sec: f64,
     pub volume: f64,
+    #[serde(default = "default_opacity")]
+    pub opacity: f64,
+    #[serde(default = "default_speed")]
+    pub speed: f64,
+    #[serde(default = "default_true")]
+    pub include_audio: bool,
     pub kind: String,
+}
+
+fn default_opacity() -> f64 {
+    1.0
+}
+fn default_speed() -> f64 {
+    1.0
+}
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -28,6 +46,8 @@ pub struct RenderTextPlan {
     pub align: String,
     pub x: f64,
     pub y: f64,
+    #[serde(default = "default_opacity")]
+    pub opacity: f64,
     pub timeline_start_sec: f64,
     pub timeline_end_sec: f64,
 }
@@ -39,9 +59,20 @@ pub struct RenderPlan {
     pub height: u32,
     pub frame_rate: f64,
     pub duration_sec: f64,
+    #[serde(default = "default_vbitrate")]
+    pub video_bitrate: String,
+    #[serde(default = "default_abitrate")]
+    pub audio_bitrate: String,
     pub clips: Vec<RenderClipPlan>,
     pub texts: Vec<RenderTextPlan>,
     pub missing_asset_ids: Vec<String>,
+}
+
+fn default_vbitrate() -> String {
+    "6M".into()
+}
+fn default_abitrate() -> String {
+    "192k".into()
 }
 
 pub struct BuiltCommand {
@@ -67,15 +98,25 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
     };
     let duration = plan.duration_sec;
 
-    let visuals: Vec<&RenderClipPlan> = plan
+    let mut visuals: Vec<&RenderClipPlan> = plan
         .clips
         .iter()
         .filter(|c| c.kind == "video" || c.kind == "image")
         .collect();
+    visuals.sort_by(|a, b| {
+        a.track_order
+            .cmp(&b.track_order)
+            .then(
+                a.timeline_start_sec
+                    .partial_cmp(&b.timeline_start_sec)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+    });
+
     let audios: Vec<&RenderClipPlan> = plan
         .clips
         .iter()
-        .filter(|c| c.kind == "audio" || c.kind == "video")
+        .filter(|c| c.include_audio && (c.kind == "audio" || c.kind == "video"))
         .collect();
 
     for clip in visuals.iter().chain(audios.iter()) {
@@ -90,7 +131,6 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
     let temp_output = output.with_extension("tmp.mp4");
     let mut args: Vec<String> = vec!["-y".into(), "-hide_banner".into()];
 
-    // Input 0: black canvas
     args.extend([
         "-f".into(),
         "lavfi".into(),
@@ -98,10 +138,10 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
         format!("color=c=black:s={width}x{height}:d={duration}:r={fps}"),
     ]);
 
-    // Visual inputs 1..V
     for clip in &visuals {
-        let clip_dur = (clip.timeline_end_sec - clip.timeline_start_sec).max(0.01);
+        let source_dur = (clip.source_out_sec - clip.source_in_sec).max(0.01);
         if clip.kind == "image" {
+            let clip_dur = (clip.timeline_end_sec - clip.timeline_start_sec).max(0.01);
             args.extend([
                 "-loop".into(),
                 "1".into(),
@@ -115,26 +155,25 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
                 "-ss".into(),
                 format!("{:.3}", clip.source_in_sec.max(0.0)),
                 "-t".into(),
-                format!("{clip_dur:.3}"),
+                format!("{source_dur:.3}"),
                 "-i".into(),
                 clip.asset_path.clone(),
             ]);
         }
     }
 
-    // Dedicated audio-only inputs after visuals (video audio reused from visual inputs)
     let mut audio_only_offset = 1 + visuals.len();
     let mut audio_only_inputs: Vec<(usize, &RenderClipPlan)> = Vec::new();
     for clip in &audios {
         if clip.kind != "audio" {
             continue;
         }
-        let clip_dur = (clip.timeline_end_sec - clip.timeline_start_sec).max(0.01);
+        let source_dur = (clip.source_out_sec - clip.source_in_sec).max(0.01);
         args.extend([
             "-ss".into(),
             format!("{:.3}", clip.source_in_sec.max(0.0)),
             "-t".into(),
-            format!("{clip_dur:.3}"),
+            format!("{source_dur:.3}"),
             "-i".into(),
             clip.asset_path.clone(),
         ]);
@@ -152,7 +191,7 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
             "-c:a".into(),
             "aac".into(),
             "-b:a".into(),
-            "192k".into(),
+            plan.audio_bitrate.clone(),
         ]);
     } else {
         args.push("-an".into());
@@ -161,6 +200,8 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
     args.extend([
         "-c:v".into(),
         "libx264".into(),
+        "-b:v".into(),
+        plan.video_bitrate.clone(),
         "-pix_fmt".into(),
         "yuv420p".into(),
         "-movflags".into(),
@@ -189,12 +230,19 @@ fn build_filter_complex(
         let input_index = index + 1;
         let start = clip.timeline_start_sec.max(0.0);
         let end = clip.timeline_end_sec.max(start + 0.01);
+        let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
+        let opacity = clip.opacity.clamp(0.0, 1.0);
+        let setpts = if (speed - 1.0).abs() < 0.001 {
+            "setpts=PTS-STARTPTS".to_string()
+        } else {
+            format!("setpts=(PTS-STARTPTS)/{speed}")
+        };
         parts.push(format!(
-            "[{input_index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setpts=PTS-STARTPTS[v{index}]"
+            "[{input_index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,{setpts},format=rgba,colorchannelmixer=aa={opacity:.3}[v{index}]"
         ));
         let next = format!("[tmp{index}]");
         parts.push(format!(
-            "{current}[v{index}]overlay=0:0:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
+            "{current}[v{index}]overlay=0:0:format=auto:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
         ));
         current = next;
     }
@@ -211,6 +259,7 @@ fn build_filter_complex(
             .unwrap_or_default();
         let fontsize = text.font_size.max(8.0);
         let color = normalize_color(&text.color);
+        let alpha = text.opacity.clamp(0.0, 1.0);
         let x_expr = match text.align.as_str() {
             "left" => format!("{}", text.x.max(0.0) as i64),
             "right" => format!("{}-text_w", text.x.max(0.0) as i64),
@@ -219,7 +268,7 @@ fn build_filter_complex(
         let y_expr = format!("{}-(text_h/2)", text.y.max(0.0) as i64);
         let next = format!("[txt{ti}]");
         parts.push(format!(
-            "{current}drawtext=text='{escaped}'{fontfile}:fontsize={fontsize}:fontcolor={color}:x={x_expr}:y={y_expr}:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
+            "{current}drawtext=text='{escaped}'{fontfile}:fontsize={fontsize}:fontcolor={color}@{alpha:.3}:x={x_expr}:y={y_expr}:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
         ));
         current = next;
     }
@@ -228,21 +277,21 @@ fn build_filter_complex(
         parts.push(format!("{current}null[outv]"));
     }
 
-    // Audio mix from video visual inputs + dedicated audio inputs
     let mut audio_labels: Vec<String> = Vec::new();
     let mut ai = 0usize;
 
     for (index, clip) in visuals.iter().enumerate() {
-        if clip.kind != "video" {
+        if clip.kind != "video" || !clip.include_audio {
             continue;
         }
         let input_index = index + 1;
         let start_ms = (clip.timeline_start_sec.max(0.0) * 1000.0).round() as i64;
         let vol = clip.volume.clamp(0.0, 2.0);
+        let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
+        let atempo = atempo_chain(speed);
         let label = format!("[a{ai}]");
-        // adelay pads start; apad+atrim keeps timeline length stable for amix
         parts.push(format!(
-            "[{input_index}:a]asetpts=PTS-STARTPTS,volume={vol},adelay={start_ms}|{start_ms},apad,atrim=0:{:.3}{label}",
+            "[{input_index}:a]asetpts=PTS-STARTPTS,{atempo}volume={vol},adelay={start_ms}|{start_ms},apad,atrim=0:{:.3}{label}",
             plan.duration_sec
         ));
         audio_labels.push(label);
@@ -250,11 +299,16 @@ fn build_filter_complex(
     }
 
     for (input_index, clip) in audio_only {
+        if !clip.include_audio {
+            continue;
+        }
         let start_ms = (clip.timeline_start_sec.max(0.0) * 1000.0).round() as i64;
         let vol = clip.volume.clamp(0.0, 2.0);
+        let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
+        let atempo = atempo_chain(speed);
         let label = format!("[a{ai}]");
         parts.push(format!(
-            "[{input_index}:a]asetpts=PTS-STARTPTS,volume={vol},adelay={start_ms}|{start_ms},apad,atrim=0:{:.3}{label}",
+            "[{input_index}:a]asetpts=PTS-STARTPTS,{atempo}volume={vol},adelay={start_ms}|{start_ms},apad,atrim=0:{:.3}{label}",
             plan.duration_sec
         ));
         audio_labels.push(label);
@@ -274,6 +328,25 @@ fn build_filter_complex(
     }
 
     Ok(parts.join(";"))
+}
+
+/// Build one or more `atempo` filters (each must be in 0.5..=2.0).
+fn atempo_chain(speed: f64) -> String {
+    if (speed - 1.0).abs() < 0.001 {
+        return String::new();
+    }
+    let mut remaining = speed;
+    let mut filters = Vec::new();
+    while remaining > 2.0 + 1e-6 {
+        filters.push("atempo=2.0".to_string());
+        remaining /= 2.0;
+    }
+    while remaining < 0.5 - 1e-6 {
+        filters.push("atempo=0.5".to_string());
+        remaining /= 0.5;
+    }
+    filters.push(format!("atempo={remaining:.4}"));
+    format!("{},", filters.join(","))
 }
 
 fn escape_drawtext(input: &str) -> String {
@@ -340,4 +413,39 @@ pub fn validate_output_with_ffprobe(path: &Path) -> Result<String, String> {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Extract a JPEG thumbnail into `out` at `time_sec` (best-effort).
+pub fn generate_thumbnail_file(path: &Path, time_sec: f64, out: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err("Media file missing".into());
+    }
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let status = Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            &format!("{:.3}", time_sec.max(0.0)),
+            "-i",
+            path.to_string_lossy().as_ref(),
+            "-frames:v",
+            "1",
+            "-q:v",
+            "4",
+            out.to_string_lossy().as_ref(),
+        ])
+        .status()
+        .map_err(|e| format!("ffmpeg thumbnail failed ({e})"))?;
+    if !status.success() {
+        return Err("ffmpeg thumbnail exited with error".into());
+    }
+    if !out.is_file() {
+        return Err("Thumbnail was not written".into());
+    }
+    Ok(())
 }
