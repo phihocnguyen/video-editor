@@ -5,7 +5,13 @@
  */
 
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { whenPreviewDecodeIdle } from "./mediaDecodeGate";
+import {
+  currentDecodeEpoch,
+  isDecodeEpochStale,
+  preemptDecodersNow,
+  whenDecodeSlotFree,
+  whenPreviewDecodeIdle,
+} from "./mediaDecodeGate";
 import { generateThumbnail, isTauriRuntime } from "./tauri";
 
 const frameCache = new Map<string, Promise<string | null>>();
@@ -85,9 +91,12 @@ class SharedVideoSeeker {
   capture(timeSec: number): Promise<string | null> {
     const run = async () => {
       try {
-        await whenPreviewDecodeIdle();
+        const epoch = currentDecodeEpoch();
+        if (isDecodeEpochStale(epoch)) return null;
+        await whenDecodeSlotFree();
+        if (isDecodeEpochStale(epoch)) return null;
         const video = await this.ensureVideo();
-        await whenPreviewDecodeIdle();
+        if (isDecodeEpochStale(epoch)) return null;
         const dur = Number.isFinite(video.duration) ? video.duration : 0;
         const t =
           dur > 0 ? Math.min(Math.max(0, timeSec), Math.max(0, dur - 0.04)) : 0;
@@ -107,7 +116,7 @@ class SharedVideoSeeker {
             reject(e);
           }
         });
-        await whenPreviewDecodeIdle();
+        if (isDecodeEpochStale(epoch)) return null;
         const w = Math.max(1, Math.min(64, video.videoWidth || 64));
         const h = Math.max(
           1,
@@ -135,6 +144,8 @@ class SharedVideoSeeker {
 }
 
 const seekers = new Map<string, SharedVideoSeeker>();
+/** Media-bin `<video>` posters that can steal the hardware decoder from preview. */
+const mediaBinThumbs = new Set<HTMLVideoElement>();
 
 function seekerFor(url: string): SharedVideoSeeker {
   let s = seekers.get(url);
@@ -145,8 +156,36 @@ function seekerFor(url: string): SharedVideoSeeker {
   return s;
 }
 
-export function releaseFilmstripDecoders(): void {
+export function registerMediaBinThumb(video: HTMLVideoElement): void {
+  mediaBinThumbs.add(video);
+}
+
+export function unregisterMediaBinThumb(video: HTMLVideoElement): void {
+  mediaBinThumbs.delete(video);
+}
+
+function releaseMediaBinThumbs(): void {
+  for (const video of mediaBinThumbs) {
+    try {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Release timeline filmstrip seekers only (does not touch media-bin thumbs). */
+export function releaseFilmstripSeekers(): void {
+  preemptDecodersNow();
   for (const s of seekers.values()) s.releaseDecoder();
+}
+
+export function releaseFilmstripDecoders(): void {
+  // Invalidate in-flight captures, free filmstrip + media-bin thumb decoders.
+  releaseFilmstripSeekers();
+  releaseMediaBinThumbs();
 }
 
 /** Non-blocking FFmpeg warm — only after preview is idle. */
@@ -178,7 +217,6 @@ export function getFilmstripFrame(options: {
   const promise = (async () => {
     await whenPreviewDecodeIdle();
     const url = await seekerFor(options.mediaUrl).capture(bucket);
-    resolvedFrames.set(key, url);
     if (options.filePath) {
       warmFfmpegThumb(options.filePath, bucket);
     }
@@ -190,9 +228,17 @@ export function getFilmstripFrame(options: {
         resolvedFrames.set(key, converted);
         return converted;
       } catch {
+        // Don't cache failures — play/quiet may have preempted the seek.
+        frameCache.delete(key);
         return null;
       }
     }
+    if (!url) {
+      // Preempted / seek failed — allow a later retry instead of caching null.
+      frameCache.delete(key);
+      return null;
+    }
+    resolvedFrames.set(key, url);
     return url;
   })();
 

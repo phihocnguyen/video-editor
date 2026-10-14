@@ -1,5 +1,19 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { ticksToSeconds } from "../../domain";
+import { requestPlay } from "../../lib/playback";
+import {
+  GoEndIcon,
+  GoStartIcon,
+  MarkerInIcon,
+  MarkerOutIcon,
+  PauseIcon,
+  PlayIcon,
+  RewindIcon,
+  ForwardIcon,
+  StepBackIcon,
+  StepForwardIcon,
+  CloseIcon,
+} from "../../components/icons";
 import {
   nudgePlaybackRate,
   useEditorUiStore,
@@ -31,7 +45,6 @@ export function TransportBar() {
   const setMarkOutTicks = useEditorUiStore((s) => s.setMarkOutTicks);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
-  const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
 
   const clockRef = useRef<HTMLSpanElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
@@ -64,7 +77,7 @@ export function TransportBar() {
   function shuttle(direction: 1 | -1) {
     const next = nudgePlaybackRate(playbackRate, direction);
     setPlaybackRate(next);
-    setPlaying(true);
+    requestPlay();
     setStatusMessage(
       next === 1
         ? "Play 1×"
@@ -151,23 +164,13 @@ export function TransportBar() {
       <div className={styles.transportTools}>
         <div className={styles.toolCluster}>
           <ToolBtn
-            title="Add marker (playhead)"
-            onClick={() =>
-              setStatusMessage(
-                `Marker @ ${formatClock(ticksToSeconds(useEditorUiStore.getState().playheadTicks))}`,
-              )
-            }
-          >
-            ◆
-          </ToolBtn>
-          <ToolBtn
             title="Mark In (I)"
             onClick={() => {
               setMarkInTicks(useEditorUiStore.getState().playheadTicks);
               setStatusMessage("Mark In set");
             }}
           >
-            {"{"}
+            <MarkerInIcon size={15} />
           </ToolBtn>
           <ToolBtn
             title="Mark Out (O)"
@@ -176,7 +179,7 @@ export function TransportBar() {
               setStatusMessage("Mark Out set");
             }}
           >
-            {"}"}
+            <MarkerOutIcon size={15} />
           </ToolBtn>
           <ToolBtn
             title="Go to In"
@@ -187,13 +190,13 @@ export function TransportBar() {
               setPlayheadTicks(markInTicks);
             }}
           >
-            ⇤
+            <GoStartIcon size={15} />
           </ToolBtn>
           <ToolBtn title="Step back 1 frame" onClick={() => step(-1)}>
-            ⏮
+            <StepBackIcon size={15} />
           </ToolBtn>
           <ToolBtn title="Slower / rewind (J)" onClick={() => shuttle(-1)}>
-            «
+            <RewindIcon size={15} />
           </ToolBtn>
           <button
             type="button"
@@ -202,16 +205,15 @@ export function TransportBar() {
               if (isPlaying) {
                 setPlaying(false);
               } else {
-                if (Math.abs(playbackRate) < 0.01) setPlaybackRate(1);
-                setPlaying(true);
+                requestPlay();
               }
             }}
             title={isPlaying ? "Pause (K / Space)" : "Play (K / Space)"}
           >
-            {isPlaying ? "❚❚" : "▶"}
+            {isPlaying ? <PauseIcon size={15} /> : <PlayIcon size={15} />}
           </button>
           <ToolBtn title="Faster / forward (L)" onClick={() => shuttle(1)}>
-            »
+            <ForwardIcon size={15} />
           </ToolBtn>
           <button
             type="button"
@@ -225,7 +227,7 @@ export function TransportBar() {
             {rateLabel}
           </button>
           <ToolBtn title="Step forward 1 frame" onClick={() => step(1)}>
-            ⏭
+            <StepForwardIcon size={15} />
           </ToolBtn>
           <ToolBtn
             title="Go to Out"
@@ -236,16 +238,7 @@ export function TransportBar() {
               setPlayheadTicks(markOutTicks);
             }}
           >
-            ⇥
-          </ToolBtn>
-          <ToolBtn
-            title="Clear selection (Lift placeholder)"
-            onClick={() => {
-              setSelectedClipIds([]);
-              setStatusMessage("Selection cleared");
-            }}
-          >
-            ▤
+            <GoEndIcon size={15} />
           </ToolBtn>
           <ToolBtn
             title="Clear In/Out"
@@ -255,7 +248,7 @@ export function TransportBar() {
               setStatusMessage("In/Out cleared");
             }}
           >
-            ✕
+            <CloseIcon size={14} />
           </ToolBtn>
         </div>
 

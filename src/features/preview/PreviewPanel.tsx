@@ -12,10 +12,12 @@ import {
   endPlaybackDecodeHold,
   setPlaybackHoldStartHook,
 } from "../../lib/mediaDecodeGate";
-import { releaseFilmstripDecoders } from "../../lib/mediaFilmstrip";
+import { releaseFilmstripSeekers } from "../../lib/mediaFilmstrip";
+import { isRampClockActive } from "../../lib/rampClock";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { CompositeLayers, type PreviewLayer } from "./CompositeLayers";
+import { MediaOverlayLayer, type MediaOverlayItem } from "./MediaOverlayLayer";
 import { TextOverlayLayer } from "./TextOverlayLayer";
 import { TransportBar } from "./TransportBar";
 import { useTimelineAudio } from "./useTimelineAudio";
@@ -138,18 +140,35 @@ export function PreviewPanel() {
     return out;
   }, [assets, clips, listPlayhead, project, tracks]);
 
+  const mediaOverlayItems = useMemo((): MediaOverlayItem[] => {
+    return layers
+      .filter((l) => l.asset.kind === "video" || l.asset.kind === "image")
+      .map((l) => ({
+        clip: l.clip,
+        asset: l.asset,
+        trackOrder: l.track.order,
+      }));
+  }, [layers]);
+
   const activeTexts = useMemo(() => {
+    const tracksById = new Map(tracks.map((t) => [t.id, t]));
     const hidden = new Set(
       tracks.filter((t) => t.kind === "video" && !t.visible).map((t) => t.id),
     );
-    return clips.filter(
-      (c) =>
-        c.kind === "text" &&
-        c.text &&
-        !hidden.has(c.trackId) &&
-        listPlayhead >= c.startTicks &&
-        listPlayhead < c.startTicks + clipDurationTicks(c),
-    );
+    return clips
+      .filter(
+        (c) =>
+          c.kind === "text" &&
+          c.text &&
+          !hidden.has(c.trackId) &&
+          listPlayhead >= c.startTicks &&
+          listPlayhead < c.startTicks + clipDurationTicks(c),
+      )
+      .map((clip) => ({
+        clip,
+        trackOrder: tracksById.get(clip.trackId)?.order ?? 0,
+      }))
+      .sort((a, b) => a.trackOrder - b.trackOrder);
   }, [clips, listPlayhead, tracks]);
 
   useTimelineAudio({
@@ -161,13 +180,14 @@ export function PreviewPanel() {
   });
 
   useEffect(() => {
-    setPlaybackHoldStartHook(() => releaseFilmstripDecoders());
+    // Only release filmstrip seekers — not media-bin thumbs (those steal UHD decode).
+    setPlaybackHoldStartHook(() => releaseFilmstripSeekers());
     return () => setPlaybackHoldStartHook(null);
   }, []);
 
   useEffect(() => {
     if (!isPlaying || isScrubbing) return;
-    releaseFilmstripDecoders();
+    releaseFilmstripSeekers();
     beginPlaybackDecodeHold();
     return () => endPlaybackDecodeHold();
   }, [isPlaying, isScrubbing]);
@@ -179,6 +199,19 @@ export function PreviewPanel() {
     const tick = (now: number) => {
       const dt = (now - last) / 1000;
       last = now;
+      // Ramped clips drive the playhead from the video element — don't double-advance.
+      if (isRampClockActive()) {
+        const cur = useEditorUiStore.getState().playheadTicks;
+        if (cur >= durationTicks) {
+          setPlayheadTicks(durationTicks);
+          setPlaying(false);
+          bumpListPlayhead(durationTicks, true);
+          return;
+        }
+        bumpListPlayhead(cur, false);
+        frame = requestAnimationFrame(tick);
+        return;
+      }
       const rate = useEditorUiStore.getState().playbackRate;
       const delta = Math.round(dt * 1_000_000 * rate);
       if (delta === 0) {
@@ -213,13 +246,12 @@ export function PreviewPanel() {
         <div
           ref={stageRef}
           className={styles.stage}
-          style={{ aspectRatio: `${canvas.width} / ${canvas.height}` }}
+          style={{
+            aspectRatio: `${canvas.width} / ${canvas.height}`,
+            background: canvas.backgroundColor,
+          }}
           onPointerDown={(e) => {
-            if (
-              e.target === e.currentTarget ||
-              (e.target as HTMLElement).tagName === "VIDEO" ||
-              (e.target as HTMLElement).tagName === "IMG"
-            ) {
+            if (e.target === e.currentTarget) {
               if (selectedClipIds.length > 0) setSelectedClipIds([]);
             }
           }}
@@ -229,11 +261,18 @@ export function PreviewPanel() {
             isPlaying={isPlaying}
             isScrubbing={isScrubbing}
           />
-          <TextOverlayLayer
-            clips={activeTexts}
+          <MediaOverlayLayer
+            items={mediaOverlayItems}
             canvasWidth={canvas.width}
             canvasHeight={canvas.height}
             stageRef={stageRef}
+          />
+          <TextOverlayLayer
+            items={activeTexts}
+            canvasWidth={canvas.width}
+            canvasHeight={canvas.height}
+            stageRef={stageRef}
+            playheadTicks={listPlayhead}
           />
         </div>
       </div>

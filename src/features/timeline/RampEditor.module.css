@@ -1,0 +1,118 @@
+.overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.svg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.plotBg {
+  fill: rgba(6, 10, 16, 0.78);
+  stroke: rgba(62, 166, 255, 0.35);
+  stroke-width: 1;
+}
+
+.refLine {
+  stroke: rgba(255, 255, 255, 0.22);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.curve {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 2px rgba(62, 166, 255, 0.55));
+}
+
+.flatOutside {
+  stroke: rgba(255, 255, 255, 0.18);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.playheadLine {
+  stroke: #fff;
+  stroke-width: 1;
+  opacity: 0.7;
+  stroke-dasharray: 2 2;
+}
+
+.anchor {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  padding: 0;
+  border-radius: var(--radius-pill);
+  background: #fff;
+  border: 2px solid var(--accent);
+  cursor: grab;
+  pointer-events: auto;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  touch-action: none;
+}
+
+.anchor:hover {
+  background: var(--accent);
+  transform: scale(1.15);
+}
+
+.anchor:active {
+  cursor: grabbing;
+}
+
+.toolbar {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: rgba(6, 10, 16, 0.85);
+  border: 1px solid rgba(62, 166, 255, 0.5);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  pointer-events: auto;
+}
+
+.toolBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--accent-contrast);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  pointer-events: auto;
+}
+
+.toolBtn:hover {
+  background: var(--accent-strong);
+  color: #fff;
+}

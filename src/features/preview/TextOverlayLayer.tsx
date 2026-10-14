@@ -1,11 +1,19 @@
 import {
+  useEffect,
   useRef,
+  useState,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
 import {
+  clipDurationTicks,
   deleteClips,
+  layerStackZ,
+  normalizeTextAnimation,
+  textAnimationIsDefault,
+  textAnimationVisual,
+  ticksToSeconds,
   updateClipText,
   updateClipTransform,
   type Clip,
@@ -15,11 +23,18 @@ import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import styles from "./PreviewPanel.module.css";
 
+export interface TextOverlayItem {
+  clip: Clip;
+  trackOrder: number;
+}
+
 interface TextOverlayLayerProps {
-  clips: Clip[];
+  items: TextOverlayItem[];
   canvasWidth: number;
   canvasHeight: number;
   stageRef: RefObject<HTMLDivElement | null>;
+  /** Current playhead, for computing text in/out animation progress. */
+  playheadTicks: number;
 }
 
 function clientToCanvas(
@@ -36,16 +51,35 @@ function clientToCanvas(
 }
 
 export function TextOverlayLayer({
-  clips,
+  items,
   canvasWidth,
   canvasHeight,
   stageRef,
+  playheadTicks,
 }: TextOverlayLayerProps) {
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
   const setActivePanel = useEditorUiStore((s) => s.setActivePanel);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const setPlaying = useEditorUiStore((s) => s.setPlaying);
+
+  // The parent's `playheadTicks` is throttled (updates only when the visible
+  // layer set changes) so playback stays cheap. Text animations need a live
+  // clock, but only while an animation window is actually on screen — so we
+  // subscribe per-frame just for that case and fall back to the prop otherwise.
+  const hasActiveAnimation = items.some(
+    (it) => it.clip.animation && !textAnimationIsDefault(normalizeTextAnimation(it.clip.animation)),
+  );
+  const [livePlayhead, setLivePlayhead] = useState(playheadTicks);
+  useEffect(() => {
+    if (!hasActiveAnimation) return;
+    setLivePlayhead(useEditorUiStore.getState().playheadTicks);
+    return useEditorUiStore.subscribe((s, prev) => {
+      if (s.playheadTicks !== prev.playheadTicks) setLivePlayhead(s.playheadTicks);
+    });
+  }, [hasActiveAnimation]);
+  const animPlayhead = hasActiveAnimation ? livePlayhead : playheadTicks;
+
   const dragRef = useRef<{
     mode: "move" | "resize";
     clipId: string;
@@ -160,10 +194,22 @@ export function TextOverlayLayer({
 
   return (
     <>
-      {clips.map((clip) => {
+      {items.map(({ clip, trackOrder }) => {
         const style = clip.text!;
         const selected = selectedClipIds.includes(clip.id);
         const fontPx = previewFontPx(clip, stageRef.current);
+        const localSec = Math.max(
+          0,
+          ticksToSeconds(animPlayhead - clip.startTicks),
+        );
+        const durSec = Math.max(
+          0.01,
+          ticksToSeconds(clipDurationTicks(clip)),
+        );
+        const anim = textAnimationVisual(clip.animation, localSec, durSec);
+        const transform = ["translate(-50%, -50%)", anim.transform]
+          .filter(Boolean)
+          .join(" ");
 
         return (
           <div
@@ -172,7 +218,11 @@ export function TextOverlayLayer({
             style={{
               left: `${(clip.transform.x / canvasWidth) * 100}%`,
               top: `${(clip.transform.y / canvasHeight) * 100}%`,
-              opacity: clip.transform.opacity,
+              opacity: clip.transform.opacity * anim.opacity,
+              transform,
+              clipPath: anim.clipPath,
+              filter: anim.blurPx > 0.05 ? `blur(${anim.blurPx.toFixed(1)}px)` : undefined,
+              zIndex: layerStackZ(trackOrder, "text"),
             }}
             onPointerDown={(e) => {
               if (e.button !== 0) return;

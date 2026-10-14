@@ -9,20 +9,20 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 18px 24px 8px;
+  padding: var(--sp-5) var(--sp-6) var(--sp-2);
   min-height: 0;
   background:
-    radial-gradient(ellipse at center, #1a1a22 0%, #0c0c0e 68%);
+    radial-gradient(ellipse at center, #16161c 0%, var(--bg-canvas) 70%);
 }
 
 .stage {
   position: relative;
-  width: min(100%, 920px);
+  width: min(100%, 960px);
   max-height: 100%;
-  border-radius: 4px;
-  background: #000;
-  border: 1px solid #222228;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  border-radius: var(--radius-xs);
+  background: var(--bg-stage);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -32,7 +32,7 @@
 .textBox,
 .textBoxSelected {
   position: absolute;
-  z-index: 3;
+  /* z-index set inline from track order (layerStackZ) */
   max-width: 86%;
   transform: translate(-50%, -50%);
   cursor: move;
@@ -41,7 +41,7 @@
 }
 
 .textBoxSelected {
-  outline: 1.5px solid rgba(255, 255, 255, 0.92);
+  outline: 1.5px solid var(--accent);
   outline-offset: 6px;
 }
 
@@ -58,15 +58,15 @@
   position: absolute;
   width: 22px;
   height: 22px;
-  border-radius: 999px;
-  background: #111;
+  border-radius: var(--radius-pill);
+  background: var(--bg-panel);
   color: #fff;
-  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  border: 1.5px solid rgba(255, 255, 255, 0.8);
   display: grid;
   place-items: center;
   z-index: 4;
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-md);
 }
 
 .textHandleDelete {
@@ -82,7 +82,8 @@
 
 .textHandleDelete:hover,
 .textHandleResize:hover {
-  background: #222;
+  background: var(--bg-hover);
+  border-color: var(--accent);
 }
 
 .media,
@@ -94,117 +95,200 @@
   display: block;
 }
 
+.layerHost,
 .layerMedia {
   position: absolute;
-  inset: 0;
   pointer-events: none;
-  will-change: opacity, clip-path, filter;
+  will-change: opacity, clip-path, filter, transform;
   backface-visibility: hidden;
-  transform: translateZ(0);
+}
+
+.layerHost {
+  overflow: hidden;
+}
+
+.layerHost > .layerMedia {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Interactive media layer on the canvas (move/resize/rotate). */
+.mediaLayer,
+.mediaLayerSelected {
+  position: absolute;
+  /* z-index set inline from track order (layerStackZ) */
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+  will-change: opacity, clip-path, filter, transform;
+}
+
+.mediaLayerSelected {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.mediaLayerContent {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+  background: transparent;
+}
+
+.mediaHandleRotate,
+.mediaHandleResize {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-panel);
+  color: #fff;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  display: grid;
+  place-items: center;
+  z-index: 6;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+}
+
+.mediaHandleResize {
+  right: -8px;
+  bottom: -8px;
+  cursor: nwse-resize;
+}
+
+.mediaHandleRotate {
+  left: 50%;
+  top: -26px;
+  margin-left: -8px;
+  cursor: grab;
 }
 
 .placeholder {
   text-align: center;
   color: var(--text-muted);
-  padding: 24px;
-  max-width: 420px;
+  padding: var(--sp-6);
+  max-width: 440px;
 }
 
 .badge {
   display: inline-block;
-  margin-bottom: 10px;
+  margin-bottom: var(--sp-3);
   padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
 .placeholder p {
-  margin: 0 0 8px;
+  margin: 0 0 6px;
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--fs-lg);
+  font-weight: 600;
 }
 
 .placeholder span {
-  font-size: 12px;
+  font-size: var(--fs-base);
 }
+
+/* ------------------------------------------------------------- transport bar */
 
 .transportBar {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 6px 16px 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.15), transparent);
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
 }
 
 .scrubRow {
   position: relative;
   display: grid;
-  grid-template-columns: 10px 1fr 10px;
+  grid-template-columns: 8px 1fr 8px;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-1);
   height: 16px;
 }
 
 .scrubHandle {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  background: #2a2a30;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
   padding: 0;
+}
+
+.scrubHandle:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .scrubTrack {
   position: relative;
   height: 4px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-pill);
+  background: var(--bg-elevated);
   cursor: pointer;
+  border: 1px solid var(--border);
 }
 
 .scrubFill {
   position: absolute;
   inset: 0 auto 0 0;
-  background: rgba(255, 255, 255, 0.35);
+  background: var(--accent);
   border-radius: inherit;
   pointer-events: none;
+  opacity: 0.85;
 }
 
 .scrubThumb {
   position: absolute;
   top: 50%;
-  width: 10px;
-  height: 10px;
-  margin-left: -5px;
-  margin-top: -5px;
-  border-radius: 50%;
-  background: #e8e8ec;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  margin-top: -6px;
+  border-radius: var(--radius-pill);
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), var(--shadow-sm);
   pointer-events: none;
 }
 
 .markIn,
 .markOut {
   position: absolute;
-  top: -3px;
+  top: -4px;
   width: 2px;
-  height: 10px;
+  height: 12px;
   margin-left: -1px;
-  background: var(--accent);
+  border-radius: 1px;
   pointer-events: none;
+}
+
+.markIn {
+  background: var(--ok);
+}
+
+.markOut {
+  background: var(--warn);
 }
 
 .transportTools {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--sp-3);
   min-width: 0;
 }
 
@@ -212,6 +296,10 @@
   display: flex;
   align-items: center;
   gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   flex-wrap: wrap;
 }
 
@@ -221,67 +309,62 @@
   min-width: 28px;
   height: 28px;
   padding: 0 6px;
-  border-radius: 4px;
-  border: none;
-  background: transparent;
-  color: rgba(220, 220, 228, 0.85);
-  font-size: 13px;
-  line-height: 1;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
 }
 
 .toolBtn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .toolBtn:disabled {
-  opacity: 0.35;
+  opacity: 0.32;
   cursor: default;
 }
 
 .rateBtn {
-  min-width: 36px;
+  min-width: 40px;
   height: 28px;
   margin: 0 2px;
   padding: 0 6px;
-  border-radius: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--accent, #7eb8ff);
-  font-size: 11px;
-  font-weight: 600;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
 .rateBtn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-contrast);
 }
 
 .playBtn {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 28px;
+  width: 36px;
+  height: 30px;
   margin: 0 4px;
-  border-radius: 4px;
-  border: none;
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-contrast);
 }
 
 .playBtn:hover {
-  background: var(--accent);
-  color: #041018;
+  background: var(--accent-strong);
+  color: #fff;
 }
 
 .clock {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-base);
   color: var(--text);
   letter-spacing: 0.02em;
   white-space: nowrap;
+  padding: 0 2px;
 }
 
 .clock span {
