@@ -4,7 +4,7 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 
 ## Phase 0 — Desktop shell & feasibility (Milestone 0)
 
-**Goal:** Runnable Windows desktope scaffold with module boundaries and one typed native command.
+**Goal:** Runnable Windows desktop scaffold with module boundaries and one typed native command.
 
 - [x] React + TypeScript + Vite + Tauri 2 layout
 - [x] Feature folders, domain sketch, Zustand stores
@@ -13,8 +13,9 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Vitest smoke tests for time math
 - [x] CapCut-like editor chrome (Cutline branding)
 - [x] Minimal CI: `pnpm typecheck` + `pnpm test`
-- [ ] Install MSVC Build Tools; `pnpm tauri:dev` launches a window
-- [ ] FFmpeg on PATH; probe/export PoC on sample media
+- [x] Setup docs for MSVC + FFmpeg (`docs/setup-windows.md`)
+- [ ] Machine verify: MSVC installed; `pnpm tauri:dev` launches a window
+- [ ] Machine verify: FFmpeg on PATH; probe/export on sample media
 
 **Exit:** App window on Windows; probe sample file; UI stays responsive; no web deploy.
 
@@ -30,14 +31,14 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Import → probe → media bin; missing-media flag
 - [x] Browser import + image/video thumbnails (object URL / convertFileSrc)
 - [x] Relink UX (confirm before swap, desktop)
-- [ ] Verify end-to-end on `pnpm tauri:dev` (needs MSVC)
-- [ ] Disk thumbnail cache via FFmpeg (optional upgrade)
+- [x] Disk thumbnail cache via FFmpeg (`generate_thumbnail`)
+- [ ] Machine verify end-to-end on `pnpm tauri:dev`
 
 **Exit:** Create → import → save → reopen; originals untouched; missing media flagged.
 
 ---
 
-## Phase 2 — Timeline editing (mostly done / Milestone 2)
+## Phase 2 — Timeline editing (Milestone 2)
 
 **Goal:** Non-destructive multi-track editing with undo/redo.
 
@@ -49,6 +50,7 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Snap-to-edges / playhead (toggle)
 - [x] Trim handles in UI
 - [x] Smooth playhead scrub (pointer drag follows mouse)
+- [x] Live clip slide (pointer drag)
 - [x] Add/remove tracks; mute / visible / lock toggles
 - [x] Clip speed (timeline duration = source / speed)
 
@@ -56,49 +58,49 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 
 ---
 
-## Phase 3 — Preview (in progress / Milestone 3)
+## Phase 3 — Preview (Milestone 3)
 
 **Goal:** Play/pause/seek across the timeline with documented limits.
 
 - [x] Playback clock tied to ticks
-- [x] Active-clip video/image preview (single top video track)
-- [x] Reduce black-flash on import/seek (loading gate + scrub-aware seek)
-- [x] Audio playback from active media/audio clips (Web Audio / HTMLAudio)
-- [ ] Multi-track compositing / proxy cache
+- [x] Stacked multi-track video/image preview (visible tracks, opacity)
+- [x] Reduce black-flash on import/seek
+- [x] Audio playback from active media/audio clips
 - [x] Document preview limits in UI copy
+- [ ] Full proxy / GPU compositor (Later)
 
 **Exit:** Seek/playback across clip boundaries for MVP track types.
 
 ---
 
-## Phase 4 — Export (in progress / Milestone 4)
+## Phase 4 — Export (Milestone 4)
 
 **Goal:** Deterministic MP4 export via FFmpeg from Rust.
 
-- [x] Render-plan generator (TypeScript) including text overlays
-- [x] FFmpeg argv builder + job lifecycle (Rust; needs FFmpeg on PATH)
-- [x] Export dialog progress + cancel
-- [x] Audio track mix in export filter graph (`amix` / `[outa]`)
-- [x] Output validation with ffprobe (post-export note on job message)
-- [ ] Verify on `pnpm tauri:dev` (MSVC + FFmpeg)
+- [x] Render-plan generator (opacity, speed, track mute/order, quality bitrates)
+- [x] FFmpeg argv builder + job lifecycle
+- [x] Export dialog progress + cancel + quality presets
+- [x] Audio track mix (`amix` / `[outa]`) + atempo for speed
+- [x] Output validation with ffprobe
+- [ ] Machine verify on `pnpm tauri:dev` (MSVC + FFmpeg)
 
 **Exit:** Multi-clip project → valid MP4; cancel leaves no corrupt final; semantics match docs.
 
 ---
 
-## Phase 5 — MVP polish & packaging (in progress / Milestone 5)
+## Phase 5 — MVP polish & packaging (Milestone 5)
 
 **Goal:** Installable offline MVP.
 
 - [x] Add text clip + edit content/font/color/position
-- [x] Browse custom fonts (desktop dialog / browser file picker)
-- [x] Preview text overlays
-- [x] Opacity/volume for selected clips
-- [x] Shortcuts (Space / Ctrl+S / Ctrl+O / Delete / Undo-Redo)
-- [x] Settings persistence (snap toggle)
-- [x] Recent projects (desktop Open Recent)
-- [ ] NSIS installer, icon, versioning
-- [ ] Offline QA pass; README known limitations + licenses
+- [x] Browse custom fonts
+- [x] Preview text overlays (move / resize / delete)
+- [x] Opacity/volume/speed for selected clips
+- [x] Shortcuts, settings, recent projects
+- [x] NSIS target + icon set + version `0.1.0` + installMode
+- [x] README known limitations + licensing pointers
+- [x] Update strategy decision documented (manual NSIS; no auto-updater)
+- [ ] Offline QA pass on a clean Windows machine (human)
 
 **Exit:** Clean Windows install; full MVP DoD in `implementation_plan.md` §16.
 
