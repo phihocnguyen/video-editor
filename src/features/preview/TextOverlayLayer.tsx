@@ -187,8 +187,6 @@ export function TextOverlayLayer({
                 fontWeight: 700,
                 color: style.color,
                 textAlign: style.align,
-                WebkitTextStroke: "0.04em rgba(0,0,0,0.55)",
-                paintOrder: "stroke fill",
               }}
             >
               {style.content}
