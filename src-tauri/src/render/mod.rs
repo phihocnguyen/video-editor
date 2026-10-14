@@ -1,1 +1,2 @@
-//! Render-plan validation and FFmpeg job lifecycle (Milestone 4).
+pub mod ffmpeg;
+pub mod job;

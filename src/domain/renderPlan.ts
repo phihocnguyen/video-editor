@@ -16,12 +16,27 @@ export interface RenderClipPlan {
   kind: "video" | "audio" | "image";
 }
 
+export interface RenderTextPlan {
+  clipId: string;
+  content: string;
+  fontFamily: string;
+  fontPath: string | null;
+  fontSize: number;
+  color: string;
+  align: "left" | "center" | "right";
+  x: number;
+  y: number;
+  timelineStartSec: number;
+  timelineEndSec: number;
+}
+
 export interface RenderPlan {
   width: number;
   height: number;
   frameRate: number;
   durationSec: number;
   clips: RenderClipPlan[];
+  texts: RenderTextPlan[];
   missingAssetIds: string[];
 }
 
@@ -34,13 +49,32 @@ export function buildRenderPlan(
 
   let durationTicks = 0;
   const clips: RenderClipPlan[] = [];
+  const texts: RenderTextPlan[] = [];
 
   for (const clip of project.clips) {
+    const end = clip.startTicks + clipDurationTicks(clip);
+    durationTicks = Math.max(durationTicks, end);
+
+    if (clip.kind === "text" && clip.text) {
+      texts.push({
+        clipId: clip.id,
+        content: clip.text.content,
+        fontFamily: clip.text.fontFamily,
+        fontPath: clip.text.fontPath,
+        fontSize: clip.text.fontSize,
+        color: clip.text.color,
+        align: clip.text.align,
+        x: clip.transform.x,
+        y: clip.transform.y,
+        timelineStartSec: ticksToSeconds(clip.startTicks),
+        timelineEndSec: ticksToSeconds(end),
+      });
+      continue;
+    }
+
     if (clip.kind !== "media" || !clip.assetId) continue;
     const asset = assetsById.get(clip.assetId);
     if (!asset) continue;
-    const end = clip.startTicks + clipDurationTicks(clip);
-    durationTicks = Math.max(durationTicks, end);
     clips.push({
       clipId: clip.id,
       trackId: clip.trackId,
@@ -60,8 +94,9 @@ export function buildRenderPlan(
     width,
     height,
     frameRate: project.canvas.frameRate,
-    durationSec: ticksToSeconds(durationTicks),
+    durationSec: Math.max(ticksToSeconds(durationTicks), 0.1),
     clips,
+    texts,
     missingAssetIds,
   };
 }
@@ -82,7 +117,7 @@ function resolveSize(
 function scaleToHeight(width: number, height: number, targetHeight: number) {
   const ratio = width / Math.max(1, height);
   return {
-    width: Math.round(targetHeight * ratio / 2) * 2,
+    width: Math.round((targetHeight * ratio) / 2) * 2,
     height: targetHeight,
   };
 }

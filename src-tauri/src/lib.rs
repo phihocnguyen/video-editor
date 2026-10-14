@@ -4,11 +4,17 @@ mod project;
 mod render;
 mod storage;
 
+use render::job::{ExportJobStore, SharedJobs};
+use std::sync::Arc;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let jobs: SharedJobs = Arc::new(ExportJobStore::default());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(jobs)
         .invoke_handler(tauri::generate_handler![
             commands::app::get_app_info,
             commands::media::probe_media,
@@ -19,6 +25,9 @@ pub fn run() {
             commands::project::validate_project,
             commands::project::autosave_project,
             commands::project::recover_autosave,
+            commands::render::start_export,
+            commands::render::get_export_status,
+            commands::render::cancel_export,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutline");

@@ -21,6 +21,7 @@ describe("buildRenderPlan", () => {
     const plan = buildRenderPlan(project, "720");
     expect(plan.height).toBe(720);
     expect(plan.clips).toHaveLength(1);
+    expect(plan.texts).toHaveLength(0);
     expect(plan.clips[0].timelineStartSec).toBeCloseTo(1);
     expect(plan.durationSec).toBeCloseTo(6);
     expect(plan.missingAssetIds).toEqual([]);
