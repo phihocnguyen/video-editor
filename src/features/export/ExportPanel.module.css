@@ -1,0 +1,25 @@
+.panel {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.panel h2 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.panel p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.panel button {
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+}
