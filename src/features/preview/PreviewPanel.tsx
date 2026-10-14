@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { clipDurationTicks, ticksToSeconds } from "../../domain";
-import { resolveMediaUrl } from "../../lib/mediaUrl";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { CompositeLayers, type PreviewLayer } from "./CompositeLayers";
 import { TextOverlayLayer } from "./TextOverlayLayer";
 import { useTimelineAudio } from "./useTimelineAudio";
 import styles from "./PreviewPanel.module.css";
@@ -24,49 +24,52 @@ export function PreviewPanel() {
   const playheadTicks = useEditorUiStore((s) => s.playheadTicks);
   const setPlayheadTicks = useEditorUiStore((s) => s.setPlayheadTicks);
   const durationTicks = useEditorUiStore((s) => s.durationTicks);
-  const videoRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  const lastSeekAtRef = useRef(0);
-  const [mediaReady, setMediaReady] = useState(false);
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
 
-  const active = useMemo(() => {
+  const layers = useMemo((): PreviewLayer[] => {
     const videoTracks = tracks
       .filter((t) => t.kind === "video" && t.visible)
-      .sort((a, b) => b.order - a.order);
+      .sort((a, b) => a.order - b.order);
+    const out: PreviewLayer[] = [];
     for (const track of videoTracks) {
-      const hit = clips.find(
-        (c) =>
-          c.trackId === track.id &&
-          c.kind === "media" &&
-          playheadTicks >= c.startTicks &&
-          playheadTicks < c.startTicks + clipDurationTicks(c),
-      );
-      if (hit?.assetId) {
-        const asset = assets.find((a) => a.id === hit.assetId);
-        if (asset && !asset.missing) {
-          return { clip: hit, asset };
+      for (const clip of clips) {
+        if (clip.trackId !== track.id || clip.kind !== "media" || !clip.assetId) continue;
+        if (
+          playheadTicks < clip.startTicks ||
+          playheadTicks >= clip.startTicks + clipDurationTicks(clip)
+        ) {
+          continue;
         }
+        const asset = assets.find((a) => a.id === clip.assetId);
+        if (!asset || asset.missing) continue;
+        if (asset.kind !== "video" && asset.kind !== "image") continue;
+        out.push({ clip, asset, track, isTopVideo: false });
       }
     }
-    return null;
+    for (let i = out.length - 1; i >= 0; i -= 1) {
+      if (out[i].asset.kind === "video") {
+        out[i] = { ...out[i], isTopVideo: true };
+        break;
+      }
+    }
+    return out;
   }, [assets, clips, playheadTicks, tracks]);
 
-  const mediaUrl = active
-    ? resolveMediaUrl(active.asset.path, active.asset.id)
-    : null;
-  const mediaKey = active ? `${active.asset.id}:${active.clip.id}` : "";
-
   const activeTexts = useMemo(() => {
+    const hidden = new Set(
+      tracks.filter((t) => t.kind === "video" && !t.visible).map((t) => t.id),
+    );
     return clips.filter(
       (c) =>
         c.kind === "text" &&
         c.text &&
+        !hidden.has(c.trackId) &&
         playheadTicks >= c.startTicks &&
         playheadTicks < c.startTicks + clipDurationTicks(c),
     );
-  }, [clips, playheadTicks]);
+  }, [clips, playheadTicks, tracks]);
 
   useTimelineAudio({
     clips,
@@ -76,10 +79,6 @@ export function PreviewPanel() {
     isPlaying,
     isScrubbing,
   });
-
-  useEffect(() => {
-    setMediaReady(false);
-  }, [mediaKey]);
 
   useEffect(() => {
     if (!isPlaying || isScrubbing) return;
@@ -101,51 +100,6 @@ export function PreviewPanel() {
     return () => cancelAnimationFrame(frame);
   }, [durationTicks, isPlaying, isScrubbing, setPlayheadTicks, setPlaying]);
 
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !active || active.asset.kind !== "video") return;
-
-    const track = tracks.find((t) => t.id === active.clip.trackId);
-    const muted = Boolean(track?.muted) || !active.asset.hasAudio;
-    const speed =
-      Number.isFinite(active.clip.speed) && active.clip.speed > 0
-        ? active.clip.speed
-        : 1;
-    video.muted = muted;
-    video.volume = Math.min(
-      1,
-      Math.max(0, active.clip.volume * (track?.volume ?? 1)),
-    );
-    video.playbackRate = speed;
-    video.style.opacity = String(active.clip.transform.opacity);
-
-    const timelineLocal = ticksToSeconds(playheadTicks - active.clip.startTicks);
-    const target = Math.max(
-      0,
-      timelineLocal * speed + ticksToSeconds(active.clip.sourceInTicks),
-    );
-
-    if (isPlaying && !isScrubbing) {
-      void video.play().catch(() => undefined);
-      if (Math.abs(video.currentTime - target) > 0.35) {
-        video.currentTime = target;
-      }
-      return;
-    }
-
-    video.pause();
-    const now = performance.now();
-    const minInterval = isScrubbing ? 40 : 0;
-    if (now - lastSeekAtRef.current < minInterval) return;
-    if (Math.abs(video.currentTime - target) < 0.04) return;
-    lastSeekAtRef.current = now;
-    try {
-      video.currentTime = target;
-    } catch {
-      /* ignore seek before ready */
-    }
-  }, [active, isPlaying, isScrubbing, playheadTicks, tracks]);
-
   return (
     <div className={styles.panel}>
       <div className={styles.stageWrap}>
@@ -154,51 +108,21 @@ export function PreviewPanel() {
           className={styles.stage}
           style={{ aspectRatio: `${canvas.width} / ${canvas.height}` }}
           onPointerDown={(e) => {
-            if (e.target === e.currentTarget || (e.target as HTMLElement).tagName === "VIDEO" || (e.target as HTMLElement).tagName === "IMG") {
+            if (
+              e.target === e.currentTarget ||
+              (e.target as HTMLElement).tagName === "VIDEO" ||
+              (e.target as HTMLElement).tagName === "IMG"
+            ) {
               if (selectedClipIds.length > 0) setSelectedClipIds([]);
             }
           }}
         >
-          {mediaUrl && active?.asset.kind === "video" ? (
-            <>
-              {!mediaReady ? <div className={styles.loading}>Loading frame…</div> : null}
-              <video
-                key={mediaKey}
-                ref={videoRef}
-                className={mediaReady ? styles.media : styles.mediaHidden}
-                src={mediaUrl}
-                playsInline
-                preload="auto"
-                muted={false}
-                onLoadedData={(e) => {
-                  const video = e.currentTarget;
-                  if (!active) return;
-                  const localSec = ticksToSeconds(active.clip.sourceInTicks);
-                  try {
-                    video.currentTime = Math.max(0, localSec);
-                  } catch {
-                    /* ignore */
-                  }
-                }}
-                onSeeked={() => setMediaReady(true)}
-                onCanPlay={() => setMediaReady(true)}
-              />
-            </>
-          ) : mediaUrl && active?.asset.kind === "image" ? (
-            <img
-              className={styles.media}
-              src={mediaUrl}
-              alt=""
-              style={{ opacity: active.clip.transform.opacity }}
-              onLoad={() => setMediaReady(true)}
-            />
-          ) : (
-            <div className={styles.placeholder}>
-              <div className={styles.badge}>Preview</div>
-              <p>Import media and add clips to the timeline.</p>
-              <span>Active-clip preview — multi-track compositing still limited</span>
-            </div>
-          )}
+          <CompositeLayers
+            layers={layers}
+            playheadTicks={playheadTicks}
+            isPlaying={isPlaying}
+            isScrubbing={isScrubbing}
+          />
           <TextOverlayLayer
             clips={activeTexts}
             canvasWidth={canvas.width}

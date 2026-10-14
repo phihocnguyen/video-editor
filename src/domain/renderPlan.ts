@@ -3,16 +3,21 @@ import { clipDurationTicks } from "./timelineCommands";
 import { ticksToSeconds } from "./time";
 
 export type RenderResolutionPreset = "source" | "720" | "1080";
+export type RenderQualityPreset = "draft" | "standard" | "high";
 
 export interface RenderClipPlan {
   clipId: string;
   trackId: string;
+  trackOrder: number;
   assetPath: string;
   timelineStartSec: number;
   timelineEndSec: number;
   sourceInSec: number;
   sourceOutSec: number;
   volume: number;
+  opacity: number;
+  speed: number;
+  includeAudio: boolean;
   kind: "video" | "audio" | "image";
 }
 
@@ -26,6 +31,7 @@ export interface RenderTextPlan {
   align: "left" | "center" | "right";
   x: number;
   y: number;
+  opacity: number;
   timelineStartSec: number;
   timelineEndSec: number;
 }
@@ -35,6 +41,8 @@ export interface RenderPlan {
   height: number;
   frameRate: number;
   durationSec: number;
+  videoBitrate: string;
+  audioBitrate: string;
   clips: RenderClipPlan[];
   texts: RenderTextPlan[];
   missingAssetIds: string[];
@@ -43,9 +51,11 @@ export interface RenderPlan {
 export function buildRenderPlan(
   project: ProjectDocument,
   preset: RenderResolutionPreset = "1080",
+  quality: RenderQualityPreset = "standard",
 ): RenderPlan {
   const missingAssetIds = project.assets.filter((a) => a.missing).map((a) => a.id);
   const assetsById = new Map(project.assets.map((a) => [a.id, a]));
+  const tracksById = new Map(project.tracks.map((t) => [t.id, t]));
 
   let durationTicks = 0;
   const clips: RenderClipPlan[] = [];
@@ -54,8 +64,10 @@ export function buildRenderPlan(
   for (const clip of project.clips) {
     const end = clip.startTicks + clipDurationTicks(clip);
     durationTicks = Math.max(durationTicks, end);
+    const track = tracksById.get(clip.trackId);
 
     if (clip.kind === "text" && clip.text) {
+      if (track && !track.visible) continue;
       texts.push({
         clipId: clip.id,
         content: clip.text.content,
@@ -66,6 +78,7 @@ export function buildRenderPlan(
         align: clip.text.align,
         x: clip.transform.x,
         y: clip.transform.y,
+        opacity: clip.transform.opacity,
         timelineStartSec: ticksToSeconds(clip.startTicks),
         timelineEndSec: ticksToSeconds(end),
       });
@@ -75,30 +88,57 @@ export function buildRenderPlan(
     if (clip.kind !== "media" || !clip.assetId) continue;
     const asset = assetsById.get(clip.assetId);
     if (!asset) continue;
+    if (track && !track.visible && asset.kind !== "audio") continue;
+
+    const trackVolume = track?.volume ?? 1;
+    const muted = Boolean(track?.muted);
     clips.push({
       clipId: clip.id,
       trackId: clip.trackId,
+      trackOrder: track?.order ?? 0,
       assetPath: asset.path,
       timelineStartSec: ticksToSeconds(clip.startTicks),
       timelineEndSec: ticksToSeconds(end),
       sourceInSec: ticksToSeconds(clip.sourceInTicks),
       sourceOutSec: ticksToSeconds(clip.sourceOutTicks),
-      volume: clip.volume,
+      volume: clip.volume * trackVolume,
+      opacity: clip.transform.opacity,
+      speed: clip.speed > 0 ? clip.speed : 1,
+      includeAudio: !muted && asset.hasAudio && (asset.kind === "video" || asset.kind === "audio"),
       kind: asset.kind,
     });
   }
 
+  clips.sort((a, b) => a.trackOrder - b.trackOrder || a.timelineStartSec - b.timelineStartSec);
+
   const { width, height } = resolveSize(project, preset);
+  const { videoBitrate, audioBitrate } = qualityBitrates(quality);
 
   return {
     width,
     height,
     frameRate: project.canvas.frameRate,
     durationSec: Math.max(ticksToSeconds(durationTicks), 0.1),
+    videoBitrate,
+    audioBitrate,
     clips,
     texts,
     missingAssetIds,
   };
+}
+
+function qualityBitrates(quality: RenderQualityPreset): {
+  videoBitrate: string;
+  audioBitrate: string;
+} {
+  switch (quality) {
+    case "draft":
+      return { videoBitrate: "2500k", audioBitrate: "128k" };
+    case "high":
+      return { videoBitrate: "12M", audioBitrate: "320k" };
+    default:
+      return { videoBitrate: "6M", audioBitrate: "192k" };
+  }
 }
 
 function resolveSize(

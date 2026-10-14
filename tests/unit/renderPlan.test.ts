@@ -18,11 +18,15 @@ describe("buildRenderPlan", () => {
     };
     project = { ...project, assets: [asset] };
     project = addMediaClip(project, "a1", { startTicks: 1_000_000 });
-    const plan = buildRenderPlan(project, "720");
+    const plan = buildRenderPlan(project, "720", "high");
     expect(plan.height).toBe(720);
     expect(plan.clips).toHaveLength(1);
     expect(plan.texts).toHaveLength(0);
     expect(plan.clips[0].timelineStartSec).toBeCloseTo(1);
+    expect(plan.clips[0].opacity).toBe(1);
+    expect(plan.clips[0].speed).toBe(1);
+    expect(plan.clips[0].includeAudio).toBe(true);
+    expect(plan.videoBitrate).toBe("12M");
     expect(plan.durationSec).toBeCloseTo(6);
     expect(plan.missingAssetIds).toEqual([]);
   });
