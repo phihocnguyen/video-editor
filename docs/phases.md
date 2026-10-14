@@ -46,9 +46,11 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Drag media to timeline; add at playhead
 - [x] History stack; Ctrl+Z / Ctrl+Y
 - [x] Unit tests for invariants and edge cases
-- [x] Snap-to-edges (toggle)
+- [x] Snap-to-edges / playhead (toggle)
 - [x] Trim handles in UI
 - [x] Smooth playhead scrub (pointer drag follows mouse)
+- [x] Add/remove tracks; mute / visible / lock toggles
+- [x] Clip speed (timeline duration = source / speed)
 
 **Exit:** Edit operations preserve model; UI responsive with representative clip count.
 

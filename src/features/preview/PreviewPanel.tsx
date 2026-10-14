@@ -107,16 +107,23 @@ export function PreviewPanel() {
 
     const track = tracks.find((t) => t.id === active.clip.trackId);
     const muted = Boolean(track?.muted) || !active.asset.hasAudio;
+    const speed =
+      Number.isFinite(active.clip.speed) && active.clip.speed > 0
+        ? active.clip.speed
+        : 1;
     video.muted = muted;
     video.volume = Math.min(
       1,
       Math.max(0, active.clip.volume * (track?.volume ?? 1)),
     );
+    video.playbackRate = speed;
+    video.style.opacity = String(active.clip.transform.opacity);
 
-    const localSec =
-      ticksToSeconds(playheadTicks - active.clip.startTicks) +
-      ticksToSeconds(active.clip.sourceInTicks);
-    const target = Math.max(0, localSec);
+    const timelineLocal = ticksToSeconds(playheadTicks - active.clip.startTicks);
+    const target = Math.max(
+      0,
+      timelineLocal * speed + ticksToSeconds(active.clip.sourceInTicks),
+    );
 
     if (isPlaying && !isScrubbing) {
       void video.play().catch(() => undefined);
@@ -178,7 +185,13 @@ export function PreviewPanel() {
               />
             </>
           ) : mediaUrl && active?.asset.kind === "image" ? (
-            <img className={styles.media} src={mediaUrl} alt="" onLoad={() => setMediaReady(true)} />
+            <img
+              className={styles.media}
+              src={mediaUrl}
+              alt=""
+              style={{ opacity: active.clip.transform.opacity }}
+              onLoad={() => setMediaReady(true)}
+            />
           ) : (
             <div className={styles.placeholder}>
               <div className={styles.badge}>Preview</div>

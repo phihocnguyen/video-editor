@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   addMediaClip,
+  addTrack,
   clipDurationTicks,
   deleteClips,
   moveClip,
   projectDurationTicks,
+  removeTrack,
   snapTicks,
   splitClipAt,
   ticksToSeconds,
   trimClip,
+  updateTrack,
 } from "../../domain";
 import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
@@ -81,11 +84,12 @@ export function TimelinePanel() {
       if (snapEnabled) {
         ticks = snapTicks(ticks, clips, {
           thresholdTicks: Math.round(0.15 * 1_000_000 / Math.max(0.5, timelineZoom)),
+          extraTargets: [playheadTicks],
         });
       }
       return Math.max(0, Math.min(durationTicks, ticks));
     },
-    [clips, durationTicks, laneWidth, pxPerSecond, snapEnabled, timelineZoom],
+    [clips, durationTicks, laneWidth, playheadTicks, pxPerSecond, snapEnabled, timelineZoom],
   );
 
   const applyScrubTicks = useCallback(
@@ -206,6 +210,26 @@ export function TimelinePanel() {
           </span>
         </div>
         <div className={styles.zoom}>
+          <button
+            type="button"
+            title="Add video track"
+            onClick={() => {
+              commitProjectChange((p) => addTrack(p, "video"));
+              setStatusMessage("Added video track");
+            }}
+          >
+            +V
+          </button>
+          <button
+            type="button"
+            title="Add audio track"
+            onClick={() => {
+              commitProjectChange((p) => addTrack(p, "audio"));
+              setStatusMessage("Added audio track");
+            }}
+          >
+            +A
+          </button>
           <button type="button" onClick={() => setTimelineZoom(timelineZoom - 0.2)} title="Zoom out">
             −
           </button>
@@ -220,8 +244,64 @@ export function TimelinePanel() {
           <div className={styles.rulerSpacer} />
           {tracks.map((track) => (
             <div key={track.id} className={styles.label}>
-              <strong>{track.name}</strong>
-              <span>{track.kind}</span>
+              <div className={styles.labelTop}>
+                <strong>{track.name}</strong>
+                <span>{track.kind}</span>
+              </div>
+              <div className={styles.trackControls}>
+                <button
+                  type="button"
+                  className={track.muted ? styles.trackCtrlOn : undefined}
+                  title={track.muted ? "Unmute" : "Mute"}
+                  onClick={() =>
+                    commitProjectChange((p) =>
+                      updateTrack(p, track.id, { muted: !track.muted }),
+                    )
+                  }
+                >
+                  M
+                </button>
+                <button
+                  type="button"
+                  className={!track.visible ? styles.trackCtrlOn : undefined}
+                  title={track.visible ? "Hide" : "Show"}
+                  onClick={() =>
+                    commitProjectChange((p) =>
+                      updateTrack(p, track.id, { visible: !track.visible }),
+                    )
+                  }
+                >
+                  V
+                </button>
+                <button
+                  type="button"
+                  className={track.locked ? styles.trackCtrlOn : undefined}
+                  title={track.locked ? "Unlock" : "Lock"}
+                  onClick={() =>
+                    commitProjectChange((p) =>
+                      updateTrack(p, track.id, { locked: !track.locked }),
+                    )
+                  }
+                >
+                  L
+                </button>
+                <button
+                  type="button"
+                  title="Remove track"
+                  onClick={() => {
+                    try {
+                      commitProjectChange((p) => removeTrack(p, track.id));
+                      setStatusMessage(`Removed ${track.name}`);
+                    } catch (error) {
+                      setStatusMessage(
+                        error instanceof Error ? error.message : "Cannot remove track",
+                      );
+                    }
+                  }}
+                >
+                  ×
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -299,11 +379,27 @@ export function TimelinePanel() {
                       onPointerDown={(e) => e.stopPropagation()}
                       draggable
                       onDragEnd={(e) => {
+                        if (track.locked) {
+                          setStatusMessage("Track is locked");
+                          return;
+                        }
                         let startTicks = ticksFromClientX(e.clientX);
                         if (snapEnabled) {
-                          startTicks = snapTicks(startTicks, clips.filter((c) => c.id !== clip.id));
+                          startTicks = snapTicks(
+                            startTicks,
+                            clips.filter((c) => c.id !== clip.id),
+                            { extraTargets: [playheadTicks] },
+                          );
                         }
-                        commitProjectChange((p) => moveClip(p, clip.id, startTicks, track.id));
+                        try {
+                          commitProjectChange((p) =>
+                            moveClip(p, clip.id, startTicks, track.id),
+                          );
+                        } catch (error) {
+                          setStatusMessage(
+                            error instanceof Error ? error.message : "Move failed",
+                          );
+                        }
                       }}
                       title={label}
                     >
