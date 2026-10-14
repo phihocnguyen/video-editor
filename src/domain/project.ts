@@ -79,7 +79,7 @@ export interface ProjectDocument {
   updatedAt: string;
 }
 
-export function createEmptyProject(name = "Untitled Project"): ProjectDocument {
+export function createEmptyProject(name = "Untitled project"): ProjectDocument {
   const now = new Date().toISOString();
   return {
     schemaVersion: PROJECT_SCHEMA_VERSION,
