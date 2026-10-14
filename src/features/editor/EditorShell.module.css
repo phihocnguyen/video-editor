@@ -1,98 +1,196 @@
 .shell {
   display: grid;
-  grid-template-rows: 44px 1fr 220px 28px;
+  grid-template-rows: var(--toolbar-h) minmax(0, 1fr) var(--timeline-h);
   height: 100%;
   width: 100%;
   background: var(--bg-app);
 }
 
-.toolbar {
-  display: flex;
+.topbar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 0 12px;
+  gap: 12px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-panel);
 }
 
-.brand {
+.topLeft,
+.topRight {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
-.logo {
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+.topRight {
+  justify-content: flex-end;
 }
 
-.projectName {
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.actions {
+.topCenter {
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 
-.actions button {
-  border: 1px solid var(--border);
+.brandBtn {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #1ec8ff, #0077c2);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.brandMark {
+  color: #fff;
+  font-size: 12px;
+  transform: translateX(1px);
+}
+
+.projectMeta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.projectTitle {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 600;
+  width: min(280px, 40vw);
+}
+
+.projectTitle:focus {
+  border: none;
+  outline: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.dirty {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.toolGroup {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
   background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+
+.tool,
+.toolActive {
+  width: 34px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.tool:hover:not(:disabled),
+.toolActive {
   color: var(--text);
-  border-radius: var(--radius);
-  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.06);
 }
 
-.actions button:hover:not(:disabled) {
-  border-color: var(--accent);
+.toolActive {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
-.actions .active {
+.exportBtn {
+  height: 34px;
+  padding: 0 18px;
+  border-radius: 999px;
   background: var(--accent);
-  border-color: var(--accent-strong);
+  color: #041018;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.exportBtn:hover {
+  background: var(--accent-strong);
   color: #fff;
 }
 
-.workspace {
+.body {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: var(--rail-w) var(--side-w) minmax(0, 1fr);
   min-height: 0;
+  border-bottom: 1px solid var(--border);
 }
 
-.side,
-.preview,
-.timeline {
-  min-height: 0;
-  min-width: 0;
-  border-right: 1px solid var(--border);
-  background: var(--bg-panel);
-}
-
-.preview {
-  border-right: none;
-}
-
-.timeline {
-  border-top: 1px solid var(--border);
-  border-right: none;
-  background: var(--bg-track);
-}
-
-.status {
+.rail {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 6px;
+  background: var(--bg-rail);
+  border-right: 1px solid var(--border);
+  overflow: auto;
+}
+
+.railItem,
+.railItemActive {
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 12px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-panel);
+  gap: 4px;
+  padding: 10px 4px;
+  border-radius: 10px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
+}
+
+.railItem:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.railItemActive {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.railIcon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.railItemActive .railIcon {
+  background: rgba(0, 186, 255, 0.2);
+}
+
+.side {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+}
+
+.main {
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-canvas);
+}
+
+.timeline {
+  min-height: 0;
+  background: var(--bg-track);
 }
