@@ -169,19 +169,36 @@ export function TimelinePanel() {
     <div className={styles.panel}>
       <div className={styles.toolbar}>
         <div className={styles.toolbarLeft}>
-          <button type="button" onClick={handleSplit} title="Split at playhead">
-            ✂
+          <button type="button" onClick={handleSplit} title="Split at playhead" aria-label="Split">
+            <svg className={styles.toolIcon} viewBox="0 0 16 16" aria-hidden>
+              <path
+                fill="currentColor"
+                d="M4.2 1.8a1.5 1.5 0 1 0-.9 2.8L5.8 7l-2.5 2.4a1.5 1.5 0 1 0 .9 2.8L8 8.7l3.8 3.5a1.5 1.5 0 1 0 .9-2.8L10.2 7l2.5-2.4a1.5 1.5 0 1 0-.9-2.8L8 5.3 4.2 1.8Z"
+              />
+            </svg>
           </button>
-          <button type="button" onClick={handleDelete} title="Delete selected">
-            ⌫
+          <button type="button" onClick={handleDelete} title="Delete selected" aria-label="Delete">
+            <svg className={styles.toolIcon} viewBox="0 0 16 16" aria-hidden>
+              <path
+                fill="currentColor"
+                d="M6.2 2h3.6l.4 1.2H13v1.4H3V3.2h2.8L6.2 2Zm.8 3.4h1.5v7H7V5.4Zm3 0h1.5v7H10V5.4ZM4.8 4.8h6.4l-.5 8.1A1.4 1.4 0 0 1 9.3 14H6.7a1.4 1.4 0 0 1-1.4-1.1L4.8 4.8Z"
+              />
+            </svg>
           </button>
           <button
             type="button"
             className={snapEnabled ? styles.toolOn : undefined}
             onClick={() => setSnapEnabled(!snapEnabled)}
             title="Snap to clip edges"
+            aria-label="Snap to clip edges"
+            aria-pressed={snapEnabled}
           >
-            ⌄
+            <svg className={styles.toolIcon} viewBox="0 0 16 16" aria-hidden>
+              <path
+                fill="currentColor"
+                d="M3.2 1.8h2.3v5c0 1.5-.9 2.5-2.2 2.5S1.1 8.3 1.1 6.8V4.8h1.6v2c0 .5.2.8.6.8s.6-.3.6-.8v-5Zm7.3 0h2.3v5c0 .5.2.8.6.8s.6-.3.6-.8v-2h1.6v2c0 1.5-.9 2.5-2.2 2.5s-2.2-1-2.2-2.5v-5ZM2.8 11h10.4v1.5H2.8V11Zm1.8 2.2h6.8V15H4.6v-1.8Z"
+              />
+            </svg>
           </button>
           <span className={styles.timecode}>
             {formatClock(playheadSeconds)}

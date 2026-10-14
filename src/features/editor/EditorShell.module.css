@@ -60,7 +60,9 @@
 .brandMark {
   color: #fff;
   font-size: 12px;
-  transform: translateX(1px);
+  line-height: 1;
+  display: grid;
+  place-items: center;
 }
 
 .projectMeta {
@@ -106,12 +108,15 @@
 
 .tool,
 .toolActive {
+  display: grid;
+  place-items: center;
   min-width: 34px;
   height: 30px;
   padding: 0 8px;
   border-radius: 8px;
   color: var(--text-muted);
   font-size: 12px;
+  line-height: 1;
 }
 
 .tool:hover:not(:disabled),

@@ -113,11 +113,15 @@
 
 .transportLeft button,
 .fullscreen {
+  display: grid;
+  place-items: center;
   width: 34px;
   height: 34px;
+  padding: 0;
   border-radius: 999px;
   color: var(--text);
   background: rgba(255, 255, 255, 0.04);
+  line-height: 1;
 }
 
 .playBtn {

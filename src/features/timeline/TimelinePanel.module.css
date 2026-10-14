@@ -28,12 +28,23 @@
 
 .toolbarLeft button,
 .zoom button {
+  display: grid;
+  place-items: center;
   width: 30px;
   height: 28px;
+  padding: 0;
   border-radius: 8px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   color: var(--text-muted);
+  line-height: 1;
+  font-size: 14px;
+}
+
+.toolIcon {
+  width: 14px;
+  height: 14px;
+  display: block;
 }
 
 .toolOn {
