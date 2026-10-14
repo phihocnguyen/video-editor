@@ -3,6 +3,7 @@ import { clipDurationTicks, ticksToSeconds } from "../../domain";
 import { resolveMediaUrl } from "../../lib/mediaUrl";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { TextOverlayLayer } from "./TextOverlayLayer";
 import { useTimelineAudio } from "./useTimelineAudio";
 import styles from "./PreviewPanel.module.css";
 
@@ -24,8 +25,11 @@ export function PreviewPanel() {
   const setPlayheadTicks = useEditorUiStore((s) => s.setPlayheadTicks);
   const durationTicks = useEditorUiStore((s) => s.durationTicks);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const lastSeekAtRef = useRef(0);
   const [mediaReady, setMediaReady] = useState(false);
+  const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
+  const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
 
   const active = useMemo(() => {
     const videoTracks = tracks
@@ -139,8 +143,14 @@ export function PreviewPanel() {
     <div className={styles.panel}>
       <div className={styles.stageWrap}>
         <div
+          ref={stageRef}
           className={styles.stage}
           style={{ aspectRatio: `${canvas.width} / ${canvas.height}` }}
+          onPointerDown={(e) => {
+            if (e.target === e.currentTarget || (e.target as HTMLElement).tagName === "VIDEO" || (e.target as HTMLElement).tagName === "IMG") {
+              if (selectedClipIds.length > 0) setSelectedClipIds([]);
+            }
+          }}
         >
           {mediaUrl && active?.asset.kind === "video" ? (
             <>
@@ -176,27 +186,12 @@ export function PreviewPanel() {
               <span>Active-clip preview — multi-track compositing still limited</span>
             </div>
           )}
-          {activeTexts.map((clip) => {
-            const style = clip.text!;
-            return (
-              <div
-                key={clip.id}
-                className={styles.textOverlay}
-                style={{
-                  left: `${(clip.transform.x / canvas.width) * 100}%`,
-                  top: `${(clip.transform.y / canvas.height) * 100}%`,
-                  transform: "translate(-50%, -50%)",
-                  fontFamily: `"${style.fontFamily}", sans-serif`,
-                  fontSize: `${Math.max(12, Math.round(style.fontSize * 0.4))}px`,
-                  color: style.color,
-                  textAlign: style.align,
-                  opacity: clip.transform.opacity,
-                }}
-              >
-                {style.content}
-              </div>
-            );
-          })}
+          <TextOverlayLayer
+            clips={activeTexts}
+            canvasWidth={canvas.width}
+            canvasHeight={canvas.height}
+            stageRef={stageRef}
+          />
         </div>
       </div>
 

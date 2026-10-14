@@ -29,14 +29,60 @@
   overflow: hidden;
 }
 
-.textOverlay {
+.textBox,
+.textBoxSelected {
   position: absolute;
-  z-index: 2;
-  max-width: 80%;
+  z-index: 3;
+  max-width: 86%;
+  transform: translate(-50%, -50%);
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.textBoxSelected {
+  outline: 1.5px solid rgba(255, 255, 255, 0.92);
+  outline-offset: 6px;
+}
+
+.textContent {
   white-space: pre-wrap;
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: 0.01em;
   pointer-events: none;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
-  line-height: 1.2;
+}
+
+.textHandleDelete,
+.textHandleResize {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #111;
+  color: #fff;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  display: grid;
+  place-items: center;
+  z-index: 4;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.textHandleDelete {
+  top: -18px;
+  left: -18px;
+}
+
+.textHandleResize {
+  right: -18px;
+  bottom: -18px;
+  cursor: nwse-resize;
+}
+
+.textHandleDelete:hover,
+.textHandleResize:hover {
+  background: #222;
 }
 
 .media {
