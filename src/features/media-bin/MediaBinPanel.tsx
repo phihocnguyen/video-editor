@@ -133,7 +133,12 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
                     {thumbUrl && asset.kind === "image" ? (
                       <img src={thumbUrl} alt="" />
                     ) : thumbUrl && asset.kind === "video" ? (
-                      <VideoThumb src={thumbUrl} />
+                      <VideoThumb
+                        src={thumbUrl}
+                        filePath={
+                          asset.path.startsWith("blob:") ? null : asset.path
+                        }
+                      />
                     ) : asset.kind === "audio" ? (
                       "♪"
                     ) : (

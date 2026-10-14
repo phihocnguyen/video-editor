@@ -44,6 +44,18 @@ export async function checkMediaPaths(paths: string[]): Promise<MediaAvailabilit
   return invoke<MediaAvailability[]>("check_media_paths", { paths });
 }
 
+export interface ThumbnailResult {
+  path: string;
+  cached: boolean;
+}
+
+export async function generateThumbnail(
+  path: string,
+  timeSec = 0.5,
+): Promise<ThumbnailResult> {
+  return invoke<ThumbnailResult>("generate_thumbnail", { path, timeSec });
+}
+
 export async function openProjectFile(path: string): Promise<ProjectDocument> {
   return invoke<ProjectDocument>("open_project", { path });
 }
