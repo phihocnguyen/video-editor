@@ -51,12 +51,52 @@
   color: var(--danger);
 }
 
-.exportBtn {
+.job {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.job p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.progressTrack {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.exportBtn,
+.cancelBtn {
   height: 38px;
   border-radius: 999px;
+  font-weight: 700;
+  padding: 0 16px;
+}
+
+.exportBtn {
   background: var(--accent);
   color: #041018;
-  font-weight: 700;
+}
+
+.cancelBtn {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
 }
 
 .exportBtn:disabled {

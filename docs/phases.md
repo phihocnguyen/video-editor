@@ -71,23 +71,28 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 
 **Goal:** Deterministic MP4 export via FFmpeg from Rust.
 
-- [x] Render-plan generator (TypeScript)
-- [ ] FFmpeg rendering integration through Rust
-- [ ] Export dialog progress, failure diagnostics, cancellation
+- [x] Render-plan generator (TypeScript) including text overlays
+- [x] FFmpeg argv builder + job lifecycle (Rust; needs FFmpeg on PATH)
+- [x] Export dialog progress + cancel
+- [ ] Verify on `pnpm tauri:dev` (MSVC + FFmpeg)
 - [ ] Output validation with ffprobe
+- [ ] Audio track mix in export filter graph
 
 **Exit:** Multi-clip project → valid MP4; cancel leaves no corrupt final; semantics match docs.
 
 ---
 
-## Phase 5 — MVP polish & packaging (Milestone 5)
+## Phase 5 — MVP polish & packaging (in progress / Milestone 5)
 
 **Goal:** Installable offline MVP.
 
-- Text/title overlays; transforms; volume in inspector
-- Shortcuts, settings, recent projects
-- NSIS installer, icon, versioning
-- Offline QA pass; README known limitations + licenses
+- [x] Add text clip + edit content/font/color/position
+- [x] Browse custom fonts (desktop dialog / browser file picker)
+- [x] Preview text overlays
+- [ ] Transforms/volume inspector for media clips
+- [ ] Shortcuts, settings, recent projects
+- [ ] NSIS installer, icon, versioning
+- [ ] Offline QA pass; README known limitations + licenses
 
 **Exit:** Clean Windows install; full MVP DoD in `implementation_plan.md` §16.
 

@@ -105,6 +105,44 @@ export async function pickMediaPaths(): Promise<string[]> {
   return Array.isArray(selected) ? selected : [selected];
 }
 
+export type ExportJobState =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface ExportJobStatus {
+  id: string;
+  state: ExportJobState;
+  progress: number;
+  message: string;
+  outputPath: string | null;
+}
+
+export async function startExport(
+  plan: unknown,
+  outputPath: string,
+): Promise<ExportJobStatus> {
+  return invoke<ExportJobStatus>("start_export", { plan, outputPath });
+}
+
+export async function getExportStatus(): Promise<ExportJobStatus | null> {
+  return invoke<ExportJobStatus | null>("get_export_status");
+}
+
+export async function cancelExport(): Promise<ExportJobStatus> {
+  return invoke<ExportJobStatus>("cancel_export");
+}
+
+export async function pickExportOutputPath(defaultName: string): Promise<string | null> {
+  const selected = await save({
+    defaultPath: `${defaultName}.mp4`,
+    filters: [{ name: "MP4 Video", extensions: ["mp4"] }],
+  });
+  return selected;
+}
+
 export async function safeInvoke<T>(
   command: string,
   args?: Record<string, unknown>,
