@@ -1,7 +1,9 @@
 import { useCallback, useEffect } from "react";
+import { deleteClips } from "../../domain";
 import {
   actionAutosave,
   actionOpenProject,
+  actionOpenProjectAtPath,
   actionRecoverAutosave,
   actionRefreshMissing,
   actionSaveProject,
@@ -12,8 +14,10 @@ import {
   useEditorUiStore,
   type EditorPanel,
 } from "../../stores/editorUiStore";
-import { useHistoryStore } from "../../stores/historyStore";
+import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { useRecentProjectsStore } from "../../stores/recentProjectsStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { MediaBinPanel } from "../media-bin/MediaBinPanel";
 import { TimelinePanel } from "../timeline/TimelinePanel";
 import { PreviewPanel } from "../preview/PreviewPanel";
@@ -30,6 +34,11 @@ const RAIL_ITEMS: { id: EditorPanel; label: string; icon: string }[] = [
   { id: "subtitles", label: "Subs", icon: "≡" },
 ];
 
+function shortPath(path: string): string {
+  const parts = path.split(/[/\\]/);
+  return parts[parts.length - 1] || path;
+}
+
 export function EditorShell() {
   const project = useProjectStore((s) => s.project);
   const projectPath = useProjectStore((s) => s.projectPath);
@@ -43,32 +52,71 @@ export function EditorShell() {
   const tool = useEditorUiStore((s) => s.tool);
   const setTool = useEditorUiStore((s) => s.setTool);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
+  const isPlaying = useEditorUiStore((s) => s.isPlaying);
+  const setPlaying = useEditorUiStore((s) => s.setPlaying);
+  const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
   const undo = useHistoryStore((s) => s.undo);
   const redo = useHistoryStore((s) => s.redo);
   const clearHistory = useHistoryStore((s) => s.clear);
   const pastCount = useHistoryStore((s) => s.past.length);
   const futureCount = useHistoryStore((s) => s.future.length);
+  const recent = useRecentProjectsStore((s) => s.recent);
+  const rememberRecent = useRecentProjectsStore((s) => s.remember);
+  const hydrateSettings = useSettingsStore((s) => s.hydrate);
 
-  const handleOpen = useCallback(async () => {
-    try {
-      const { project: opened, path } = await actionOpenProject();
-      const refreshed = await actionRefreshMissing(opened);
+  const loadOpened = useCallback(
+    async (opened: { project: typeof project; path: string | null }) => {
+      const refreshed = await actionRefreshMissing(opened.project);
       setProject(refreshed, { dirty: false });
-      setProjectPath(path);
+      setProjectPath(opened.path);
       markClean();
       clearHistory();
+      setSelectedClipIds([]);
+      setPlaying(false);
+      if (opened.path) {
+        rememberRecent(opened.path, refreshed.name || shortPath(opened.path));
+      }
       const missing = refreshed.assets.filter((a) => a.missing).length;
       setStatusMessage(
         missing > 0
           ? `Opened · ${missing} missing media file(s)`
-          : `Opened${path ? ` · ${path}` : ""}`,
+          : `Opened${opened.path ? ` · ${opened.path}` : ""}`,
       );
+    },
+    [
+      clearHistory,
+      markClean,
+      rememberRecent,
+      setPlaying,
+      setProject,
+      setProjectPath,
+      setSelectedClipIds,
+      setStatusMessage,
+    ],
+  );
+
+  const handleOpen = useCallback(async () => {
+    try {
+      const opened = await actionOpenProject();
+      await loadOpened(opened);
     } catch (error) {
       if (formatActionError(error) !== "Open cancelled") {
         setStatusMessage(formatActionError(error));
       }
     }
-  }, [clearHistory, markClean, setProject, setProjectPath, setStatusMessage]);
+  }, [loadOpened, setStatusMessage]);
+
+  const handleOpenRecent = useCallback(
+    async (path: string) => {
+      try {
+        const opened = await actionOpenProjectAtPath(path);
+        await loadOpened(opened);
+      } catch (error) {
+        setStatusMessage(formatActionError(error));
+      }
+    },
+    [loadOpened, setStatusMessage],
+  );
 
   const handleSave = useCallback(async () => {
     try {
@@ -76,13 +124,28 @@ export function EditorShell() {
       setProjectPath(path);
       setProject({ ...project, updatedAt: new Date().toISOString() }, { dirty: false });
       markClean();
+      if (path) {
+        rememberRecent(path, project.name || shortPath(path));
+      }
       setStatusMessage(path ? `Saved · ${path}` : "Saved (browser download)");
     } catch (error) {
       if (formatActionError(error) !== "Save cancelled") {
         setStatusMessage(formatActionError(error));
       }
     }
-  }, [markClean, project, projectPath, setProject, setProjectPath, setStatusMessage]);
+  }, [
+    markClean,
+    project,
+    projectPath,
+    rememberRecent,
+    setProject,
+    setProjectPath,
+    setStatusMessage,
+  ]);
+
+  useEffect(() => {
+    hydrateSettings();
+  }, [hydrateSettings]);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,7 +158,6 @@ export function EditorShell() {
           }
           const recovered = await actionRecoverAutosave();
           if (!cancelled && recovered && useProjectStore.getState().project.assets.length === 0) {
-            // Offer recovery only as status hint for now; user can Open manually later.
             setStatusMessage("Autosave available — use Open or continue editing");
           }
         } else if (!cancelled) {
@@ -124,25 +186,54 @@ export function EditorShell() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      const tag = (event.target as HTMLElement | null)?.tagName;
+      const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
       const mod = event.ctrlKey || event.metaKey;
+
+      if (mod && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void handleSave();
+        return;
+      }
+      if (mod && event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        void handleOpen();
+        return;
+      }
       if (mod && event.key.toLowerCase() === "z" && !event.shiftKey) {
         event.preventDefault();
         undo();
-      } else if (
+        return;
+      }
+      if (
         (mod && event.key.toLowerCase() === "y") ||
         (mod && event.shiftKey && event.key.toLowerCase() === "z")
       ) {
         event.preventDefault();
         redo();
-      } else if (event.key === "Delete" || event.key === "Backspace") {
-        const tag = (event.target as HTMLElement | null)?.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA") return;
-        // Timeline panel owns delete via selected clips + toolbar; keep shortcut light.
+        return;
+      }
+
+      if (typing) return;
+
+      if (event.key === " " || event.code === "Space") {
+        event.preventDefault();
+        setPlaying(!useEditorUiStore.getState().isPlaying);
+        return;
+      }
+
+      if (event.key === "Delete" || event.key === "Backspace") {
+        const ids = useEditorUiStore.getState().selectedClipIds;
+        if (ids.length === 0) return;
+        event.preventDefault();
+        commitProjectChange((p) => deleteClips(p, ids));
+        setSelectedClipIds([]);
+        setStatusMessage("Deleted selected clip(s)");
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [redo, undo]);
+  }, [handleOpen, handleSave, redo, setPlaying, setSelectedClipIds, setStatusMessage, undo]);
 
   return (
     <div className={styles.shell}>
@@ -154,6 +245,8 @@ export function EditorShell() {
             onClick={() => {
               newProject();
               clearHistory();
+              setSelectedClipIds([]);
+              setPlaying(false);
               setStatusMessage("New project");
             }}
             title="New project"
@@ -196,12 +289,44 @@ export function EditorShell() {
             </button>
           </div>
           <div className={styles.toolGroup}>
-            <button type="button" className={styles.tool} onClick={() => void handleOpen()} title="Open">
+            <button
+              type="button"
+              className={styles.tool}
+              onClick={() => void handleOpen()}
+              title="Open (Ctrl+O)"
+            >
               Open
             </button>
-            <button type="button" className={styles.tool} onClick={() => void handleSave()} title="Save">
+            <button
+              type="button"
+              className={styles.tool}
+              onClick={() => void handleSave()}
+              title="Save (Ctrl+S)"
+            >
               Save
             </button>
+            {recent.length > 0 && isTauriRuntime() && (
+              <label className={styles.recentWrap} title="Recent projects">
+                <span className={styles.recentLabel}>Recent</span>
+                <select
+                  className={styles.recentSelect}
+                  value=""
+                  onChange={(e) => {
+                    const path = e.target.value;
+                    if (path) void handleOpenRecent(path);
+                  }}
+                >
+                  <option value="" disabled>
+                    Open recent…
+                  </option>
+                  {recent.map((entry) => (
+                    <option key={entry.path} value={entry.path}>
+                      {entry.name || shortPath(entry.path)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
           <div className={styles.toolGroup}>
             <button
@@ -221,6 +346,14 @@ export function EditorShell() {
               title="Redo (Ctrl+Y)"
             >
               ↷
+            </button>
+            <button
+              type="button"
+              className={isPlaying ? styles.toolActive : styles.tool}
+              onClick={() => setPlaying(!isPlaying)}
+              title="Play / Pause (Space)"
+            >
+              {isPlaying ? "❚❚" : "▶"}
             </button>
           </div>
         </div>

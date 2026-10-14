@@ -125,6 +125,31 @@
   color: var(--accent);
 }
 
+.recentWrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  min-width: 0;
+}
+
+.recentLabel {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.recentSelect {
+  max-width: 140px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-app);
+  color: var(--text);
+  font-size: 11px;
+  padding: 0 6px;
+}
+
 .exportBtn {
   flex-shrink: 0;
   height: 34px;

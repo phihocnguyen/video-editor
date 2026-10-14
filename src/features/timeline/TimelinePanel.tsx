@@ -13,6 +13,7 @@ import {
 import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import styles from "./TimelinePanel.module.css";
 
 function formatClock(seconds: number): string {
@@ -38,7 +39,7 @@ export function TimelinePanel() {
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const setPlaying = useEditorUiStore((s) => s.setPlaying);
   const setScrubbing = useEditorUiStore((s) => s.setScrubbing);
-  const setSnapEnabled = useEditorUiStore((s) => s.setSnapEnabled);
+  const setSnapEnabled = useSettingsStore((s) => s.setSnapEnabled);
 
   const lanesRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);

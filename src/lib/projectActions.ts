@@ -49,6 +49,16 @@ export function assetFromProbe(probe: ProbeResult): MediaAsset {
   };
 }
 
+export async function actionOpenProjectAtPath(
+  path: string,
+): Promise<{ project: ProjectDocument; path: string }> {
+  if (!isTauriRuntime()) {
+    throw new Error("Open by path requires the desktop app");
+  }
+  const project = await openProjectFile(path);
+  return { project, path };
+}
+
 export async function actionOpenProject(): Promise<{
   project: ProjectDocument;
   path: string | null;
