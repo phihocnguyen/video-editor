@@ -6,6 +6,8 @@ import {
   type ProjectDocument,
   type Track,
 } from "./project";
+import { normalizeSpeedRamp } from "./speedRamp";
+import { normalizeTextAnimation } from "./textAnimation";
 import { normalizeClipTransition } from "./transitions";
 
 export interface ValidationIssue {
@@ -179,6 +181,36 @@ function validateClip(clip: unknown, path: string, issues: ValidationIssue[]) {
     });
   }
 
+  if (clip.transform !== undefined && clip.transform !== null) {
+    if (!isRecord(clip.transform)) {
+      issues.push({ path: `${path}.transform`, message: "Expected transform object" });
+    } else {
+      for (const key of [
+        "x",
+        "y",
+        "scaleX",
+        "scaleY",
+        "rotation",
+        "opacity",
+      ] as const) {
+        if (clip.transform[key] !== undefined) {
+          requireNumber(clip.transform, key, `${path}.transform`, issues);
+        }
+      }
+    }
+  }
+
+  if (clip.animation !== undefined && clip.animation !== null) {
+    if (!isRecord(clip.animation)) {
+      issues.push({ path: `${path}.animation`, message: "Expected animation object" });
+    } else if (
+      clip.animation.in !== undefined &&
+      typeof clip.animation.in !== "string"
+    ) {
+      issues.push({ path: `${path}.animation.in`, message: "Expected string" });
+    }
+  }
+
   if (clip.effects !== undefined && clip.effects !== null) {
     if (!isRecord(clip.effects)) {
       issues.push({ path: `${path}.effects`, message: "Expected effects object" });
@@ -200,6 +232,38 @@ function validateClip(clip: unknown, path: string, issues: ValidationIssue[]) {
       }
     }
   }
+
+  if (clip.speedRamp !== undefined && clip.speedRamp !== null) {
+    if (!isRecord(clip.speedRamp) || !Array.isArray(clip.speedRamp.points)) {
+      issues.push({ path: `${path}.speedRamp`, message: "Expected { points: [] }" });
+    } else {
+      clip.speedRamp.points.forEach((point, index) => {
+        if (!isRecord(point)) {
+          issues.push({
+            path: `${path}.speedRamp.points[${index}]`,
+            message: "Expected ramp point object",
+          });
+          return;
+        }
+        requireNumber(point, "atProgress", `${path}.speedRamp.points[${index}]`, issues);
+        requireNumber(point, "speed", `${path}.speedRamp.points[${index}]`, issues);
+        const speed = point.speed;
+        const progress = point.atProgress;
+        if (typeof speed === "number" && (speed <= 0 || speed > 100)) {
+          issues.push({
+            path: `${path}.speedRamp.points[${index}].speed`,
+            message: "speed must be > 0",
+          });
+        }
+        if (typeof progress === "number" && (progress < 0 || progress > 1)) {
+          issues.push({
+            path: `${path}.speedRamp.points[${index}].atProgress`,
+            message: "atProgress must be within [0, 1]",
+          });
+        }
+      });
+    }
+  }
 }
 
 export function assertProject(input: unknown): ProjectDocument {
@@ -210,19 +274,47 @@ export function assertProject(input: unknown): ProjectDocument {
   return normalizeProjectDocument(input as ProjectDocument);
 }
 
-/** Fill missing clip.effects / transitionIn for older project JSON. */
+const DEFAULT_TRANSFORM: Clip["transform"] = {
+  x: 0,
+  y: 0,
+  scaleX: 1,
+  scaleY: 1,
+  rotation: 0,
+  opacity: 1,
+};
+
+/** Fill missing clip fields + canvas defaults for older project JSON. */
 export function normalizeProjectDocument(project: ProjectDocument): ProjectDocument {
+  const canvas = project.canvas as ProjectDocument["canvas"] & {
+    backgroundColor?: unknown;
+  };
   return {
     ...project,
+    canvas: {
+      ...project.canvas,
+      backgroundColor:
+        typeof canvas.backgroundColor === "string" && canvas.backgroundColor.length > 0
+          ? canvas.backgroundColor
+          : "#000000",
+    },
     clips: project.clips.map((clip) => {
       const raw = clip as Clip & {
         effects?: Partial<Clip["effects"]> | null;
         transitionIn?: Partial<Clip["transitionIn"]> | null;
+        speedRamp?: Partial<Clip["speedRamp"]> | null;
+        animation?: Partial<Clip["animation"]> | null;
+        transform?: Partial<Clip["transform"]> | null;
       };
+      const normalizedRamp = normalizeSpeedRamp(raw.speedRamp ?? null);
       return {
         ...clip,
+        transform: { ...DEFAULT_TRANSFORM, ...(raw.transform ?? {}) },
         effects: normalizeClipEffects(raw.effects),
         transitionIn: normalizeClipTransition(raw.transitionIn),
+        animation: raw.animation
+          ? normalizeTextAnimation(raw.animation)
+          : clip.animation ?? null,
+        speedRamp: normalizedRamp,
       };
     }),
   };

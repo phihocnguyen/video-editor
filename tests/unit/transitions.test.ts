@@ -7,7 +7,10 @@ import {
   DEFAULT_CLIP_EFFECTS,
   incomingTransitionProgress,
   normalizeClipTransition,
+  TRANSITION_DEFS,
+  transitionDef,
   transitionOpacityPair,
+  transitionPreview,
   updateClipTransition,
   type Clip,
   type MediaAsset,
@@ -116,5 +119,54 @@ describe("transitions", () => {
     const plan = buildRenderPlan(project, "720", "draft");
     const b = plan.clips.find((c) => c.clipId === second.id)!;
     expect(b.transitionOverlapSec).toBeGreaterThan(0.2);
+  });
+
+  it("normalizes every grouped transition type", () => {
+    for (const def of TRANSITION_DEFS) {
+      expect(normalizeClipTransition({ type: def.type }).type).toBe(def.type);
+    }
+    // Unique ids, and all non-cut types map to a distinct xfade (except zoomOut/whipPan).
+    expect(new Set(TRANSITION_DEFS.map((d) => d.type)).size).toBe(TRANSITION_DEFS.length);
+    expect(transitionDef("dissolve").xfade).toBe("fade");
+    expect(transitionDef("slideLeft").xfade).toBe("slideleft");
+    expect(transitionDef("circleOpen").xfade).toBe("circleopen");
+    expect(transitionDef("none").xfade).toBeNull();
+  });
+
+  it("reports a rich preview visual for slides and masks", () => {
+    const slide = transitionPreview("slideLeft", 0);
+    expect(slide.transform).toContain("translateX");
+    const wipe = transitionPreview("wipeUp", 0);
+    expect(wipe.clipPath).toContain("inset");
+    const blur = transitionPreview("blurDissolve", 0);
+    expect(blur.filter).toContain("blur");
+  });
+
+  it("maps the new transitions to xfade names in the export graph", () => {
+    let project = createEmptyProject();
+    const mk = (id: string, name: string): MediaAsset => ({
+      id,
+      kind: "video",
+      path: `C:/media/${name}`,
+      name,
+      durationTicks: 3_000_000,
+      width: 1280,
+      height: 720,
+      frameRate: 30,
+      hasAudio: false,
+      missing: false,
+    });
+    project = { ...project, assets: [mk("a1", "a.mp4"), mk("a2", "b.mp4")] };
+    project = addMediaClip(project, "a1", { startTicks: 0 });
+    project = addMediaClip(project, "a2", { startTicks: 3_000_000 });
+    const second = project.clips.find((c) => c.assetId === "a2")!;
+    project = updateClipTransition(project, second.id, {
+      type: "circleOpen",
+      durationTicks: 600_000,
+    });
+    const plan = buildRenderPlan(project, "720", "draft");
+    const built = buildFfmpegArgs(plan, "C:/out/x.mp4", { fileExists: () => true });
+    const filter = built.args[built.args.indexOf("-filter_complex") + 1];
+    expect(filter).toContain("xfade=transition=circleopen");
   });
 });

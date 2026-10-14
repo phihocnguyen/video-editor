@@ -1,6 +1,8 @@
 import type { ClipEffects } from "./effects";
 import type { ClipTransition } from "./transitions";
+import type { TextAnimation } from "./textAnimation";
 import type { Tick } from "./time";
+import type { SpeedRamp } from "./speedRamp";
 
 export const PROJECT_SCHEMA_VERSION = 1 as const;
 
@@ -21,6 +23,17 @@ export interface MediaAsset {
   missing: boolean;
 }
 
+/**
+ * Position/scale/rotation for a layer on the canvas.
+ *
+ * Text clips: `x`/`y` are the absolute canvas pixel position of the text centre.
+ *
+ * Media clips (video/image): `x`/`y` are the canvas pixel position of the layer
+ * centre (default = canvas centre). The layer is first contained-fit into the
+ * canvas, then `scaleX`/`scaleY` multiply that fitted box. `rotation` is degrees
+ * (clockwise). Older projects may have `x`/`y` at 0 — treat 0 as "canvas centre"
+ * for media in that case.
+ */
 export interface ClipTransform {
   x: number;
   y: number;
@@ -72,7 +85,18 @@ export interface Clip {
    * Missing on older projects → none.
    */
   transitionIn: ClipTransition;
+  /**
+   * In/out animation for text clips. Missing on older projects → no animation.
+   * Ignored for media clips.
+   */
+  animation?: TextAnimation | null;
   text: TextStyle | null;
+  /**
+   * Optional speed ramp (variable speed over the source range). Missing on older
+   * projects → constant `speed`. When present and non-flat it supersedes `speed`
+   * for duration and preview mapping.
+   */
+  speedRamp?: SpeedRamp | null;
 }
 
 export interface Track {
@@ -94,6 +118,8 @@ export interface ProjectDocument {
     width: number;
     height: number;
     frameRate: number;
+    /** Stage background colour behind all layers (CSS + export base). */
+    backgroundColor: string;
   };
   tracks: Track[];
   assets: MediaAsset[];
@@ -111,6 +137,7 @@ export function createEmptyProject(name = "Untitled project"): ProjectDocument {
       width: 1920,
       height: 1080,
       frameRate: 30,
+      backgroundColor: "#000000",
     },
     tracks: [
       {

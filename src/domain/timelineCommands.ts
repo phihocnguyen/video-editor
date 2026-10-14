@@ -17,6 +17,22 @@ import {
   normalizeClipTransition,
   type ClipTransition,
 } from "./transitions";
+import {
+  DEFAULT_TEXT_ANIMATION,
+  normalizeTextAnimation,
+  type TextAnimation,
+} from "./textAnimation";
+import {
+  clampRampSpeed,
+  createSpeedPoint,
+  getRampProfile,
+  isFlatRamp,
+  normalizeSpeedRamp,
+  rampDurationTicks,
+  sliceRamp,
+  timelineOffsetForSourceOffset,
+  type SpeedRamp,
+} from "./speedRamp";
 import type { Tick } from "./time";
 
 const DEFAULT_TRANSFORM = {
@@ -28,10 +44,60 @@ const DEFAULT_TRANSFORM = {
   opacity: 1,
 };
 
+/**
+ * Effective timeline duration of a clip.
+ * A non-flat speed ramp supersedes the constant `speed` field.
+ */
 export function clipDurationTicks(clip: Clip): Tick {
   const source = Math.max(0, clip.sourceOutTicks - clip.sourceInTicks);
+  const profile = getRampProfile(clip.speedRamp);
+  if (profile) {
+    return rampDurationTicks(clip.speedRamp!, source);
+  }
   const speed = Number.isFinite(clip.speed) && clip.speed > 0 ? clip.speed : 1;
   return Math.max(0, Math.round(source / speed));
+}
+
+/** Effective constant-equivalent speed used for export/fallback paths. */
+export function effectiveClipSpeed(clip: Clip): number {
+  const profile = getRampProfile(clip.speedRamp);
+  if (profile) return profile.averageSpeed;
+  return Number.isFinite(clip.speed) && clip.speed > 0 ? clip.speed : 1;
+}
+
+/**
+ * Source offset (ticks from sourceIn) for a local timeline offset (ticks from
+ * clip start), honoring a ramp when present.
+ */
+export function sourceOffsetForClipTimelineOffset(
+  clip: Clip,
+  timelineOffsetTicks: number,
+): number {
+  const span = Math.max(0, clip.sourceOutTicks - clip.sourceInTicks);
+  if (clip.speedRamp) {
+    const profile = getRampProfile(clip.speedRamp);
+    if (profile) {
+      const total = span * profile.durationFactor;
+      if (timelineOffsetTicks <= 0) return 0;
+      if (timelineOffsetTicks >= total) return span;
+      return profile.progressAtIntegralFactor(timelineOffsetTicks / span) * span;
+    }
+  }
+  const speed = Number.isFinite(clip.speed) && clip.speed > 0 ? clip.speed : 1;
+  return Math.max(0, timelineOffsetTicks * speed);
+}
+
+/** Local timeline offset (ticks from clip start) for a source offset. */
+export function clipTimelineOffsetForSourceOffset(
+  clip: Clip,
+  sourceOffsetTicks: number,
+): number {
+  const span = Math.max(0, clip.sourceOutTicks - clip.sourceInTicks);
+  if (clip.speedRamp) {
+    return timelineOffsetForSourceOffset(clip.speedRamp, span, sourceOffsetTicks);
+  }
+  const speed = Number.isFinite(clip.speed) && clip.speed > 0 ? clip.speed : 1;
+  return Math.max(0, sourceOffsetTicks / speed);
 }
 
 export function defaultClipDuration(asset: MediaAsset): Tick {
@@ -86,10 +152,16 @@ export function addMediaClip(
     sourceInTicks: 0,
     sourceOutTicks: duration,
     speed: 1,
-    transform: { ...DEFAULT_TRANSFORM },
+    // Media default = centred; contain-fit box is applied by the renderer.
+    transform: {
+      ...DEFAULT_TRANSFORM,
+      x: project.canvas.width / 2,
+      y: project.canvas.height / 2,
+    },
     volume: 1,
     effects: { ...DEFAULT_CLIP_EFFECTS },
     transitionIn: { ...DEFAULT_CLIP_TRANSITION },
+    animation: null,
     text: null,
   };
 
@@ -123,6 +195,9 @@ function cloneClipData(clip: Clip): Clip {
     effects: { ...clip.effects },
     transitionIn: { ...clip.transitionIn },
     text: clip.text ? { ...clip.text } : null,
+    speedRamp: clip.speedRamp
+      ? { points: clip.speedRamp.points.map((p) => ({ ...p })) }
+      : clip.speedRamp,
   };
 }
 
@@ -267,22 +342,33 @@ export function splitClipAt(
     return project;
   }
 
-  const speed = Number.isFinite(clip.speed) && clip.speed > 0 ? clip.speed : 1;
-  const sourceDelta = Math.round(local * speed);
-  const splitSource = clip.sourceInTicks + sourceDelta;
+  // Where in the source range the cut lands — ramp-aware when a curve is set.
+  const splitSourceOffset = sourceOffsetForClipTimelineOffset(clip, local);
+  const splitSource = Math.round(clip.sourceInTicks + splitSourceOffset);
   if (splitSource <= clip.sourceInTicks || splitSource >= clip.sourceOutTicks) {
     return project;
   }
 
+  const span = Math.max(1, clip.sourceOutTicks - clip.sourceInTicks);
+  const splitProgress = (splitSource - clip.sourceInTicks) / span;
+  const rampSplit = clip.speedRamp
+    ? sliceRamp(clip.speedRamp, 0, splitProgress)
+    : null;
+  const rampRight = clip.speedRamp
+    ? sliceRamp(clip.speedRamp, splitProgress, 1)
+    : null;
+
   const left: Clip = {
     ...clip,
     sourceOutTicks: splitSource,
+    ...(rampSplit ? { speedRamp: rampSplit } : {}),
   };
   const right: Clip = {
     ...clip,
     id: crypto.randomUUID(),
     startTicks: timelineTicks,
     sourceInTicks: splitSource,
+    ...(rampRight ? { speedRamp: rampRight } : {}),
     // Incoming transition belongs to the cut into this piece — clear by default.
     transitionIn: { ...DEFAULT_CLIP_TRANSITION },
   };
@@ -429,6 +515,7 @@ export function addTextClip(
     volume: 1,
     effects: { ...DEFAULT_CLIP_EFFECTS },
     transitionIn: { ...DEFAULT_CLIP_TRANSITION },
+    animation: { ...DEFAULT_TEXT_ANIMATION },
     text,
   };
 
@@ -458,6 +545,48 @@ export function updateClipTransition(
       ...transitionIn,
     }),
   }));
+}
+
+export function updateClipAnimation(
+  project: ProjectDocument,
+  clipId: string,
+  animation: TextAnimation | Partial<TextAnimation>,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => ({
+    ...clip,
+    animation: normalizeTextAnimation({
+      ...normalizeTextAnimation(clip.animation),
+      ...animation,
+    }),
+  }));
+}
+
+/** Update project/sequence canvas settings (resolution, fps, background). */
+export function updateCanvas(
+  project: ProjectDocument,
+  patch: Partial<ProjectDocument["canvas"]>,
+): ProjectDocument {
+  const width = clampInt(patch.width ?? project.canvas.width, 2, 7680);
+  const height = clampInt(patch.height ?? project.canvas.height, 2, 7680);
+  const frameRate = clampNum(patch.frameRate ?? project.canvas.frameRate, 1, 240);
+  const backgroundColor =
+    typeof patch.backgroundColor === "string" && patch.backgroundColor.length > 0
+      ? patch.backgroundColor
+      : project.canvas.backgroundColor;
+  return {
+    ...project,
+    canvas: { width, height, frameRate, backgroundColor },
+  };
+}
+
+function clampInt(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function clampNum(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
 }
 
 export function updateClipText(
@@ -500,7 +629,9 @@ export function updateClipSpeed(
   }
   return mapClip(project, clipId, (clip) => {
     if (clip.kind === "text") throw new Error("Text clips do not support speed");
-    return { ...clip, speed: Math.min(8, Math.max(0.1, speed)) };
+    // A constant speed supersedes (and clears) any ramp so the change is visible.
+    const { speedRamp: _dropped, ...rest } = clip;
+    return { ...(rest as Clip), speed: Math.min(8, Math.max(0.1, speed)) };
   });
 }
 
@@ -583,6 +714,95 @@ export function moveTrack(
   };
 }
 
+/** Insert a same-kind track just above `belowTrackId` (lower order = higher in UI). */
+function insertTrackAbove(
+  project: ProjectDocument,
+  kind: TrackKind,
+  belowTrackId: string,
+): { project: ProjectDocument; trackId: string } {
+  const below = project.tracks.find((t) => t.id === belowTrackId);
+  if (!below) throw new Error("Unknown trackId");
+  const newOrder = below.order;
+  const sameKind = project.tracks.filter((t) => t.kind === kind);
+  const track: Track = {
+    id: crypto.randomUUID(),
+    kind,
+    name: kind === "video" ? `V${sameKind.length + 1}` : `A${sameKind.length + 1}`,
+    order: newOrder,
+    muted: false,
+    visible: true,
+    locked: false,
+    volume: 1,
+  };
+  return {
+    project: {
+      ...project,
+      tracks: [
+        ...project.tracks.map((t) =>
+          t.order >= newOrder ? { ...t, order: t.order + 1 } : t,
+        ),
+        track,
+      ],
+      updatedAt: new Date().toISOString(),
+    },
+    trackId: track.id,
+  };
+}
+
+/**
+ * Move a single clip one layer up/down on the timeline (to the adjacent
+ * same-kind track). Creates a new track when there is no neighbor — so
+ * Move layer down on a video that shares a track with text puts the video
+ * on a lower track and leaves text on top.
+ */
+export function moveClipLayer(
+  project: ProjectDocument,
+  clipId: string,
+  direction: "up" | "down",
+): ProjectDocument {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip) throw new Error("Unknown clipId");
+  const track = project.tracks.find((t) => t.id === clip.trackId);
+  if (!track) throw new Error("Unknown trackId");
+  if (track.locked) throw new Error("Track is locked");
+
+  let kind: TrackKind = track.kind;
+  if (clip.kind === "text") {
+    kind = "video";
+  } else if (clip.kind === "media" && clip.assetId) {
+    const asset = project.assets.find((a) => a.id === clip.assetId);
+    if (asset) kind = compatibleTrackKind(asset);
+  }
+
+  const sorted = project.tracks
+    .filter((t) => t.kind === kind)
+    .sort((a, b) => a.order - b.order);
+  const idx = sorted.findIndex((t) => t.id === track.id);
+  if (idx < 0) throw new Error("Clip track mismatch");
+
+  if (direction === "down") {
+    if (idx < sorted.length - 1) {
+      const dest = sorted[idx + 1];
+      if (dest.locked) throw new Error("Destination track is locked");
+      return moveClip(project, clipId, clip.startTicks, dest.id);
+    }
+    const next = addTrack(project, kind);
+    const created = next.tracks.find(
+      (t) => t.kind === kind && !project.tracks.some((o) => o.id === t.id),
+    );
+    if (!created) throw new Error("Failed to create track");
+    return moveClip(next, clipId, clip.startTicks, created.id);
+  }
+
+  if (idx > 0) {
+    const dest = sorted[idx - 1];
+    if (dest.locked) throw new Error("Destination track is locked");
+    return moveClip(project, clipId, clip.startTicks, dest.id);
+  }
+  const { project: withTrack, trackId } = insertTrackAbove(project, kind, track.id);
+  return moveClip(withTrack, clipId, clip.startTicks, trackId);
+}
+
 export function updateTrack(
   project: ProjectDocument,
   trackId: string,
@@ -604,6 +824,188 @@ export function updateTrack(
   if (!found) throw new Error("Unknown trackId");
   return { ...project, tracks, updatedAt: new Date().toISOString() };
 }
+
+/* ------------------------------------------------------------- speed ramp */
+
+/**
+ * Set (or clear) a clip's speed ramp. Passing null clears the ramp and returns
+ * to the constant `speed` value.
+ */
+export function setClipRamp(
+  project: ProjectDocument,
+  clipId: string,
+  ramp: SpeedRamp | null,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => {
+    if (clip.kind === "text") throw new Error("Text clips do not support speed ramps");
+    const normalized = normalizeSpeedRamp(ramp);
+    if (!normalized || isFlatRamp(normalized)) {
+      const { speedRamp: _dropped, ...rest } = clip;
+      return rest as Clip;
+    }
+    return { ...clip, speedRamp: normalized };
+  });
+}
+
+/**
+ * Seed a brand-new ramp with two anchors centered on the playhead.
+ * Both points are freely draggable; the curve exists only between them.
+ */
+export function enableSpeedRamp(
+  project: ProjectDocument,
+  clipId: string,
+  playheadTicks: Tick,
+  startSpeed = 1,
+  endSpeed = 2,
+): ProjectDocument {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip) throw new Error("Unknown clipId");
+  if (clip.kind === "text") throw new Error("Text clips do not support speed ramps");
+
+  const duration = clipDurationTicks(clip);
+  const local = Math.min(duration, Math.max(0, playheadTicks - clip.startTicks));
+  const progress = local / Math.max(1, duration);
+  // ~16% window around the playhead so the curve is visibly "at" the playhead.
+  const half = 0.08;
+  let lo = progress - half;
+  let hi = progress + half;
+  if (lo < 0) {
+    hi = Math.min(1, hi - lo);
+    lo = 0;
+  }
+  if (hi > 1) {
+    lo = Math.max(0, lo - (hi - 1));
+    hi = 1;
+  }
+  if (hi - lo < 0.1) {
+    lo = Math.max(0, Math.min(0.9, progress - 0.05));
+    hi = Math.min(1, lo + 0.1);
+  }
+  return setClipRamp(project, clipId, {
+    points: [createSpeedPoint(lo, startSpeed), createSpeedPoint(hi, endSpeed)],
+  });
+}
+
+/**
+ * Create a ramp anchor at the playhead. If the clip has no ramp yet, seeds a
+ * 2-point ramp around the playhead first.
+ */
+export function addRampPointAtPlayhead(
+  project: ProjectDocument,
+  clipId: string,
+  playheadTicks: Tick,
+  speed = 1,
+): { project: ProjectDocument; pointId: string } {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip) throw new Error("Unknown clipId");
+  if (clip.kind === "text") throw new Error("Text clips do not support speed ramps");
+
+  const duration = clipDurationTicks(clip);
+  const local = Math.min(duration, Math.max(0, playheadTicks - clip.startTicks));
+  let progress = local / Math.max(1, duration);
+
+  const existing = normalizeSpeedRamp(clip.speedRamp);
+  if (!existing) {
+    // Brand-new: two points spanning a window around the playhead.
+    const lo = Math.max(0.02, Math.min(0.7, progress - 0.15));
+    const hi = Math.min(0.98, Math.max(lo + 0.2, progress + 0.15));
+    const a = createSpeedPoint(lo, 1);
+    const b = createSpeedPoint(hi, speed);
+    const next = normalizeSpeedRamp([a, b])!;
+    return {
+      project: mapClip(project, clipId, (c) => ({ ...c, speedRamp: next })),
+      pointId: b.id,
+    };
+  }
+
+  // Keep new points strictly between existing first/last (curve region).
+  const lo = existing.points[0].atProgress + MIN_RAMP_POINT_GAP;
+  const hi = existing.points[existing.points.length - 1].atProgress - MIN_RAMP_POINT_GAP;
+  if (hi <= lo) throw new Error("Not enough space for another ramp point");
+  progress = Math.min(hi, Math.max(lo, progress));
+  const point = createSpeedPoint(progress, speed);
+  const next = normalizeSpeedRamp([...existing.points, point])!;
+  return {
+    project: mapClip(project, clipId, (c) => ({ ...c, speedRamp: next })),
+    pointId: point.id,
+  };
+}
+
+const MIN_RAMP_POINT_GAP = 0.005;
+
+/** Move an anchor along the clip (clamped between its neighbors / [0,1]). */
+export function moveRampPoint(
+  project: ProjectDocument,
+  clipId: string,
+  pointId: string,
+  atProgress: number,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => {
+    const ramp = normalizeSpeedRamp(clip.speedRamp);
+    if (!ramp) throw new Error("Clip has no speed ramp");
+    const idx = ramp.points.findIndex((p) => p.id === pointId);
+    if (idx < 0) throw new Error("Unknown ramp point");
+
+    const lo =
+      idx === 0 ? 0 : ramp.points[idx - 1].atProgress + MIN_RAMP_POINT_GAP;
+    const hi =
+      idx === ramp.points.length - 1
+        ? 1
+        : ramp.points[idx + 1].atProgress - MIN_RAMP_POINT_GAP;
+    const clamped = Math.min(hi, Math.max(lo, atProgress));
+    const points = ramp.points.map((p) =>
+      p.id === pointId ? { ...p, atProgress: clamped } : p,
+    );
+    return { ...clip, speedRamp: normalizeSpeedRamp(points) ?? ramp };
+  });
+}
+
+/** Change the speed carried by one anchor. */
+export function setRampPointSpeed(
+  project: ProjectDocument,
+  clipId: string,
+  pointId: string,
+  speed: number,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => {
+    const ramp = normalizeSpeedRamp(clip.speedRamp);
+    if (!ramp) throw new Error("Clip has no speed ramp");
+    if (!ramp.points.some((p) => p.id === pointId)) {
+      throw new Error("Unknown ramp point");
+    }
+    const points = ramp.points.map((p) =>
+      p.id === pointId ? { ...p, speed: clampRampSpeed(speed) } : p,
+    );
+    return { ...clip, speedRamp: normalizeSpeedRamp(points) ?? ramp };
+  });
+}
+
+/**
+ * Remove a ramp anchor. Dropping below 2 points (or a flat curve) clears the ramp.
+ */
+export function removeRampPoint(
+  project: ProjectDocument,
+  clipId: string,
+  pointId: string,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => {
+    const ramp = normalizeSpeedRamp(clip.speedRamp);
+    if (!ramp) throw new Error("Clip has no speed ramp");
+    if (!ramp.points.some((p) => p.id === pointId)) {
+      throw new Error("Unknown ramp point");
+    }
+    const points = ramp.points.filter((p) => p.id !== pointId);
+    const next = normalizeSpeedRamp(points);
+    if (!next || isFlatRamp(next)) {
+      const { speedRamp: _dropped, ...rest } = clip;
+      return rest as Clip;
+    }
+    return { ...clip, speedRamp: next };
+  });
+}
+
+/** Split a ramp at a source progress; used by splitClipAt for ramped clips. */
+export { sliceRamp };
 
 function mapClip(
   project: ProjectDocument,

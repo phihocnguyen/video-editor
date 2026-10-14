@@ -1,6 +1,17 @@
 import { ffmpegVideoEffectsChain } from "./effects";
+import { mediaGeometry } from "./mediaTransform";
 import type { RenderClipPlan, RenderPlan } from "./renderPlan";
-import { transitionDurationSec, type TransitionType } from "./transitions";
+import {
+  rampOutputDurationSec,
+  rampTimeMapSegments,
+  type RampExprSegment,
+} from "./speedRamp";
+import { ffmpegTextAnim } from "./textAnimation";
+import {
+  transitionDef,
+  transitionDurationSec,
+  type TransitionType,
+} from "./transitions";
 
 export interface BuiltFfmpegCommand {
   program: string;
@@ -57,11 +68,12 @@ export function buildFfmpegArgs(
   const tempOutput = outputPath.replace(/(\.mp4)?$/i, ".tmp.mp4");
   const args: string[] = ["-y", "-hide_banner"];
 
+  const baseColor = ffmpegColorLiteral(plan.backgroundColor);
   args.push(
     "-f",
     "lavfi",
     "-i",
-    `color=c=black:s=${width}x${height}:d=${duration}:r=${fps}`,
+    `color=c=${baseColor}:s=${width}x${height}:d=${duration}:r=${fps}`,
   );
 
   for (const clip of visuals) {
@@ -73,8 +85,10 @@ export function buildFfmpegArgs(
         Math.max(0.01, clip.timelineEndSec - clip.timelineStartSec) + overlap;
       args.push("-loop", "1", "-t", clipDur.toFixed(3), "-i", clip.assetPath);
     } else {
+      // Ramped clips skip transition pre-roll so the setpts curve maps cleanly
+      // from sourceIn (u = 0). Constant-speed clips keep the original pre-roll.
       const speed = clip.speed > 0 ? clip.speed : 1;
-      const earlySource = overlap * speed;
+      const earlySource = clip.speedRamp ? 0 : overlap * speed;
       const ss = Math.max(0, clip.sourceInSec - earlySource);
       const trimmedEarly = clip.sourceInSec - ss;
       args.push(
@@ -131,18 +145,18 @@ export function buildFfmpegArgs(
 
 /** Map editor transition → FFmpeg xfade name (null = hard cut / concat). */
 function xfadeTransitionName(type: TransitionType): string | null {
-  switch (type) {
-    case "dissolve":
-      return "fade";
-    case "fade":
-      return "fadeblack";
-    case "wipeLeft":
-      return "wipeleft";
-    case "wipeRight":
-      return "wiperight";
-    default:
-      return null;
+  return transitionDef(type).xfade;
+}
+
+/** Normalise a hex colour to an FFmpeg `color=` literal. */
+function ffmpegColorLiteral(color: string): string {
+  const trimmed = (color ?? "").trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return `0x${trimmed.slice(1)}`;
+  if (/^#[0-9a-fA-F]{3}$/.test(trimmed)) {
+    const [r, g, b] = trimmed.slice(1);
+    return `0x${r}${r}${g}${g}${b}${b}`;
   }
+  return "black";
 }
 
 function buildFilterComplex(
@@ -157,29 +171,74 @@ function buildFilterComplex(
   parts.push(`[0:v]format=rgba[base]`);
   let current = "[base]";
 
-  // Group by track (already sorted by trackOrder, then start).
+  // Group media by track (already sorted by trackOrder, then start).
   const trackIds: string[] = [];
   const byTrack = new Map<string, { clip: RenderClipPlan; inputIndex: number }[]>();
+  const trackOrderById = new Map<string, number>();
   visuals.forEach((clip, index) => {
     const inputIndex = index + 1;
     if (!byTrack.has(clip.trackId)) {
       byTrack.set(clip.trackId, []);
       trackIds.push(clip.trackId);
+      trackOrderById.set(clip.trackId, clip.trackOrder);
     }
     byTrack.get(clip.trackId)!.push({ clip, inputIndex });
   });
 
-  trackIds.forEach((trackId, ti) => {
-    const group = byTrack.get(trackId)!;
-    const trackLabel = buildTrackChain(parts, group, width, height, ti);
-    const next = `[mix${ti}]`;
-    parts.push(
-      `${current}${trackLabel}overlay=x=0:y=0:format=rgb:eof_action=pass${next}`,
-    );
-    current = next;
+  // Interleave video tracks and text by trackOrder so export matches preview
+  // stacking (higher order on top; same-track text above that track's media).
+  type PaintStep =
+    | {
+        kind: "track";
+        trackOrder: number;
+        trackId: string;
+        trackIndex: number;
+      }
+    | { kind: "text"; trackOrder: number; textIndex: number; text: (typeof plan.texts)[number] };
+
+  const steps: PaintStep[] = [
+    ...trackIds.map((trackId, trackIndex) => ({
+      kind: "track" as const,
+      trackOrder: trackOrderById.get(trackId) ?? trackIndex,
+      trackId,
+      trackIndex,
+    })),
+    ...plan.texts.map((text, textIndex) => ({
+      kind: "text" as const,
+      trackOrder: text.trackOrder,
+      textIndex,
+      text,
+    })),
+  ];
+  steps.sort((a, b) => {
+    // Paint high order first (behind), low order last (on top) — matches preview.
+    if (a.trackOrder !== b.trackOrder) return b.trackOrder - a.trackOrder;
+    // Same track: media before text (matches layerStackZ).
+    if (a.kind !== b.kind) return a.kind === "track" ? -1 : 1;
+    return 0;
   });
 
-  plan.texts.forEach((text, ti) => {
+  let mixCount = 0;
+  for (const step of steps) {
+    if (step.kind === "track") {
+      const group = byTrack.get(step.trackId)!;
+      const trackLabel = buildTrackChain(
+        parts,
+        group,
+        width,
+        height,
+        step.trackIndex,
+      );
+      const next = `[mix${mixCount}]`;
+      mixCount += 1;
+      parts.push(
+        `${current}${trackLabel}overlay=x=0:y=0:format=rgb:eof_action=pass${next}`,
+      );
+      current = next;
+      continue;
+    }
+
+    const text = step.text;
     const start = Math.max(0, text.timelineStartSec);
     const end = Math.max(start + 0.01, text.timelineEndSec);
     const escaped = escapeDrawtext(text.content);
@@ -187,22 +246,31 @@ function buildFilterComplex(
     const fontfile = resolvedFont
       ? `:fontfile=${quoteFilterPath(resolvedFont)}`
       : "";
-    const fontsize = Math.max(8, Math.round(text.fontSize));
+    const baseSize = Math.max(8, Math.round(text.fontSize));
     const color = normalizeColor(text.color);
     const alpha = Math.min(1, Math.max(0, text.opacity));
-    const xExpr =
+    const anim = ffmpegTextAnim(text.animation, start, end);
+    const fontsizeExpr =
+      anim.scale === "1" ? `${baseSize}` : `${baseSize}*${anim.scale}`;
+    const baseX =
       text.align === "left"
         ? `${Math.max(0, Math.round(text.x))}`
         : text.align === "right"
           ? `${Math.max(0, Math.round(text.x))}-text_w`
           : `${Math.max(0, Math.round(text.x))}-(text_w/2)`;
-    const yExpr = `${Math.max(0, Math.round(text.y))}-(text_h/2)`;
-    const next = `[txt${ti}]`;
+    const xExpr = anim.dx === "0" ? baseX : `(${baseX})+(${anim.dx})`;
+    const yBase = `${Math.max(0, Math.round(text.y))}-(text_h/2)`;
+    const yExpr = anim.dy === "0" ? yBase : `(${yBase})+(${anim.dy})`;
+    const alphaExpr =
+      anim.alpha === "1"
+        ? `${alpha.toFixed(3)}`
+        : `(${alpha.toFixed(3)})*(${anim.alpha})`;
+    const next = `[txt${step.textIndex}]`;
     parts.push(
-      `${current}drawtext=text='${escaped}'${fontfile}:fontsize=${fontsize}:fontcolor=${color}@${alpha.toFixed(3)}:x=${xExpr}:y=${yExpr}:enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'${next}`,
+      `${current}drawtext=text='${escaped}'${fontfile}:fontsize='${fontsizeExpr}':fontcolor=${color}@1:x='${xExpr}':y='${yExpr}':alpha='${alphaExpr}':enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'${next}`,
     );
     current = next;
-  });
+  }
 
   if (current !== "[outv]") {
     parts.push(`${current}null[outv]`);
@@ -216,12 +284,8 @@ function buildFilterComplex(
     const inputIndex = index + 1;
     const startMs = Math.round(Math.max(0, clip.timelineStartSec) * 1000);
     const vol = Math.min(2, Math.max(0, clip.volume));
-    const speed = clip.speed > 0 ? clip.speed : 1;
-    const atempo = atempoChain(speed);
     const label = `[a${ai}]`;
-    parts.push(
-      `[${inputIndex}:a]asetpts=PTS-STARTPTS,${atempo}volume=${vol},adelay=${startMs}|${startMs},apad,atrim=0:${plan.durationSec.toFixed(3)}${label}`,
-    );
+    appendAudioChain(parts, inputIndex, clip, plan.durationSec, startMs, vol, label);
     audioLabels.push(label);
     ai += 1;
   });
@@ -230,12 +294,8 @@ function buildFilterComplex(
     if (!clip.includeAudio) continue;
     const startMs = Math.round(Math.max(0, clip.timelineStartSec) * 1000);
     const vol = Math.min(2, Math.max(0, clip.volume));
-    const speed = clip.speed > 0 ? clip.speed : 1;
-    const atempo = atempoChain(speed);
     const label = `[a${ai}]`;
-    parts.push(
-      `[${inputIndex}:a]asetpts=PTS-STARTPTS,${atempo}volume=${vol},adelay=${startMs}|${startMs},apad,atrim=0:${plan.durationSec.toFixed(3)}${label}`,
-    );
+    appendAudioChain(parts, inputIndex, clip, plan.durationSec, startMs, vol, label);
     audioLabels.push(label);
     ai += 1;
   }
@@ -249,6 +309,50 @@ function buildFilterComplex(
   }
 
   return parts.join(";");
+}
+
+/**
+ * Scale/rotate/pad a media clip into the output frame honouring its transform.
+ *
+ * Always lands on a full `width x height` rgba canvas so xfade/concat stay valid.
+ * The transform is expressed in project-canvas px; we rescale to output px.
+ */
+export function mediaPlacementFilters(
+  clip: RenderClipPlan,
+  width: number,
+  height: number,
+): string {
+  const geom = mediaGeometry(clip.transform, clip.canvasWidth, clip.canvasHeight, {
+    width: clip.mediaWidth,
+    height: clip.mediaHeight,
+  });
+  // Project-canvas → output scale.
+  const outScaleX = width / Math.max(1, clip.canvasWidth);
+  const outScaleY = height / Math.max(1, clip.canvasHeight);
+  const boxW = Math.max(2, Math.round(geom.boxWidth * outScaleX) & ~1);
+  const boxH = Math.max(2, Math.round(geom.boxHeight * outScaleY) & ~1);
+  const centerX = geom.centerX * outScaleX;
+  const centerY = geom.centerY * outScaleY;
+
+  const parts: string[] = [];
+  // Fit source into the (scaled) box, then rotate if needed.
+  parts.push(`scale=${boxW}:${boxH}:force_original_aspect_ratio=decrease`);
+  if (Math.abs(geom.rotation) > 0.01) {
+    // Rotate onto a transparent canvas big enough to avoid clipping, then the
+    // final pad below recentres it on the frame.
+    const rad = (Math.abs(geom.rotation) * Math.PI) / 180;
+    const rw = Math.round((Math.abs(boxW * Math.cos(rad)) + Math.abs(boxH * Math.sin(rad))) & ~1);
+    const rh = Math.round((Math.abs(boxW * Math.sin(rad)) + Math.abs(boxH * Math.cos(rad))) & ~1);
+    const angle = ((geom.rotation % 360) * Math.PI) / 180;
+    parts.push(
+      `rotate=${angle.toFixed(6)}:ow=${Math.max(boxW, rw)}:oh=${Math.max(boxH, rh)}:c=black@0`,
+    );
+  }
+  const offX = Math.max(0, Math.round(centerX - boxW / 2));
+  const offY = Math.max(0, Math.round(centerY - boxH / 2));
+  parts.push(`pad=${width}:${height}:${offX}:${offY}:black@0`);
+  parts.push(`scale=${width}:${height}`);
+  return parts.join(",");
 }
 
 /**
@@ -267,7 +371,6 @@ function buildTrackChain(
   group.forEach(({ clip, inputIndex }, i) => {
     const start = Math.max(0, clip.timelineStartSec);
     const end = Math.max(start + 0.01, clip.timelineEndSec);
-    const speed = clip.speed > 0 ? clip.speed : 1;
     const opacity = Math.min(1, Math.max(0, clip.opacity));
     const early = Math.max(0, clip.transitionOverlapSec);
     const clipDur = Math.max(0.01, end - start);
@@ -276,17 +379,13 @@ function buildTrackChain(
       next && next.transitionIn.type !== "none"
         ? Math.max(0, next.transitionOverlapSec)
         : 0;
-    const setpts =
-      Math.abs(speed - 1) < 0.001
-        ? "setpts=PTS-STARTPTS"
-        : `setpts=(PTS-STARTPTS)/${speed}`;
+    const setpts = clipSetpts(clip);
 
     const fx = ffmpegVideoEffectsChain(clip.effects, clipDur, {
       delaySec: early,
     });
     const bits: string[] = [
-      `[${inputIndex}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease`,
-      `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
+      `[${inputIndex}:v]${mediaPlacementFilters(clip, width, height)}`,
       setpts,
       "format=rgba",
     ];
@@ -348,6 +447,60 @@ function buildTrackChain(
   return trackOut;
 }
 
+/**
+ * Build the `setpts` filter for a clip.
+ *
+ * - No ramp → constant-speed division (or identity when speed ≈ 1).
+ * - Ramp → a piecewise-quadratic expression of the source offset
+ *   `u = (PTS-STARTPTS)/1e6`, so output PTS follows ∫ds/v exactly like preview.
+ */
+export function clipSetpts(clip: RenderClipPlan): string {
+  const speed = clip.speed > 0 ? clip.speed : 1;
+  if (!clip.speedRamp) {
+    return Math.abs(speed - 1) < 0.001
+      ? "setpts=PTS-STARTPTS"
+      : `setpts=(PTS-STARTPTS)/${formatNum(speed)}`;
+  }
+
+  const sourceSpanSec = Math.max(0.001, clip.sourceOutSec - clip.sourceInSec);
+  const segments = rampTimeMapSegments(clip.speedRamp, sourceSpanSec);
+  if (segments.length === 0) {
+    return "setpts=PTS-STARTPTS";
+  }
+
+  // Invert: output timeline t → source offset u (smallest segment whose T(u) ≥ t).
+  let expr = `((PTS-STARTPTS)/1000000)`;
+  for (let k = segments.length - 1; k >= 0; k -= 1) {
+    const seg = segments[k];
+    const inner = quadInverseExpr(seg, "t");
+    expr = `if(gte(t\\,${formatNum(seg.tStart)})\\,${inner}\\,${expr})`;
+  }
+  return `setpts=((${expr})*1000000)+STARTPTS`;
+}
+
+/**
+ * Expression for the source offset u given output time `tVar`, valid inside this
+ * segment: solving t = tStart + a·du + b·du² gives
+ *   du = (−a + √(a² + 4b·(t−tStart))) / (2b),
+ * choosing the + root so du → 0 as t → tStart.
+ */
+function quadInverseExpr(seg: RampExprSegment, tVar: string): string {
+  const dt = `(${tVar}-${formatNum(seg.tStart)})`;
+  const a = formatNum(seg.a);
+  const bRaw = Math.abs(seg.b) < 1e-12 ? 1e-12 : seg.b;
+  const b = formatNum(bRaw);
+  const u0 = formatNum(seg.uStart);
+  const disc = `(${formatNum(seg.a * seg.a)}+4*${b}*${dt})`;
+  const root = `sqrt(max(0\\,${disc}))`;
+  return `${u0}+(-(${a})+${root})/(2*${b})`;
+}
+
+function formatNum(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  // Trim trailing zeros while keeping enough precision for sub-ms accuracy.
+  return Number(value.toFixed(6)).toString();
+}
+
 function atempoChain(speed: number): string {
   if (Math.abs(speed - 1) < 0.001) return "";
   let remaining = speed;
@@ -362,6 +515,53 @@ function atempoChain(speed: number): string {
   }
   filters.push(`atempo=${remaining.toFixed(4)}`);
   return `${filters.join(",")},`;
+}
+
+/**
+ * Append a clip's audio chain to the filter graph.
+ *
+ * Constant speed → one `atempo` chain.
+ * Ramped → split the source into short constant-speed slices, retime each with a
+ * slice-local `atempo`, and `concat` them (FFmpeg's `atempo` cannot take an
+ * expression). N slices keep per-slice drift small and the graph bounded.
+ */
+function appendAudioChain(
+  parts: string[],
+  inputIndex: number,
+  clip: RenderClipPlan,
+  outputDurationSec: number,
+  startMs: number,
+  volume: number,
+  outLabel: string,
+): void {
+  const tail = `volume=${volume},adelay=${startMs}|${startMs},apad,atrim=0:${outputDurationSec.toFixed(3)}`;
+
+  if (!clip.speedRamp) {
+    const speed = clip.speed > 0 ? clip.speed : 1;
+    parts.push(`[${inputIndex}:a]asetpts=PTS-STARTPTS,${atempoChain(speed)}${tail}${outLabel}`);
+    return;
+  }
+
+  const span = Math.max(0.01, clip.sourceOutSec - clip.sourceInSec);
+  const segments = rampTimeMapSegments(clip.speedRamp, span, 12);
+  const n = segments.length;
+  const sliceDur = span / n;
+
+  for (let i = 0; i < n; i += 1) {
+    const outEnd =
+      i + 1 < n ? segments[i + 1].tStart : rampOutputDurationSec(clip.speedRamp, span);
+    const outDur = Math.max(0.02, outEnd - segments[i].tStart);
+    const speed = Math.max(0.01, sliceDur / outDur);
+    parts.push(
+      `[${inputIndex}:a]atrim=${segments[i].uStart.toFixed(3)}:${segments[i].uEnd.toFixed(3)},` +
+        `asetpts=PTS-STARTPTS,${atempoChain(speed)}asetpts=PTS-STARTPTS[ras${inputIndex}_${i}]`,
+    );
+  }
+  const sliceLabels = Array.from(
+    { length: n },
+    (_, i) => `[ras${inputIndex}_${i}]`,
+  ).join("");
+  parts.push(`${sliceLabels}concat=n=${n}:v=0:a=1,${tail}${outLabel}`);
 }
 
 /** FFmpeg drawtext needs a real TTF/OTF path; UI fonts like Manrope often have none. */

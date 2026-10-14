@@ -28,6 +28,50 @@ pub struct RenderClipPlan {
     pub transition_in: RenderClipTransition,
     #[serde(default)]
     pub transition_overlap_sec: f64,
+    #[serde(default)]
+    pub transform: RenderClipTransform,
+    #[serde(default = "default_canvas_dim")]
+    pub canvas_width: f64,
+    #[serde(default = "default_canvas_dim")]
+    pub canvas_height: f64,
+    #[serde(default)]
+    pub media_width: Option<f64>,
+    #[serde(default)]
+    pub media_height: Option<f64>,
+}
+
+fn default_canvas_dim() -> f64 {
+    1920.0
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderClipTransform {
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+    #[serde(default = "default_one")]
+    pub scale_x: f64,
+    #[serde(default = "default_one")]
+    pub scale_y: f64,
+    #[serde(default)]
+    pub rotation: f64,
+    #[serde(default = "default_one")]
+    pub opacity: f64,
+}
+
+impl Default for RenderClipTransform {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation: 0.0,
+            opacity: 1.0,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -104,6 +148,19 @@ pub struct RenderTextPlan {
     pub opacity: f64,
     pub timeline_start_sec: f64,
     pub timeline_end_sec: f64,
+    #[serde(default)]
+    pub animation: Option<RenderTextAnimation>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderTextAnimation {
+    #[serde(default = "default_none", rename = "in")]
+    pub anim_in: String,
+    #[serde(default = "default_none", rename = "out")]
+    pub anim_out: String,
+    #[serde(default = "default_half_sec_ticks")]
+    pub duration_ticks: i64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -112,6 +169,8 @@ pub struct RenderPlan {
     pub width: u32,
     pub height: u32,
     pub frame_rate: f64,
+    #[serde(default = "default_bg_color")]
+    pub background_color: String,
     pub duration_sec: f64,
     #[serde(default = "default_vbitrate")]
     pub video_bitrate: String,
@@ -127,6 +186,9 @@ fn default_vbitrate() -> String {
 }
 fn default_abitrate() -> String {
     "192k".into()
+}
+fn default_bg_color() -> String {
+    "#000000".into()
 }
 
 pub struct BuiltCommand {
@@ -203,11 +265,12 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
     let temp_output = output.with_extension("tmp.mp4");
     let mut args: Vec<String> = vec!["-y".into(), "-hide_banner".into()];
 
+    let base_color = ffmpeg_color_literal(&plan_view.background_color);
     args.extend([
         "-f".into(),
         "lavfi".into(),
         "-i".into(),
-        format!("color=c=black:s={width}x{height}:d={duration}:r={fps}"),
+        format!("color=c={base_color}:s={width}x{height}:d={duration}:r={fps}"),
     ]);
 
     for clip in &visuals {
@@ -294,6 +357,179 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
     })
 }
 
+fn ffmpeg_color_literal(color: &str) -> String {
+    let trimmed = color.trim();
+    if trimmed.len() == 7 && trimmed.starts_with('#') {
+        return format!("0x{}", &trimmed[1..]);
+    }
+    if trimmed.len() == 4 && trimmed.starts_with('#') {
+        let chars: Vec<char> = trimmed[1..].chars().collect();
+        return format!(
+            "0x{0}{0}{1}{1}{2}{2}",
+            chars[0], chars[1], chars[2]
+        );
+    }
+    "black".into()
+}
+
+fn clamp_scale(value: f64) -> f64 {
+    if !value.is_finite() || value <= 0.0 {
+        1.0
+    } else {
+        value.clamp(0.02, 20.0)
+    }
+}
+
+/// Scale/rotate/pad a media clip into the output frame honouring its transform.
+fn media_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) -> String {
+    let tr = &clip.transform;
+    let cw = clip.canvas_width.max(1.0);
+    let chh = clip.canvas_height.max(1.0);
+    let mw = clip.media_width.filter(|v| *v > 0.0).unwrap_or(cw);
+    let mh = clip.media_height.filter(|v| *v > 0.0).unwrap_or(chh);
+    let fit_scale = (cw / mw).min(chh / mh);
+    let fit_w = mw * fit_scale;
+    let fit_h = mh * fit_scale;
+    let sx = clamp_scale(tr.scale_x);
+    let sy = clamp_scale(tr.scale_y);
+
+    let out_scale_x = width as f64 / cw;
+    let out_scale_y = height as f64 / chh;
+    let box_w = ((fit_w * sx * out_scale_x).round().max(2.0) as i64 & !1).max(2) as f64;
+    let box_h = ((fit_h * sy * out_scale_y).round().max(2.0) as i64 & !1).max(2) as f64;
+
+    let legacy = tr.x == 0.0 && tr.y == 0.0;
+    let center_x = if legacy { width as f64 / 2.0 } else { tr.x * out_scale_x };
+    let center_y = if legacy { height as f64 / 2.0 } else { tr.y * out_scale_y };
+
+    let mut parts: Vec<String> = vec![format!(
+        "scale={box_w:.0}:{box_h:.0}:force_original_aspect_ratio=decrease"
+    )];
+    if tr.rotation.abs() > 0.01 {
+        let rad = tr.rotation.abs() * std::f64::consts::PI / 180.0;
+        let rw = (box_w * rad.cos() + box_h * rad.sin()).abs().round().max(box_w);
+        let rh = (box_w * rad.sin() + box_h * rad.cos()).abs().round().max(box_h);
+        let angle = (tr.rotation % 360.0) * std::f64::consts::PI / 180.0;
+        parts.push(format!(
+            "rotate={angle:.6}:ow={rw:.0}:oh={rh:.0}:c=black@0"
+        ));
+    }
+    let off_x = (center_x - box_w / 2.0).round().max(0.0);
+    let off_y = (center_y - box_h / 2.0).round().max(0.0);
+    parts.push(format!("pad={width}:{height}:{off_x:.0}:{off_y:.0}:black@0"));
+    parts.push(format!("scale={width}:{height}"));
+    parts.join(",")
+}
+
+struct TextAnimExpr {
+    alpha: String,
+    dx: String,
+    dy: String,
+    scale: String,
+}
+
+fn ease_expr(p: &str) -> String {
+    format!("({p})*({p})*(3-2*({p}))")
+}
+
+fn progress_expr(tvar: &str, start: f64, dur: f64) -> String {
+    format!(
+        "min(1\\,max(0\\,(({tvar})-{start:.3})/{:.3}))",
+        dur.max(0.05)
+    )
+}
+
+fn ffmpeg_text_anim(
+    anim: Option<&RenderTextAnimation>,
+    start_sec: f64,
+    end_sec: f64,
+) -> TextAnimExpr {
+    let identity = TextAnimExpr {
+        alpha: "1".into(),
+        dx: "0".into(),
+        dy: "0".into(),
+        scale: "1".into(),
+    };
+    let Some(anim) = anim else {
+        return identity;
+    };
+    if anim.anim_in == "none" && anim.anim_out == "none" {
+        return identity;
+    }
+    let total = (end_sec - start_sec).max(0.01);
+    let win = (anim.duration_ticks as f64 / 1_000_000.0).min(total);
+    let in_start = start_sec;
+    let out_start = (end_sec - win).max(start_sec);
+    let p_in = progress_expr("t", in_start, win);
+    let p_out = progress_expr("t", out_start, win);
+
+    let in_is_none = anim.anim_in == "none";
+    let out_is_none = anim.anim_out == "none";
+
+    let mask_in = matches!(anim.anim_in.as_str(), "wipe" | "cutPaste" | "blockCover" | "driftH");
+    let mask_out = matches!(anim.anim_out.as_str(), "wipe" | "cutPaste" | "blockCover" | "driftH");
+
+    let a_in = if in_is_none || mask_in {
+        "1".to_string()
+    } else if anim.anim_in == "slam" {
+        format!("if(gte({p_in}\\,0.02)\\,1\\,0)")
+    } else {
+        ease_expr(&p_in)
+    };
+    let a_out = if out_is_none || mask_out {
+        "1".to_string()
+    } else {
+        format!("(1-{})", ease_expr(&p_out))
+    };
+
+    let s = format!("{start_sec:.3}");
+    let en = format!("{end_sec:.3}");
+    let alpha = format!(
+        "if(lt(t\\,{s})\\,0\\,if(gt(t\\,{en})\\,0\\,min(1\\,({a_in})*({a_out}))))"
+    );
+
+    let dx_in = if matches!(anim.anim_in.as_str(), "slide" | "driftH") {
+        format!("((1-{})*0.4*w)", ease_expr(&p_in))
+    } else {
+        "0".into()
+    };
+    let dx_out = if matches!(anim.anim_out.as_str(), "slide" | "driftH") {
+        format!("({}*0.4*w)", ease_expr(&p_out))
+    } else {
+        "0".into()
+    };
+    let dy_in = if anim.anim_in == "pushUp" {
+        format!("((1-{})*0.4*h)", ease_expr(&p_in))
+    } else {
+        "0".into()
+    };
+    let dy_out = if anim.anim_out == "pushUp" {
+        format!("({}*0.4*h)", ease_expr(&p_out))
+    } else {
+        "0".into()
+    };
+
+    let scale_in = match anim.anim_in.as_str() {
+        "pop" | "expand" | "converge" => format!("(0.4+0.6*{})", ease_expr(&p_in)),
+        "slam" => format!("(3-2*{})", ease_expr(&p_in)),
+        "spin" => format!("(0.4+0.6*{})", ease_expr(&p_in)),
+        _ => "1".into(),
+    };
+    let scale_out = match anim.anim_out.as_str() {
+        "expand" | "pop" | "converge" | "spin" => {
+            format!("(0.4+0.6*(1-{}))", ease_expr(&p_out))
+        }
+        _ => "1".into(),
+    };
+
+    TextAnimExpr {
+        alpha,
+        dx: format!("({dx_in})+({dx_out})"),
+        dy: format!("({dy_in})+({dy_out})"),
+        scale: format!("({scale_in})*({scale_out})"),
+    }
+}
+
 fn build_filter_complex(
     plan: &RenderPlan,
     visuals: &[&RenderClipPlan],
@@ -348,7 +584,7 @@ fn build_filter_complex(
         }
         let tin = clip.transition_in.kind.as_str();
         if in_full > 0.001 {
-            if tin == "fade" {
+            if tin == "fade" || tin == "fadeWhite" {
                 extras.push(ffmpeg_smooth_fade_in_alpha(in_full / 2.0, in_full / 2.0));
             } else {
                 extras.push(ffmpeg_smooth_fade_in_alpha(in_full, 0.0));
@@ -361,7 +597,7 @@ fn build_filter_complex(
             let cut_at = overlap + clip_dur;
             extras.push(format!("tpad=stop_mode=clone:stop_duration={hold:.3}"));
             let next_type = next_sibling.map(|c| c.transition_in.kind.as_str()).unwrap_or("none");
-            if next_type == "fade" {
+            if next_type == "fade" || next_type == "fadeWhite" {
                 extras.push(ffmpeg_smooth_fade_out_alpha(
                     (cut_at - out_half).max(0.0),
                     out_full / 2.0,
@@ -378,8 +614,9 @@ fn build_filter_complex(
         } else {
             format!(",{}", extras.join(","))
         };
+        let placement = media_placement_filters(clip, width, height);
         parts.push(format!(
-            "[{input_index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,{setpts},format=rgba{extra_part},colorchannelmixer=aa={opacity:.3}[v{index}]"
+            "[{input_index}:v]{placement},{setpts},format=rgba{extra_part},colorchannelmixer=aa={opacity:.3}[v{index}]"
         ));
         let overlay_end = end + hold;
         let next = format!("[tmp{index}]");
@@ -396,18 +633,39 @@ fn build_filter_complex(
         let fontfile = resolve_drawtext_font(text.font_path.as_deref())
             .map(|p| format!(":fontfile={}", quote_filter_path(&p)))
             .unwrap_or_default();
-        let fontsize = text.font_size.max(8.0).round();
+        let base_size = text.font_size.max(8.0).round();
         let color = normalize_color(&text.color);
         let alpha = text.opacity.clamp(0.0, 1.0);
-        let x_expr = match text.align.as_str() {
+        let anim = ffmpeg_text_anim(text.animation.as_ref(), start, end);
+        let fontsize_expr = if anim.scale == "1" {
+            format!("{base_size}")
+        } else {
+            format!("{base_size}*{}", anim.scale)
+        };
+        let base_x = match text.align.as_str() {
             "left" => format!("{}", text.x.max(0.0) as i64),
             "right" => format!("{}-text_w", text.x.max(0.0) as i64),
             _ => format!("{}-(text_w/2)", text.x.max(0.0) as i64),
         };
-        let y_expr = format!("{}-(text_h/2)", text.y.max(0.0) as i64);
+        let x_expr = if anim.dx == "0" {
+            base_x
+        } else {
+            format!("({base_x})+({})", anim.dx)
+        };
+        let base_y = format!("{}-(text_h/2)", text.y.max(0.0) as i64);
+        let y_expr = if anim.dy == "0" {
+            base_y
+        } else {
+            format!("({base_y})+({})", anim.dy)
+        };
+        let alpha_expr = if anim.alpha == "1" {
+            format!("{alpha:.3}")
+        } else {
+            format!("({alpha:.3})*({})", anim.alpha)
+        };
         let next = format!("[txt{ti}]");
         parts.push(format!(
-            "{current}drawtext=text='{escaped}'{fontfile}:fontsize={fontsize}:fontcolor={color}@{alpha:.3}:x={x_expr}:y={y_expr}:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
+            "{current}drawtext=text='{escaped}'{fontfile}:fontsize='{fontsize_expr}':fontcolor={color}@1:x='{x_expr}':y='{y_expr}':alpha='{alpha_expr}':enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
         ));
         current = next;
     }

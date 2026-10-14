@@ -3,7 +3,7 @@ import {
   normalizeClipEffects,
   type ClipEffects,
 } from "./effects";
-import type { ProjectDocument } from "./project";
+import type { ClipTransform, ProjectDocument } from "./project";
 import { clipDurationTicks } from "./timelineCommands";
 import { ticksToSeconds } from "./time";
 import {
@@ -11,6 +11,8 @@ import {
   transitionHalfSec,
   type ClipTransition,
 } from "./transitions";
+import { normalizeTextAnimation, type TextAnimation } from "./textAnimation";
+import { normalizeSpeedRamp, type SpeedRamp } from "./speedRamp";
 
 export type RenderResolutionPreset = "source" | "720" | "1080";
 export type RenderQualityPreset = "draft" | "standard" | "high";
@@ -27,16 +29,28 @@ export interface RenderClipPlan {
   volume: number;
   opacity: number;
   speed: number;
+  /** Variable-speed curve, when the clip carries one (null = constant speed). */
+  speedRamp: SpeedRamp | null;
   includeAudio: boolean;
   kind: "video" | "audio" | "image";
   effects: ClipEffects;
   transitionIn: ClipTransition;
   /** Seconds to start overlay early for incoming transition overlap. */
   transitionOverlapSec: number;
+  /** Position/scale/rotation/opacity (media placement) in project-canvas space. */
+  transform: ClipTransform;
+  /** Project-canvas size the transform is expressed against. */
+  canvasWidth: number;
+  canvasHeight: number;
+  /** Source media dimensions (for contain-fit export placement). */
+  mediaWidth: number | null;
+  mediaHeight: number | null;
 }
 
 export interface RenderTextPlan {
   clipId: string;
+  trackId: string;
+  trackOrder: number;
   content: string;
   fontFamily: string;
   fontPath: string | null;
@@ -48,12 +62,16 @@ export interface RenderTextPlan {
   opacity: number;
   timelineStartSec: number;
   timelineEndSec: number;
+  /** In/out text animation (null = none). */
+  animation: TextAnimation | null;
 }
 
 export interface RenderPlan {
   width: number;
   height: number;
   frameRate: number;
+  /** Background colour behind all layers. */
+  backgroundColor: string;
   durationSec: number;
   videoBitrate: string;
   audioBitrate: string;
@@ -88,6 +106,8 @@ export function buildRenderPlan(
       if (track && !track.visible) continue;
       texts.push({
         clipId: clip.id,
+        trackId: clip.trackId,
+        trackOrder: track?.order ?? 0,
         content: clip.text.content,
         fontFamily: clip.text.fontFamily,
         fontPath: clip.text.fontPath,
@@ -99,6 +119,7 @@ export function buildRenderPlan(
         opacity: clip.transform.opacity,
         timelineStartSec: ticksToSeconds(clip.startTicks),
         timelineEndSec: ticksToSeconds(end),
+        animation: clip.animation ? normalizeTextAnimation(clip.animation) : null,
       });
       continue;
     }
@@ -122,15 +143,25 @@ export function buildRenderPlan(
       volume: clip.volume * trackVolume,
       opacity: clip.transform.opacity,
       speed: clip.speed > 0 ? clip.speed : 1,
+      speedRamp: normalizeSpeedRamp(clip.speedRamp ?? null),
       includeAudio: !muted && asset.hasAudio && (asset.kind === "video" || asset.kind === "audio"),
       kind: asset.kind,
       effects: normalizeClipEffects(clip.effects ?? DEFAULT_CLIP_EFFECTS),
       transitionIn: normalizeClipTransition(clip.transitionIn),
       transitionOverlapSec: 0,
+      transform: clip.transform,
+      canvasWidth: project.canvas.width,
+      canvasHeight: project.canvas.height,
+      mediaWidth: asset.width,
+      mediaHeight: asset.height,
     });
   }
 
   clips.sort((a, b) => a.trackOrder - b.trackOrder || a.timelineStartSec - b.timelineStartSec);
+  texts.sort(
+    (a, b) =>
+      a.trackOrder - b.trackOrder || a.timelineStartSec - b.timelineStartSec,
+  );
 
   // Match preview: always honor transitionIn, centered on the cut (D/2 each side).
   // Do not skip when clips have a small gap — preview still blends around the cut.
@@ -165,6 +196,7 @@ export function buildRenderPlan(
     width,
     height,
     frameRate: project.canvas.frameRate,
+    backgroundColor: project.canvas.backgroundColor,
     durationSec: Math.max(ticksToSeconds(durationTicks), 0.1),
     videoBitrate,
     audioBitrate,
