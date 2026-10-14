@@ -26,10 +26,12 @@ export function snapTicks(
   return Math.max(0, best);
 }
 
-export function projectDurationTicks(clips: Clip[], fallback = 30_000_000): Tick {
+export function projectDurationTicks(clips: Clip[], emptyFallback = 10_000_000): Tick {
   let max = 0;
   for (const clip of clips) {
     max = Math.max(max, clip.startTicks + clipDurationTicks(clip));
   }
-  return Math.max(fallback, max + 2_000_000);
+  // Match content length (+2s pad). Don't force 30s — that looked like a "short clip" bug.
+  if (max <= 0) return emptyFallback;
+  return max + 2_000_000;
 }

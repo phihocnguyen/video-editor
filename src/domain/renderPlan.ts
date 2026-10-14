@@ -1,6 +1,16 @@
+import {
+  DEFAULT_CLIP_EFFECTS,
+  normalizeClipEffects,
+  type ClipEffects,
+} from "./effects";
 import type { ProjectDocument } from "./project";
 import { clipDurationTicks } from "./timelineCommands";
 import { ticksToSeconds } from "./time";
+import {
+  normalizeClipTransition,
+  transitionHalfSec,
+  type ClipTransition,
+} from "./transitions";
 
 export type RenderResolutionPreset = "source" | "720" | "1080";
 export type RenderQualityPreset = "draft" | "standard" | "high";
@@ -19,6 +29,10 @@ export interface RenderClipPlan {
   speed: number;
   includeAudio: boolean;
   kind: "video" | "audio" | "image";
+  effects: ClipEffects;
+  transitionIn: ClipTransition;
+  /** Seconds to start overlay early for incoming transition overlap. */
+  transitionOverlapSec: number;
 }
 
 export interface RenderTextPlan {
@@ -110,10 +124,40 @@ export function buildRenderPlan(
       speed: clip.speed > 0 ? clip.speed : 1,
       includeAudio: !muted && asset.hasAudio && (asset.kind === "video" || asset.kind === "audio"),
       kind: asset.kind,
+      effects: normalizeClipEffects(clip.effects ?? DEFAULT_CLIP_EFFECTS),
+      transitionIn: normalizeClipTransition(clip.transitionIn),
+      transitionOverlapSec: 0,
     });
   }
 
   clips.sort((a, b) => a.trackOrder - b.trackOrder || a.timelineStartSec - b.timelineStartSec);
+
+  // Match preview: always honor transitionIn, centered on the cut (D/2 each side).
+  // Do not skip when clips have a small gap — preview still blends around the cut.
+  for (let i = 0; i < clips.length; i += 1) {
+    const curr = clips[i];
+    if (curr.kind === "audio") continue;
+    const tin = curr.transitionIn;
+    if (tin.type === "none") continue;
+    const prev = [...clips]
+      .slice(0, i)
+      .reverse()
+      .find((c) => c.trackId === curr.trackId && c.kind !== "audio");
+    const half = transitionHalfSec(tin);
+    const currCap = Math.max(
+      0.05,
+      curr.timelineEndSec - curr.timelineStartSec - 0.05,
+    );
+    if (!prev) {
+      curr.transitionOverlapSec = Math.min(half, currCap);
+      continue;
+    }
+    const prevCap = Math.max(
+      0.05,
+      prev.timelineEndSec - prev.timelineStartSec - 0.05,
+    );
+    curr.transitionOverlapSec = Math.min(half, prevCap, currCap);
+  }
 
   const { videoBitrate, audioBitrate } = qualityBitrates(quality);
 

@@ -20,13 +20,12 @@ import { ClipProps } from "./ClipProps";
 import styles from "./InspectorPanel.module.css";
 
 interface InspectorPanelProps {
-  mode: "text" | "canvas" | "subtitles";
+  mode: "text" | "canvas" | "clip" | "subtitles";
 }
 
 export function InspectorPanel({ mode }: InspectorPanelProps) {
   const canvas = useProjectStore((s) => s.project.canvas);
   const clips = useProjectStore((s) => s.project.clips);
-  const playheadTicks = useEditorUiStore((s) => s.playheadTicks);
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
@@ -44,6 +43,25 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
     if (!id) return null;
     return clips.find((c) => c.id === id) ?? null;
   }, [clips, selectedClipIds]);
+
+  if (mode === "clip") {
+    return (
+      <div className={styles.panel}>
+        <h2>Clip</h2>
+        {!selectedClip ? (
+          <p className={styles.hint}>
+            Select a video or image clip on the timeline to edit opacity, speed, and effects.
+          </p>
+        ) : selectedClip.kind === "text" ? (
+          <p className={styles.hint}>
+            Text clips use the Text panel. Switch to Text or pick a media clip for effects.
+          </p>
+        ) : (
+          <ClipProps clip={selectedClip} />
+        )}
+      </div>
+    );
+  }
 
   if (mode === "canvas") {
     return (
@@ -116,7 +134,7 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
     let createdId = "";
     commitProjectChange((project) => {
       const next = addTextClip(project, {
-        startTicks: playheadTicks,
+        startTicks: useEditorUiStore.getState().playheadTicks,
         text: createDefaultTextStyle("Title text"),
       });
       createdId = next.clips[next.clips.length - 1]?.id ?? "";

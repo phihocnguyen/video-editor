@@ -9,8 +9,15 @@ import {
   actionSaveProject,
   formatActionError,
 } from "../../lib/projectActions";
+import {
+  copySelectedClips,
+  cutSelectedClips,
+  duplicateSelectedClips,
+  pasteClipboardClips,
+} from "../../lib/clipClipboard";
 import { getAppInfo, isTauriRuntime } from "../../lib/tauri";
 import {
+  nudgePlaybackRate,
   useEditorUiStore,
   type EditorPanel,
 } from "../../stores/editorUiStore";
@@ -27,6 +34,7 @@ import styles from "./EditorShell.module.css";
 
 const RAIL_ITEMS: { id: EditorPanel; label: string; icon: string }[] = [
   { id: "media", label: "Media", icon: "⬆" },
+  { id: "clip", label: "Clip", icon: "◆" },
   { id: "canvas", label: "Canvas", icon: "▢" },
   { id: "text", label: "Text", icon: "T" },
   { id: "audio", label: "Audio", icon: "♪" },
@@ -49,6 +57,7 @@ export function EditorShell() {
   const markClean = useProjectStore((s) => s.markClean);
   const activePanel = useEditorUiStore((s) => s.activePanel);
   const setActivePanel = useEditorUiStore((s) => s.setActivePanel);
+  const timelineHeightPx = useEditorUiStore((s) => s.timelineHeightPx);
   const tool = useEditorUiStore((s) => s.tool);
   const setTool = useEditorUiStore((s) => s.setTool);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
@@ -63,6 +72,10 @@ export function EditorShell() {
   const recent = useRecentProjectsStore((s) => s.recent);
   const rememberRecent = useRecentProjectsStore((s) => s.remember);
   const hydrateSettings = useSettingsStore((s) => s.hydrate);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty("--timeline-h", `${timelineHeightPx}px`);
+  }, [timelineHeightPx]);
 
   const loadOpened = useCallback(
     async (opened: { project: typeof project; path: string | null }) => {
@@ -216,9 +229,58 @@ export function EditorShell() {
 
       if (typing) return;
 
+      if (mod && event.key.toLowerCase() === "c") {
+        event.preventDefault();
+        copySelectedClips();
+        return;
+      }
+      if (mod && event.key.toLowerCase() === "x") {
+        event.preventDefault();
+        cutSelectedClips();
+        return;
+      }
+      if (mod && event.key.toLowerCase() === "v") {
+        event.preventDefault();
+        pasteClipboardClips();
+        return;
+      }
+      if (mod && event.key.toLowerCase() === "d") {
+        event.preventDefault();
+        duplicateSelectedClips();
+        return;
+      }
+
       if (event.key === " " || event.code === "Space") {
         event.preventDefault();
         setPlaying(!useEditorUiStore.getState().isPlaying);
+        return;
+      }
+
+      // Premiere-style shuttle: J slower/back · K pause/play · L faster/forward
+      const key = event.key.toLowerCase();
+      if (key === "j" || key === "k" || key === "l") {
+        event.preventDefault();
+        const ui = useEditorUiStore.getState();
+        if (key === "k") {
+          if (ui.isPlaying) {
+            ui.setPlaying(false);
+          } else {
+            if (Math.abs(ui.playbackRate) < 0.01) ui.setPlaybackRate(1);
+            else if (ui.playbackRate < 0) ui.setPlaybackRate(Math.abs(ui.playbackRate));
+            ui.setPlaying(true);
+          }
+          return;
+        }
+        const next = nudgePlaybackRate(ui.playbackRate, key === "l" ? 1 : -1);
+        ui.setPlaybackRate(next);
+        ui.setPlaying(true);
+        ui.setStatusMessage(
+          next === 1
+            ? "Play 1×"
+            : next > 0
+              ? `Fast forward ${next}×`
+              : `Rewind ${Math.abs(next)}×`,
+        );
         return;
       }
 
@@ -389,6 +451,7 @@ export function EditorShell() {
 
         <aside className={styles.side}>
           {activePanel === "media" && <MediaBinPanel />}
+          {activePanel === "clip" && <InspectorPanel mode="clip" />}
           {activePanel === "text" && <InspectorPanel mode="text" />}
           {activePanel === "canvas" && <InspectorPanel mode="canvas" />}
           {activePanel === "audio" && <MediaBinPanel filter="audio" />}
@@ -401,6 +464,34 @@ export function EditorShell() {
           <PreviewPanel />
         </section>
       </div>
+
+      <button
+        type="button"
+        className={styles.splitHandle}
+        aria-label="Resize timeline"
+        title="Drag to resize preview / timeline"
+        onPointerDown={(e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          const startY = e.clientY;
+          const startH = useEditorUiStore.getState().timelineHeightPx;
+          const onMove = (ev: PointerEvent) => {
+            // Drag up → taller timeline
+            const next = startH - (ev.clientY - startY);
+            useEditorUiStore.getState().setTimelineHeightPx(next);
+            document.documentElement.style.setProperty(
+              "--timeline-h",
+              `${useEditorUiStore.getState().timelineHeightPx}px`,
+            );
+          };
+          const onUp = () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+          };
+          window.addEventListener("pointermove", onMove);
+          window.addEventListener("pointerup", onUp);
+        }}
+      />
 
       <section className={styles.timeline}>
         <TimelinePanel />

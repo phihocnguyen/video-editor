@@ -1,0 +1,299 @@
+import { useEffect, useRef, type ReactNode } from "react";
+import { ticksToSeconds } from "../../domain";
+import {
+  nudgePlaybackRate,
+  useEditorUiStore,
+} from "../../stores/editorUiStore";
+import { useProjectStore } from "../../stores/projectStore";
+import styles from "./PreviewPanel.module.css";
+
+function formatClock(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds - m * 60;
+  return `${String(m).padStart(2, "0")}:${s.toFixed(2).padStart(5, "0")}`;
+}
+
+/** Premiere-style program monitor transport. */
+export function TransportBar() {
+  const project = useProjectStore((s) => s.project);
+  const fps = project.canvas.frameRate > 0 ? project.canvas.frameRate : 30;
+  const frameTicks = Math.round(1_000_000 / fps);
+
+  const isPlaying = useEditorUiStore((s) => s.isPlaying);
+  const setPlaying = useEditorUiStore((s) => s.setPlaying);
+  const setPlayheadTicks = useEditorUiStore((s) => s.setPlayheadTicks);
+  const durationTicks = useEditorUiStore((s) => s.durationTicks);
+  const playbackRate = useEditorUiStore((s) => s.playbackRate);
+  const setPlaybackRate = useEditorUiStore((s) => s.setPlaybackRate);
+  const markInTicks = useEditorUiStore((s) => s.markInTicks);
+  const markOutTicks = useEditorUiStore((s) => s.markOutTicks);
+  const setMarkInTicks = useEditorUiStore((s) => s.setMarkInTicks);
+  const setMarkOutTicks = useEditorUiStore((s) => s.setMarkOutTicks);
+  const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
+  const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
+  const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
+
+  const clockRef = useRef<HTMLSpanElement>(null);
+  const fillRef = useRef<HTMLDivElement>(null);
+  const thumbRef = useRef<HTMLSpanElement>(null);
+  const durationRef = useRef(durationTicks);
+  durationRef.current = durationTicks;
+
+  useEffect(() => {
+    const paint = (ticks: number) => {
+      const dur = durationRef.current;
+      const progress = dur > 0 ? Math.min(1, Math.max(0, ticks / dur)) : 0;
+      const pct = `${progress * 100}%`;
+      if (fillRef.current) fillRef.current.style.width = pct;
+      if (thumbRef.current) thumbRef.current.style.left = pct;
+      if (clockRef.current) {
+        clockRef.current.textContent = formatClock(ticksToSeconds(ticks));
+      }
+    };
+    paint(useEditorUiStore.getState().playheadTicks);
+    return useEditorUiStore.subscribe((s, prev) => {
+      if (s.playheadTicks !== prev.playheadTicks) paint(s.playheadTicks);
+    });
+  }, []);
+
+  const rateLabel =
+    playbackRate === 1
+      ? "1×"
+      : `${playbackRate > 0 ? "" : "−"}${Math.abs(playbackRate)}×`;
+
+  function shuttle(direction: 1 | -1) {
+    const next = nudgePlaybackRate(playbackRate, direction);
+    setPlaybackRate(next);
+    setPlaying(true);
+    setStatusMessage(
+      next === 1
+        ? "Play 1×"
+        : next > 0
+          ? `Fast forward ${next}×`
+          : `Rewind ${Math.abs(next)}×`,
+    );
+  }
+
+  const inPct =
+    markInTicks != null && durationTicks > 0
+      ? (markInTicks / durationTicks) * 100
+      : null;
+  const outPct =
+    markOutTicks != null && durationTicks > 0
+      ? (markOutTicks / durationTicks) * 100
+      : null;
+
+  function step(deltaFrames: number) {
+    setPlaying(false);
+    const playheadTicks = useEditorUiStore.getState().playheadTicks;
+    setPlayheadTicks(
+      Math.max(0, Math.min(durationTicks, playheadTicks + deltaFrames * frameTicks)),
+    );
+  }
+
+  function seekRatio(ratio: number) {
+    setPlaying(false);
+    setPlayheadTicks(Math.round(Math.min(1, Math.max(0, ratio)) * durationTicks));
+  }
+
+  return (
+    <div className={styles.transportBar}>
+      <div className={styles.scrubRow}>
+        <button
+          type="button"
+          className={styles.scrubHandle}
+          style={{ left: 0 }}
+          title="Go to start"
+          onClick={() => {
+            setPlaying(false);
+            setPlayheadTicks(0);
+          }}
+        />
+        <div
+          className={styles.scrubTrack}
+          onPointerDown={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const ratio = (e.clientX - rect.left) / Math.max(1, rect.width);
+            seekRatio(ratio);
+            const move = (ev: PointerEvent) => {
+              const r = (ev.clientX - rect.left) / Math.max(1, rect.width);
+              seekRatio(r);
+            };
+            const up = () => {
+              window.removeEventListener("pointermove", move);
+              window.removeEventListener("pointerup", up);
+            };
+            window.addEventListener("pointermove", move);
+            window.addEventListener("pointerup", up);
+          }}
+        >
+          <div ref={fillRef} className={styles.scrubFill} style={{ width: "0%" }} />
+          {inPct != null ? (
+            <span className={styles.markIn} style={{ left: `${inPct}%` }} title="Mark In" />
+          ) : null}
+          {outPct != null ? (
+            <span className={styles.markOut} style={{ left: `${outPct}%` }} title="Mark Out" />
+          ) : null}
+          <span ref={thumbRef} className={styles.scrubThumb} style={{ left: "0%" }} />
+        </div>
+        <button
+          type="button"
+          className={styles.scrubHandle}
+          style={{ right: 0 }}
+          title="Go to end"
+          onClick={() => {
+            setPlaying(false);
+            setPlayheadTicks(durationTicks);
+          }}
+        />
+      </div>
+
+      <div className={styles.transportTools}>
+        <div className={styles.toolCluster}>
+          <ToolBtn
+            title="Add marker (playhead)"
+            onClick={() =>
+              setStatusMessage(
+                `Marker @ ${formatClock(ticksToSeconds(useEditorUiStore.getState().playheadTicks))}`,
+              )
+            }
+          >
+            ◆
+          </ToolBtn>
+          <ToolBtn
+            title="Mark In (I)"
+            onClick={() => {
+              setMarkInTicks(useEditorUiStore.getState().playheadTicks);
+              setStatusMessage("Mark In set");
+            }}
+          >
+            {"{"}
+          </ToolBtn>
+          <ToolBtn
+            title="Mark Out (O)"
+            onClick={() => {
+              setMarkOutTicks(useEditorUiStore.getState().playheadTicks);
+              setStatusMessage("Mark Out set");
+            }}
+          >
+            {"}"}
+          </ToolBtn>
+          <ToolBtn
+            title="Go to In"
+            disabled={markInTicks == null}
+            onClick={() => {
+              if (markInTicks == null) return;
+              setPlaying(false);
+              setPlayheadTicks(markInTicks);
+            }}
+          >
+            ⇤
+          </ToolBtn>
+          <ToolBtn title="Step back 1 frame" onClick={() => step(-1)}>
+            ⏮
+          </ToolBtn>
+          <ToolBtn title="Slower / rewind (J)" onClick={() => shuttle(-1)}>
+            «
+          </ToolBtn>
+          <button
+            type="button"
+            className={styles.playBtn}
+            onClick={() => {
+              if (isPlaying) {
+                setPlaying(false);
+              } else {
+                if (Math.abs(playbackRate) < 0.01) setPlaybackRate(1);
+                setPlaying(true);
+              }
+            }}
+            title={isPlaying ? "Pause (K / Space)" : "Play (K / Space)"}
+          >
+            {isPlaying ? "❚❚" : "▶"}
+          </button>
+          <ToolBtn title="Faster / forward (L)" onClick={() => shuttle(1)}>
+            »
+          </ToolBtn>
+          <button
+            type="button"
+            className={styles.rateBtn}
+            title="Reset to 1×"
+            onClick={() => {
+              setPlaybackRate(1);
+              setStatusMessage("Play 1×");
+            }}
+          >
+            {rateLabel}
+          </button>
+          <ToolBtn title="Step forward 1 frame" onClick={() => step(1)}>
+            ⏭
+          </ToolBtn>
+          <ToolBtn
+            title="Go to Out"
+            disabled={markOutTicks == null}
+            onClick={() => {
+              if (markOutTicks == null) return;
+              setPlaying(false);
+              setPlayheadTicks(markOutTicks);
+            }}
+          >
+            ⇥
+          </ToolBtn>
+          <ToolBtn
+            title="Clear selection (Lift placeholder)"
+            onClick={() => {
+              setSelectedClipIds([]);
+              setStatusMessage("Selection cleared");
+            }}
+          >
+            ▤
+          </ToolBtn>
+          <ToolBtn
+            title="Clear In/Out"
+            onClick={() => {
+              setMarkInTicks(null);
+              setMarkOutTicks(null);
+              setStatusMessage("In/Out cleared");
+            }}
+          >
+            ✕
+          </ToolBtn>
+        </div>
+
+        <div className={styles.clock}>
+          <span ref={clockRef}>
+            {formatClock(ticksToSeconds(useEditorUiStore.getState().playheadTicks))}
+          </span>
+          <span> / </span>
+          {formatClock(ticksToSeconds(durationTicks))}
+          {selectedClipIds.length > 0 ? (
+            <span className={styles.selHint}> · {selectedClipIds.length} selected</span>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ToolBtn({
+  title,
+  onClick,
+  disabled,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className={styles.toolBtn}
+      title={title}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addMediaClip,
   addTrack,
+  applySpeedToRange,
   clipDurationTicks,
   deleteClips,
   moveClip,
@@ -103,5 +104,30 @@ describe("timelineCommands", () => {
     project = updateClipSpeed(project, clipId, 2);
     expect(project.clips[0].speed).toBe(2);
     expect(clipDurationTicks(project.clips[0])).toBe(5_000_000);
+  });
+
+  it("applies speed only inside a Mark In/Out range", () => {
+    let project = addMediaClip(withAsset(), "asset-1", { startTicks: 0 });
+    const clipId = project.clips[0].id;
+    // Slow-mo 0.5× from 2s..4s → middle becomes 4s long on the timeline
+    const { project: next, midClipId } = applySpeedToRange(
+      project,
+      clipId,
+      2_000_000,
+      4_000_000,
+      0.5,
+    );
+    project = next;
+    expect(project.clips).toHaveLength(3);
+    const ordered = [...project.clips].sort((a, b) => a.startTicks - b.startTicks);
+    expect(ordered[0]!.startTicks).toBe(0);
+    expect(clipDurationTicks(ordered[0]!)).toBe(2_000_000);
+    const mid = ordered.find((c) => c.id === midClipId)!;
+    expect(mid.speed).toBe(0.5);
+    expect(clipDurationTicks(mid)).toBe(4_000_000);
+    expect(mid.startTicks).toBe(2_000_000);
+    const right = ordered[2]!;
+    expect(right.startTicks).toBe(6_000_000);
+    expect(right.sourceInTicks).toBe(4_000_000);
   });
 });

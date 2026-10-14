@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   createEmptyProject,
+  normalizeProjectDocument,
   type MediaAsset,
   type ProjectDocument,
 } from "../domain";
@@ -21,7 +22,10 @@ export const useProjectStore = create<ProjectState>((set) => ({
   projectPath: null,
   dirty: false,
   setProject: (project, options) =>
-    set({ project, dirty: options?.dirty ?? true }),
+    set({
+      project: normalizeProjectDocument(project),
+      dirty: options?.dirty ?? true,
+    }),
   setProjectPath: (projectPath) => set({ projectPath }),
   addAssets: (assets) =>
     set((state) => ({

@@ -9,21 +9,34 @@ import {
 import {
   addMediaClip,
   addTrack,
+  applySpeedToRange,
   clipDurationTicks,
   deleteClips,
   moveClip,
+  moveTrack,
+  normalizeClipTransition,
   projectDurationTicks,
   removeTrack,
   snapTicks,
   splitClipAt,
   ticksToSeconds,
   trimClip,
+  updateClipTransition,
   updateTrack,
 } from "../../domain";
+import {
+  copySelectedClips,
+  cutSelectedClips,
+  duplicateSelectedClips,
+  pasteClipboardClips,
+} from "../../lib/clipClipboard";
+import { resolveMediaUrl } from "../../lib/mediaUrl";
 import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { ClipFilmstrip } from "./ClipFilmstrip";
+import { ClipWaveform } from "./ClipWaveform";
 import styles from "./TimelinePanel.module.css";
 
 function formatClock(seconds: number): string {
@@ -34,10 +47,25 @@ function formatClock(seconds: number): string {
 
 export function TimelinePanel() {
   const project = useProjectStore((s) => s.project);
-  const tracks = project.tracks;
+  const tracks = useMemo(
+    () => [...project.tracks].sort((a, b) => a.order - b.order),
+    [project.tracks],
+  );
   const clips = project.clips;
   const assets = project.assets;
-  const playheadTicks = useEditorUiStore((s) => s.playheadTicks);
+  const [trackMenu, setTrackMenu] = useState<{
+    trackId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [clipMenu, setClipMenu] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const clipClipboard = useEditorUiStore((s) => s.clipClipboard);
+  const markInTicks = useEditorUiStore((s) => s.markInTicks);
+  const markOutTicks = useEditorUiStore((s) => s.markOutTicks);
+  // Intentionally NOT subscribed to playheadTicks — that re-rendered every clip at 60fps.
   const durationTicks = useEditorUiStore((s) => s.durationTicks);
   const setDurationTicks = useEditorUiStore((s) => s.setDurationTicks);
   const timelineZoom = useEditorUiStore((s) => s.timelineZoom);
@@ -50,12 +78,16 @@ export function TimelinePanel() {
   const setPlaying = useEditorUiStore((s) => s.setPlaying);
   const setScrubbing = useEditorUiStore((s) => s.setScrubbing);
   const setSnapEnabled = useSettingsStore((s) => s.setSnapEnabled);
+  const trackLabelWidthPx = useEditorUiStore((s) => s.trackLabelWidthPx);
+  const setTrackLabelWidthPx = useEditorUiStore((s) => s.setTrackLabelWidthPx);
 
   const lanesRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
+  const timecodeRef = useRef<HTMLSpanElement>(null);
   const scrubbingRef = useRef(false);
   const rafRef = useRef(0);
-  const pendingTicksRef = useRef(playheadTicks);
+  const pendingTicksRef = useRef(useEditorUiStore.getState().playheadTicks);
+  const pxPerSecondRef = useRef(64);
   const scrubMoveRef = useRef<(event: PointerEvent) => void>(() => undefined);
   const scrubEndRef = useRef<() => void>(() => undefined);
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
@@ -67,19 +99,56 @@ export function TimelinePanel() {
   } | null>(null);
 
   const pxPerSecond = 64 * timelineZoom;
+  pxPerSecondRef.current = pxPerSecond;
   const durationSeconds = ticksToSeconds(durationTicks);
-  const playheadSeconds = ticksToSeconds(playheadTicks);
   const laneWidth = Math.max(800, durationSeconds * pxPerSecond);
 
   useEffect(() => {
     setDurationTicks(projectDurationTicks(clips));
   }, [clips, setDurationTicks]);
 
+  // Drive playhead + timecode via DOM — no React re-render of the lane/clips.
   useEffect(() => {
-    if (!scrubbingRef.current && playheadRef.current) {
-      playheadRef.current.style.left = `${playheadSeconds * pxPerSecond}px`;
+    const paint = (ticks: number) => {
+      pendingTicksRef.current = ticks;
+      const x = ticksToSeconds(ticks) * pxPerSecondRef.current;
+      if (!scrubbingRef.current && playheadRef.current) {
+        playheadRef.current.style.left = `${x}px`;
+      }
+      if (timecodeRef.current) {
+        timecodeRef.current.textContent = formatClock(ticksToSeconds(ticks));
+      }
+    };
+    paint(useEditorUiStore.getState().playheadTicks);
+    return useEditorUiStore.subscribe((s, prev) => {
+      if (s.playheadTicks !== prev.playheadTicks) paint(s.playheadTicks);
+    });
+  }, []);
+
+  // Keep playhead X in sync when zoom changes (no playhead store subscription).
+  useEffect(() => {
+    const ticks = pendingTicksRef.current;
+    if (playheadRef.current) {
+      playheadRef.current.style.left = `${ticksToSeconds(ticks) * pxPerSecond}px`;
     }
-  }, [playheadSeconds, pxPerSecond]);
+  }, [pxPerSecond]);
+
+  useEffect(() => {
+    if (!clipMenu && !trackMenu) return;
+    const close = () => {
+      setClipMenu(null);
+      setTrackMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [clipMenu, trackMenu]);
 
   const marks = useMemo(() => {
     const step = timelineZoom >= 2 ? 1 : timelineZoom >= 1 ? 2 : 5;
@@ -98,12 +167,12 @@ export function TimelinePanel() {
       if (snapEnabled) {
         ticks = snapTicks(ticks, clips, {
           thresholdTicks: Math.round(0.15 * 1_000_000 / Math.max(0.5, timelineZoom)),
-          extraTargets: [playheadTicks],
+          extraTargets: [useEditorUiStore.getState().playheadTicks],
         });
       }
       return Math.max(0, Math.min(durationTicks, ticks));
     },
-    [clips, durationTicks, laneWidth, playheadTicks, pxPerSecond, snapEnabled, timelineZoom],
+    [clips, durationTicks, laneWidth, pxPerSecond, snapEnabled, timelineZoom],
   );
 
   const applyScrubTicks = useCallback(
@@ -169,7 +238,9 @@ export function TimelinePanel() {
       setStatusMessage("Select a clip to split");
       return;
     }
-    commitProjectChange((p) => splitClipAt(p, id, playheadTicks));
+    commitProjectChange((p) =>
+      splitClipAt(p, id, useEditorUiStore.getState().playheadTicks),
+    );
     setStatusMessage("Split at playhead");
   }
 
@@ -216,6 +287,18 @@ export function TimelinePanel() {
       const clip = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
       if (!clip) return;
 
+      // Open Clip / Text side panel so effects & props are visible.
+      if (clip.kind === "text") {
+        useEditorUiStore.getState().setActivePanel("text");
+      } else {
+        const asset = useProjectStore
+          .getState()
+          .project.assets.find((a) => a.id === clip.assetId);
+        if (asset?.kind !== "audio") {
+          useEditorUiStore.getState().setActivePanel("clip");
+        }
+      }
+
       const pointerTicks = ticksFromClientX(event.clientX);
       const grabOffsetTicks = pointerTicks - clip.startTicks;
       const before = useProjectStore.getState().project;
@@ -243,7 +326,7 @@ export function TimelinePanel() {
             .project.clips.filter((c) => c.id !== drag.clipId);
           startTicks = snapTicks(startTicks, others, {
             thresholdTicks: Math.round((0.15 * 1_000_000) / Math.max(0.5, timelineZoom)),
-            extraTargets: [playheadTicks],
+            extraTargets: [useEditorUiStore.getState().playheadTicks],
           });
         }
 
@@ -283,7 +366,6 @@ export function TimelinePanel() {
       window.addEventListener("pointercancel", onUp);
     },
     [
-      playheadTicks,
       setPlaying,
       setSelectedClipIds,
       setStatusMessage,
@@ -330,7 +412,9 @@ export function TimelinePanel() {
             </svg>
           </button>
           <span className={styles.timecode}>
-            {formatClock(playheadSeconds)}
+            <span ref={timecodeRef}>
+              {formatClock(ticksToSeconds(useEditorUiStore.getState().playheadTicks))}
+            </span>
             <span> / {formatClock(durationSeconds)}</span>
           </span>
         </div>
@@ -364,16 +448,84 @@ export function TimelinePanel() {
         </div>
       </div>
 
-      <div className={styles.scroll}>
-        <div className={styles.labels}>
+      <div
+        className={styles.scroll}
+        style={{ ["--track-label-w" as string]: `${trackLabelWidthPx}px` }}
+      >
+        <div
+          className={styles.labels}
+          onClick={() => {
+            setTrackMenu(null);
+            setClipMenu(null);
+          }}
+        >
+          <button
+            type="button"
+            className={styles.labelSplit}
+            aria-label="Resize track labels"
+            title="Drag to resize track labels"
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              e.preventDefault();
+              e.stopPropagation();
+              const startX = e.clientX;
+              const startW = trackLabelWidthPx;
+              const onMove = (ev: PointerEvent) => {
+                setTrackLabelWidthPx(startW + (ev.clientX - startX));
+              };
+              const onUp = () => {
+                window.removeEventListener("pointermove", onMove);
+                window.removeEventListener("pointerup", onUp);
+              };
+              window.addEventListener("pointermove", onMove);
+              window.addEventListener("pointerup", onUp);
+            }}
+          />
           <div className={styles.rulerSpacer} />
           {tracks.map((track) => (
-            <div key={track.id} className={styles.label}>
+            <div
+              key={track.id}
+              className={styles.label}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setClipMenu(null);
+                setTrackMenu({ trackId: track.id, x: e.clientX, y: e.clientY });
+              }}
+            >
               <div className={styles.labelTop}>
                 <strong>{track.name}</strong>
-                <span>{track.kind}</span>
               </div>
               <div className={styles.trackControls}>
+                <button
+                  type="button"
+                  title="Move up"
+                  onClick={() => {
+                    try {
+                      commitProjectChange((p) => moveTrack(p, track.id, "up"));
+                    } catch (error) {
+                      setStatusMessage(
+                        error instanceof Error ? error.message : "Cannot move",
+                      );
+                    }
+                  }}
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  title="Move down"
+                  onClick={() => {
+                    try {
+                      commitProjectChange((p) => moveTrack(p, track.id, "down"));
+                    } catch (error) {
+                      setStatusMessage(
+                        error instanceof Error ? error.message : "Cannot move",
+                      );
+                    }
+                  }}
+                >
+                  ↓
+                </button>
                 <button
                   type="button"
                   className={track.muted ? styles.trackCtrlOn : undefined}
@@ -409,22 +561,6 @@ export function TimelinePanel() {
                   }
                 >
                   L
-                </button>
-                <button
-                  type="button"
-                  title="Remove track"
-                  onClick={() => {
-                    try {
-                      commitProjectChange((p) => removeTrack(p, track.id));
-                      setStatusMessage(`Removed ${track.name}`);
-                    } catch (error) {
-                      setStatusMessage(
-                        error instanceof Error ? error.message : "Cannot remove track",
-                      );
-                    }
-                  }}
-                >
-                  ×
                 </button>
               </div>
             </div>
@@ -480,7 +616,10 @@ export function TimelinePanel() {
                 }}
               >
                 {trackClips.length === 0 ? <div className={styles.emptyLane} /> : null}
-                {trackClips.map((clip) => {
+                {trackClips
+                  .slice()
+                  .sort((a, b) => a.startTicks - b.startTicks)
+                  .map((clip, clipIndex, ordered) => {
                   const start = ticksToSeconds(clip.startTicks);
                   const dur = ticksToSeconds(clipDurationTicks(clip));
                   const asset = assets.find((a) => a.id === clip.assetId);
@@ -490,9 +629,82 @@ export function TimelinePanel() {
                     clip.kind === "text"
                       ? clip.text?.content || "Text"
                       : asset?.name ?? "Clip";
+                  const tin = normalizeClipTransition(clip.transitionIn);
+                  const prev = clipIndex > 0 ? ordered[clipIndex - 1] : null;
+                  const showTx =
+                    Boolean(prev) &&
+                    track.kind === "video" &&
+                    clip.kind === "media" &&
+                    asset?.kind !== "audio";
+                  const clipWidthPx = Math.max(24, dur * pxPerSecond);
+                  const mediaUrl =
+                    asset && !asset.missing
+                      ? resolveMediaUrl(asset.path, asset.id)
+                      : null;
+                  const sourceInSec = ticksToSeconds(clip.sourceInTicks);
+                  const sourceOutSec = ticksToSeconds(clip.sourceOutTicks);
+                  const showFilmstrip =
+                    clip.kind === "media" &&
+                    track.kind === "video" &&
+                    mediaUrl &&
+                    (asset?.kind === "video" || asset?.kind === "image");
+                  const showWaveform =
+                    clip.kind === "media" &&
+                    track.kind === "audio" &&
+                    mediaUrl &&
+                    (asset?.kind === "audio" || asset?.hasAudio);
                   return (
+                    <div key={clip.id}>
+                    {showTx ? (
+                      <button
+                        type="button"
+                        className={
+                          tin.type !== "none"
+                            ? `${styles.transitionMark} ${styles.transitionMarkOn}`
+                            : styles.transitionMark
+                        }
+                        style={{ left: start * pxPerSecond }}
+                        title={
+                          tin.type === "none"
+                            ? "Add transition"
+                            : `Transition: ${tin.type} · click to cycle`
+                        }
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const cycle = [
+                            "none",
+                            "dissolve",
+                            "fade",
+                            "wipeLeft",
+                            "wipeRight",
+                          ] as const;
+                          const idx = cycle.indexOf(
+                            tin.type === "none" ? "none" : tin.type,
+                          );
+                          const nextType = cycle[(idx + 1) % cycle.length];
+                          commitProjectChange((p) =>
+                            updateClipTransition(p, clip.id, {
+                              type: nextType,
+                              durationTicks:
+                                nextType === "none"
+                                  ? tin.durationTicks
+                                  : Math.max(tin.durationTicks, 600_000),
+                            }),
+                          );
+                          setSelectedClipIds([clip.id]);
+                          useEditorUiStore.getState().setActivePanel("clip");
+                          setStatusMessage(
+                            nextType === "none"
+                              ? "Transition cleared"
+                              : `Transition → ${nextType}`,
+                          );
+                        }}
+                      >
+                        <span>{tin.type === "none" ? "+" : "◆"}</span>
+                      </button>
+                    ) : null}
                     <div
-                      key={clip.id}
                       className={[
                         styles.clip,
                         selected ? styles.clipSelected : "",
@@ -503,11 +715,41 @@ export function TimelinePanel() {
                       data-kind={clip.kind === "text" ? "text" : track.kind}
                       style={{
                         left: start * pxPerSecond,
-                        width: Math.max(24, dur * pxPerSecond),
+                        width: clipWidthPx,
                       }}
                       onPointerDown={(e) => beginClipSlide(e, clip.id, track.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setTrackMenu(null);
+                        const ids = selectedClipIds.includes(clip.id)
+                          ? selectedClipIds
+                          : [clip.id];
+                        setSelectedClipIds(ids);
+                        setClipMenu({ x: e.clientX, y: e.clientY });
+                      }}
                       title={label}
                     >
+                      {showFilmstrip && asset && mediaUrl ? (
+                        <ClipFilmstrip
+                          mediaUrl={mediaUrl}
+                          filePath={asset.path}
+                          kind={asset.kind === "image" ? "image" : "video"}
+                          sourceInSec={sourceInSec}
+                          sourceOutSec={sourceOutSec}
+                          widthPx={clipWidthPx}
+                        />
+                      ) : null}
+                      {showWaveform && asset && mediaUrl ? (
+                        <ClipWaveform
+                          cacheKey={asset.id}
+                          mediaUrl={mediaUrl}
+                          sourceInSec={sourceInSec}
+                          sourceOutSec={sourceOutSec}
+                          widthPx={clipWidthPx}
+                          heightPx={40}
+                        />
+                      ) : null}
                       {selected ? (
                         <>
                           <span
@@ -574,7 +816,8 @@ export function TimelinePanel() {
                           />
                         </>
                       ) : null}
-                      <span>{label}</span>
+                      <span className={styles.clipLabel}>{label}</span>
+                    </div>
                     </div>
                   );
                 })}
@@ -585,7 +828,6 @@ export function TimelinePanel() {
           <div
             ref={playheadRef}
             className={styles.playhead}
-            style={{ left: playheadSeconds * pxPerSecond }}
             onPointerDown={(e) => {
               if (e.button !== 0) return;
               e.stopPropagation();
@@ -595,6 +837,227 @@ export function TimelinePanel() {
           />
         </div>
       </div>
+
+      {clipMenu ? (
+        <div
+          className={styles.ctxMenu}
+          style={{ left: clipMenu.x, top: clipMenu.y }}
+          role="menu"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              cutSelectedClips();
+              setClipMenu(null);
+            }}
+          >
+            Cut
+            <kbd className={styles.ctxKbd}>Ctrl+X</kbd>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              copySelectedClips();
+              setClipMenu(null);
+            }}
+          >
+            Copy
+            <kbd className={styles.ctxKbd}>Ctrl+C</kbd>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!clipClipboard?.length}
+            onClick={() => {
+              pasteClipboardClips();
+              setClipMenu(null);
+            }}
+          >
+            Paste
+            <kbd className={styles.ctxKbd}>Ctrl+V</kbd>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              duplicateSelectedClips();
+              setClipMenu(null);
+            }}
+          >
+            Duplicate
+            <kbd className={styles.ctxKbd}>Ctrl+D</kbd>
+          </button>
+          <div className={styles.ctxSep} />
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              const id = useEditorUiStore.getState().selectedClipIds[0];
+              if (id) {
+                commitProjectChange((p) =>
+                  splitClipAt(p, id, useEditorUiStore.getState().playheadTicks),
+                );
+                setStatusMessage("Split at playhead");
+              }
+              setClipMenu(null);
+            }}
+          >
+            Split at playhead
+          </button>
+          <div className={styles.ctxSep} />
+          {[0.5, 2].map((speed) => (
+            <button
+              key={speed}
+              type="button"
+              role="menuitem"
+              disabled={
+                markInTicks == null ||
+                markOutTicks == null ||
+                markOutTicks <= markInTicks
+              }
+              onClick={() => {
+                const id = useEditorUiStore.getState().selectedClipIds[0];
+                if (!id || markInTicks == null || markOutTicks == null) return;
+                try {
+                  let midId = id;
+                  commitProjectChange((p) => {
+                    const result = applySpeedToRange(
+                      p,
+                      id,
+                      markInTicks,
+                      markOutTicks,
+                      speed,
+                    );
+                    midId = result.midClipId;
+                    return result.project;
+                  });
+                  setSelectedClipIds([midId]);
+                  setStatusMessage(`Speed ${speed}× on In/Out range`);
+                } catch (error) {
+                  setStatusMessage(
+                    error instanceof Error
+                      ? error.message
+                      : "Speed range failed",
+                  );
+                }
+                setClipMenu(null);
+              }}
+            >
+              Speed {speed}× on In/Out
+            </button>
+          ))}
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              useEditorUiStore.getState().setActivePanel("clip");
+              setStatusMessage("Clip properties");
+              setClipMenu(null);
+            }}
+          >
+            Clip properties
+          </button>
+          <div className={styles.ctxSep} />
+          <button
+            type="button"
+            role="menuitem"
+            className={styles.ctxDanger}
+            onClick={() => {
+              const ids = useEditorUiStore.getState().selectedClipIds;
+              if (ids.length > 0) {
+                commitProjectChange((p) => deleteClips(p, ids));
+                setSelectedClipIds([]);
+                setStatusMessage("Deleted");
+              }
+              setClipMenu(null);
+            }}
+          >
+            Delete
+            <kbd className={styles.ctxKbd}>Del</kbd>
+          </button>
+        </div>
+      ) : null}
+
+      {trackMenu ? (
+        <div
+          className={styles.ctxMenu}
+          style={{ left: trackMenu.x, top: trackMenu.y }}
+          role="menu"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!clipClipboard?.length}
+            onClick={() => {
+              pasteClipboardClips();
+              setTrackMenu(null);
+            }}
+          >
+            Paste
+            <kbd className={styles.ctxKbd}>Ctrl+V</kbd>
+          </button>
+          <div className={styles.ctxSep} />
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              try {
+                commitProjectChange((p) => moveTrack(p, trackMenu.trackId, "up"));
+                setStatusMessage("Track moved up");
+              } catch (error) {
+                setStatusMessage(
+                  error instanceof Error ? error.message : "Cannot move",
+                );
+              }
+              setTrackMenu(null);
+            }}
+          >
+            Move up
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              try {
+                commitProjectChange((p) => moveTrack(p, trackMenu.trackId, "down"));
+                setStatusMessage("Track moved down");
+              } catch (error) {
+                setStatusMessage(
+                  error instanceof Error ? error.message : "Cannot move",
+                );
+              }
+              setTrackMenu(null);
+            }}
+          >
+            Move down
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={styles.ctxDanger}
+            onClick={() => {
+              try {
+                const name =
+                  project.tracks.find((t) => t.id === trackMenu.trackId)?.name ??
+                  "track";
+                commitProjectChange((p) => removeTrack(p, trackMenu.trackId));
+                setStatusMessage(`Deleted ${name}`);
+              } catch (error) {
+                setStatusMessage(
+                  error instanceof Error ? error.message : "Cannot delete track",
+                );
+              }
+              setTrackMenu(null);
+            }}
+          >
+            Delete track
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

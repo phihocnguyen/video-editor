@@ -22,6 +22,60 @@ pub struct RenderClipPlan {
     #[serde(default = "default_true")]
     pub include_audio: bool,
     pub kind: String,
+    #[serde(default)]
+    pub effects: RenderClipEffects,
+    #[serde(default)]
+    pub transition_in: RenderClipTransition,
+    #[serde(default)]
+    pub transition_overlap_sec: f64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderClipTransition {
+    #[serde(default = "default_none", rename = "type")]
+    pub kind: String,
+    #[serde(default = "default_half_sec_ticks")]
+    pub duration_ticks: i64,
+}
+
+impl Default for RenderClipTransition {
+    fn default() -> Self {
+        Self {
+            kind: "none".into(),
+            duration_ticks: 500_000,
+        }
+    }
+}
+
+fn default_none() -> String {
+    "none".into()
+}
+fn default_half_sec_ticks() -> i64 {
+    500_000
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderClipEffects {
+    #[serde(default = "default_one")]
+    pub brightness: f64,
+    #[serde(default = "default_one")]
+    pub contrast: f64,
+    #[serde(default = "default_one")]
+    pub saturation: f64,
+    #[serde(default)]
+    pub blur: f64,
+    #[serde(default)]
+    pub grayscale: bool,
+    #[serde(default)]
+    pub fade_in_sec: f64,
+    #[serde(default)]
+    pub fade_out_sec: f64,
+}
+
+fn default_one() -> f64 {
+    1.0
 }
 
 fn default_opacity() -> f64 {
@@ -157,9 +211,11 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
     ]);
 
     for clip in &visuals {
+        let overlap = clip.transition_overlap_sec.max(0.0);
         let source_dur = (clip.source_out_sec - clip.source_in_sec).max(0.01);
         if clip.kind == "image" {
-            let clip_dur = (clip.timeline_end_sec - clip.timeline_start_sec).max(0.01);
+            let clip_dur =
+                (clip.timeline_end_sec - clip.timeline_start_sec).max(0.01) + overlap;
             args.extend([
                 "-loop".into(),
                 "1".into(),
@@ -169,11 +225,15 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
                 clip.asset_path.clone(),
             ]);
         } else {
+            let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
+            let early_source = overlap * speed;
+            let ss = (clip.source_in_sec - early_source).max(0.0);
+            let trimmed_early = clip.source_in_sec - ss;
             args.extend([
                 "-ss".into(),
-                format!("{:.3}", clip.source_in_sec.max(0.0)),
+                format!("{ss:.3}"),
                 "-t".into(),
-                format!("{source_dur:.3}"),
+                format!("{:.3}", source_dur + trimmed_early),
                 "-i".into(),
                 clip.asset_path.clone(),
             ]);
@@ -242,7 +302,9 @@ fn build_filter_complex(
     height: u32,
 ) -> Result<String, String> {
     let mut parts: Vec<String> = Vec::new();
-    let mut current = "[0:v]".to_string();
+    // lavfi color is YUV — rgba + overlay format=rgb keeps dissolve alpha.
+    parts.push("[0:v]format=rgba[base]".into());
+    let mut current = "[base]".to_string();
 
     for (index, clip) in visuals.iter().enumerate() {
         let input_index = index + 1;
@@ -250,17 +312,79 @@ fn build_filter_complex(
         let end = clip.timeline_end_sec.max(start + 0.01);
         let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
         let opacity = clip.opacity.clamp(0.0, 1.0);
+        let overlap = clip.transition_overlap_sec.max(0.0);
+        let overlay_start = (start - overlap).max(0.0);
         let setpts = if (speed - 1.0).abs() < 0.001 {
             "setpts=PTS-STARTPTS".to_string()
         } else {
             format!("setpts=(PTS-STARTPTS)/{speed}")
         };
+        let clip_dur = (end - start).max(0.01);
+        let next_sibling = visuals.iter().enumerate().find_map(|(j, c)| {
+            if j > index && c.track_id == clip.track_id {
+                Some(*c)
+            } else {
+                None
+            }
+        });
+        let out_half = next_sibling
+            .filter(|c| c.transition_in.kind != "none")
+            .map(|c| c.transition_overlap_sec.max(0.0))
+            .unwrap_or(0.0);
+        let out_full = next_sibling
+            .filter(|c| c.transition_in.kind != "none")
+            .map(|c| (c.transition_in.duration_ticks as f64 / 1_000_000.0).max(0.1))
+            .unwrap_or(0.0);
+        let in_full = if overlap > 0.001 && clip.transition_in.kind != "none" {
+            (clip.transition_in.duration_ticks as f64 / 1_000_000.0).max(0.1)
+        } else {
+            0.0
+        };
+        let hold = out_half;
+        let fx = ffmpeg_video_effects_chain(&clip.effects, clip_dur, overlap);
+        let mut extras: Vec<String> = Vec::new();
+        if !fx.is_empty() {
+            extras.push(fx);
+        }
+        let tin = clip.transition_in.kind.as_str();
+        if in_full > 0.001 {
+            if tin == "fade" {
+                extras.push(ffmpeg_smooth_fade_in_alpha(in_full / 2.0, in_full / 2.0));
+            } else {
+                extras.push(ffmpeg_smooth_fade_in_alpha(in_full, 0.0));
+            }
+            if tin == "wipeLeft" || tin == "wipeRight" {
+                extras.push(ffmpeg_wipe_reveal(tin, in_full, width, height));
+            }
+        }
+        if hold > 0.001 {
+            let cut_at = overlap + clip_dur;
+            extras.push(format!("tpad=stop_mode=clone:stop_duration={hold:.3}"));
+            let next_type = next_sibling.map(|c| c.transition_in.kind.as_str()).unwrap_or("none");
+            if next_type == "fade" {
+                extras.push(ffmpeg_smooth_fade_out_alpha(
+                    (cut_at - out_half).max(0.0),
+                    out_full / 2.0,
+                ));
+            } else {
+                extras.push(ffmpeg_smooth_fade_out_alpha(
+                    (cut_at - out_half).max(0.0),
+                    out_full,
+                ));
+            }
+        }
+        let extra_part = if extras.is_empty() {
+            String::new()
+        } else {
+            format!(",{}", extras.join(","))
+        };
         parts.push(format!(
-            "[{input_index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,{setpts},format=rgba,colorchannelmixer=aa={opacity:.3}[v{index}]"
+            "[{input_index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,{setpts},format=rgba{extra_part},colorchannelmixer=aa={opacity:.3}[v{index}]"
         ));
+        let overlay_end = end + hold;
         let next = format!("[tmp{index}]");
         parts.push(format!(
-            "{current}[v{index}]overlay=0:0:format=auto:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
+            "{current}[v{index}]overlay=x=0:y=0:format=rgb:eof_action=pass:enable='between(t\\,{overlay_start:.3}\\,{overlay_end:.3})'{next}"
         ));
         current = next;
     }
@@ -362,6 +486,93 @@ fn atempo_chain(speed: f64) -> String {
     }
     filters.push(format!("atempo={remaining:.4}"));
     format!("{},", filters.join(","))
+}
+
+fn geq_rgb_alpha(alpha_expr: &str) -> String {
+    // Commas in r(X,Y) must be escaped or filter_complex splits the graph.
+    format!("geq=r='r(X\\,Y)':g='g(X\\,Y)':b='b(X\\,Y)':a='{alpha_expr}'")
+}
+
+fn clamped_progress(start_sec: f64, duration_sec: f64) -> String {
+    format!(
+        "min(1\\,max(0\\,((T)-{start_sec:.3})/{duration_sec:.3}))"
+    )
+}
+
+fn eased01(p_expr: &str) -> String {
+    format!("({p_expr})*({p_expr})*(3-2*({p_expr}))")
+}
+
+fn ffmpeg_smooth_fade_in_alpha(duration_sec: f64, start_sec: f64) -> String {
+    let d = duration_sec.max(0.05);
+    let st = start_sec.max(0.0);
+    let en = st + d;
+    let p = clamped_progress(st, d);
+    let ease = eased01(&p);
+    geq_rgb_alpha(&format!(
+        "if(lt(T\\,{st:.3})\\,0\\,if(gte(T\\,{en:.3})\\,255\\,255*{ease}))"
+    ))
+}
+
+fn ffmpeg_smooth_fade_out_alpha(start_sec: f64, duration_sec: f64) -> String {
+    let d = duration_sec.max(0.05);
+    let st = start_sec.max(0.0);
+    let en = st + d;
+    let p = clamped_progress(st, d);
+    let ease = eased01(&p);
+    geq_rgb_alpha(&format!(
+        "if(lt(T\\,{st:.3})\\,255\\,if(gte(T\\,{en:.3})\\,0\\,255*(1-{ease})))"
+    ))
+}
+
+fn ffmpeg_wipe_reveal(kind: &str, duration_sec: f64, width: u32, height: u32) -> String {
+    let d = duration_sec.max(0.05);
+    let p = eased01(&clamped_progress(0.0, d));
+    let w = width.max(2);
+    let h = height.max(2);
+    if kind == "wipeLeft" {
+        format!(
+            "crop=w='max(2\\,{w}*{p})':h={h}:x='{w}-out_w':y=0,pad={w}:{h}:({w}-ow):0:black@0"
+        )
+    } else {
+        format!("crop=w='max(2\\,{w}*{p})':h={h}:x=0:y=0,pad={w}:{h}:0:0:black@0")
+    }
+}
+
+fn ffmpeg_video_effects_chain(
+    effects: &RenderClipEffects,
+    clip_duration_sec: f64,
+    delay_sec: f64,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let delay = delay_sec.max(0.0);
+    let eq_bright = (effects.brightness - 1.0).clamp(-1.0, 1.0);
+    let need_eq = eq_bright.abs() > 0.001
+        || (effects.contrast - 1.0).abs() > 0.001
+        || (effects.saturation - 1.0).abs() > 0.001;
+    if need_eq {
+        parts.push(format!(
+            "eq=brightness={:.3}:contrast={:.3}:saturation={:.3}",
+            eq_bright, effects.contrast, effects.saturation
+        ));
+    }
+    if effects.blur > 0.05 {
+        parts.push(format!("gblur=sigma={:.2}", effects.blur.min(40.0)));
+    }
+    if effects.grayscale {
+        parts.push("hue=s=0".into());
+    }
+    let dur = clip_duration_sec.max(0.01);
+    let fade_in = effects.fade_in_sec.min(dur);
+    if fade_in > 0.001 {
+        parts.push(format!("fade=t=in:st={delay:.3}:d={fade_in:.3}:alpha=1"));
+    }
+    let fade_out = effects.fade_out_sec.min(dur);
+    if fade_out > 0.001 {
+        let st = delay + (dur - fade_out).max(0.0);
+        parts.push(format!("fade=t=out:st={st:.3}:d={fade_out:.3}:alpha=1"));
+    }
+    parts.join(",")
 }
 
 fn resolve_drawtext_font(font_path: Option<&str>) -> Option<String> {

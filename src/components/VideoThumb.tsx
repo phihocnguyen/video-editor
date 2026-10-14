@@ -1,42 +1,22 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
+import { whenPreviewDecodeIdle } from "../lib/mediaDecodeGate";
 import { generateThumbnail, isTauriRuntime } from "../lib/tauri";
 import styles from "./VideoThumb.module.css";
 
 interface VideoThumbProps {
   src: string;
-  /** Absolute filesystem path for FFmpeg disk cache (desktop). */
   filePath?: string | null;
   className?: string;
 }
 
-/** Shows a poster frame — prefers FFmpeg disk cache on desktop, else HTML video seek. */
+/**
+ * Media-bin poster. Never contends with preview play — waits for decode idle.
+ */
 export function VideoThumb({ src, filePath, className }: VideoThumbProps) {
   const ref = useRef<HTMLVideoElement>(null);
   const [ready, setReady] = useState(false);
   const [cachedSrc, setCachedSrc] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setReady(false);
-    setCachedSrc(null);
-
-    if (isTauriRuntime() && filePath && !filePath.startsWith("blob:")) {
-      void generateThumbnail(filePath, 0.5)
-        .then((result) => {
-          if (cancelled) return;
-          setCachedSrc(convertFileSrc(result.path));
-          setReady(true);
-        })
-        .catch(() => {
-          /* fall through to HTML video */
-        });
-    }
-
-    return () => {
-      cancelled = true;
-    };
-  }, [filePath, src]);
 
   useEffect(() => {
     if (cachedSrc) return;
@@ -45,38 +25,71 @@ export function VideoThumb({ src, filePath, className }: VideoThumbProps) {
     if (!video) return;
 
     let cancelled = false;
-
     const show = () => {
       if (!cancelled) setReady(true);
     };
 
     const onMeta = () => {
-      try {
-        const t =
-          Number.isFinite(video.duration) && video.duration > 0
-            ? Math.min(0.15, video.duration * 0.05)
-            : 0.05;
-        video.currentTime = t;
-      } catch {
-        show();
-      }
+      void (async () => {
+        await whenPreviewDecodeIdle();
+        if (cancelled) return;
+        try {
+          const t =
+            Number.isFinite(video.duration) && video.duration > 0
+              ? Math.min(0.15, video.duration * 0.05)
+              : 0.05;
+          video.currentTime = t;
+        } catch {
+          show();
+        }
+      })();
     };
 
     video.addEventListener("loadedmetadata", onMeta);
     video.addEventListener("seeked", show);
-    video.addEventListener("loadeddata", show);
     video.addEventListener("error", show);
-    video.src = src;
-    video.load();
+    video.preload = "metadata";
+    // Defer so preview can attach first after import.
+    const start = window.setTimeout(() => {
+      void (async () => {
+        await whenPreviewDecodeIdle();
+        if (cancelled) return;
+        video.src = src;
+        video.load();
+      })();
+    }, 400);
 
     return () => {
       cancelled = true;
+      window.clearTimeout(start);
       video.removeEventListener("loadedmetadata", onMeta);
       video.removeEventListener("seeked", show);
-      video.removeEventListener("loadeddata", show);
       video.removeEventListener("error", show);
     };
   }, [cachedSrc, src]);
+
+  useEffect(() => {
+    if (!isTauriRuntime() || !filePath || filePath.startsWith("blob:")) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        await whenPreviewDecodeIdle();
+        if (cancelled) return;
+        try {
+          const result = await generateThumbnail(filePath, 0.5);
+          if (cancelled) return;
+          setCachedSrc(convertFileSrc(result.path));
+          setReady(true);
+        } catch {
+          /* ignore */
+        }
+      })();
+    }, 1500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [filePath]);
 
   if (cachedSrc) {
     return (
@@ -100,7 +113,7 @@ export function VideoThumb({ src, filePath, className }: VideoThumbProps) {
         className={ready ? styles.videoReady : styles.videoHidden}
         muted
         playsInline
-        preload="auto"
+        preload="metadata"
       />
     </div>
   );

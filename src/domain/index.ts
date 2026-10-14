@@ -1,4 +1,6 @@
 export * from "./time";
+export * from "./effects";
+export * from "./transitions";
 export * from "./project";
 export * from "./validate";
 export * from "./serialize";

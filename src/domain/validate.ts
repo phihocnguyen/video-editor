@@ -1,3 +1,4 @@
+import { normalizeClipEffects } from "./effects";
 import {
   PROJECT_SCHEMA_VERSION,
   type Clip,
@@ -5,6 +6,7 @@ import {
   type ProjectDocument,
   type Track,
 } from "./project";
+import { normalizeClipTransition } from "./transitions";
 
 export interface ValidationIssue {
   path: string;
@@ -176,6 +178,28 @@ function validateClip(clip: unknown, path: string, issues: ValidationIssue[]) {
       message: "sourceOutTicks must be greater than sourceInTicks",
     });
   }
+
+  if (clip.effects !== undefined && clip.effects !== null) {
+    if (!isRecord(clip.effects)) {
+      issues.push({ path: `${path}.effects`, message: "Expected effects object" });
+    } else {
+      for (const key of [
+        "brightness",
+        "contrast",
+        "saturation",
+        "blur",
+        "fadeInSec",
+        "fadeOutSec",
+      ] as const) {
+        if (clip.effects[key] !== undefined) {
+          requireNumber(clip.effects, key, `${path}.effects`, issues);
+        }
+      }
+      if (clip.effects.grayscale !== undefined) {
+        requireBoolean(clip.effects, "grayscale", `${path}.effects`, issues);
+      }
+    }
+  }
 }
 
 export function assertProject(input: unknown): ProjectDocument {
@@ -183,7 +207,25 @@ export function assertProject(input: unknown): ProjectDocument {
   if (!result.ok) {
     throw new Error(result.issues.map((i) => `${i.path}: ${i.message}`).join("; "));
   }
-  return input as ProjectDocument;
+  return normalizeProjectDocument(input as ProjectDocument);
+}
+
+/** Fill missing clip.effects / transitionIn for older project JSON. */
+export function normalizeProjectDocument(project: ProjectDocument): ProjectDocument {
+  return {
+    ...project,
+    clips: project.clips.map((clip) => {
+      const raw = clip as Clip & {
+        effects?: Partial<Clip["effects"]> | null;
+        transitionIn?: Partial<Clip["transitionIn"]> | null;
+      };
+      return {
+        ...clip,
+        effects: normalizeClipEffects(raw.effects),
+        transitionIn: normalizeClipTransition(raw.transitionIn),
+      };
+    }),
+  };
 }
 
 export type { Clip, MediaAsset, Track };

@@ -1,4 +1,6 @@
+import { ffmpegVideoEffectsChain } from "./effects";
 import type { RenderClipPlan, RenderPlan } from "./renderPlan";
+import { transitionDurationSec, type TransitionType } from "./transitions";
 
 export interface BuiltFfmpegCommand {
   program: string;
@@ -63,16 +65,23 @@ export function buildFfmpegArgs(
   );
 
   for (const clip of visuals) {
+    const overlap = Math.max(0, clip.transitionOverlapSec);
     const sourceDur = Math.max(0.01, clip.sourceOutSec - clip.sourceInSec);
     if (clip.kind === "image") {
-      const clipDur = Math.max(0.01, clip.timelineEndSec - clip.timelineStartSec);
+      // Hold for outgoing transition is added via tpad in the filter graph.
+      const clipDur =
+        Math.max(0.01, clip.timelineEndSec - clip.timelineStartSec) + overlap;
       args.push("-loop", "1", "-t", clipDur.toFixed(3), "-i", clip.assetPath);
     } else {
+      const speed = clip.speed > 0 ? clip.speed : 1;
+      const earlySource = overlap * speed;
+      const ss = Math.max(0, clip.sourceInSec - earlySource);
+      const trimmedEarly = clip.sourceInSec - ss;
       args.push(
         "-ss",
-        Math.max(0, clip.sourceInSec).toFixed(3),
+        ss.toFixed(3),
         "-t",
-        sourceDur.toFixed(3),
+        (sourceDur + trimmedEarly).toFixed(3),
         "-i",
         clip.assetPath,
       );
@@ -120,6 +129,22 @@ export function buildFfmpegArgs(
   return { program: "ffmpeg", args, tempOutput };
 }
 
+/** Map editor transition → FFmpeg xfade name (null = hard cut / concat). */
+function xfadeTransitionName(type: TransitionType): string | null {
+  switch (type) {
+    case "dissolve":
+      return "fade";
+    case "fade":
+      return "fadeblack";
+    case "wipeLeft":
+      return "wipeleft";
+    case "wipeRight":
+      return "wiperight";
+    default:
+      return null;
+  }
+}
+
 function buildFilterComplex(
   plan: RenderPlan,
   visuals: RenderClipPlan[],
@@ -129,24 +154,27 @@ function buildFilterComplex(
   fileExists: (path: string) => boolean,
 ): string {
   const parts: string[] = [];
-  let current = "[0:v]";
+  parts.push(`[0:v]format=rgba[base]`);
+  let current = "[base]";
 
+  // Group by track (already sorted by trackOrder, then start).
+  const trackIds: string[] = [];
+  const byTrack = new Map<string, { clip: RenderClipPlan; inputIndex: number }[]>();
   visuals.forEach((clip, index) => {
     const inputIndex = index + 1;
-    const start = Math.max(0, clip.timelineStartSec);
-    const end = Math.max(start + 0.01, clip.timelineEndSec);
-    const speed = clip.speed > 0 ? clip.speed : 1;
-    const opacity = Math.min(1, Math.max(0, clip.opacity));
-    const setpts =
-      Math.abs(speed - 1) < 0.001
-        ? "setpts=PTS-STARTPTS"
-        : `setpts=(PTS-STARTPTS)/${speed}`;
+    if (!byTrack.has(clip.trackId)) {
+      byTrack.set(clip.trackId, []);
+      trackIds.push(clip.trackId);
+    }
+    byTrack.get(clip.trackId)!.push({ clip, inputIndex });
+  });
+
+  trackIds.forEach((trackId, ti) => {
+    const group = byTrack.get(trackId)!;
+    const trackLabel = buildTrackChain(parts, group, width, height, ti);
+    const next = `[mix${ti}]`;
     parts.push(
-      `[${inputIndex}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,${setpts},format=rgba,colorchannelmixer=aa=${opacity.toFixed(3)}[v${index}]`,
-    );
-    const next = `[tmp${index}]`;
-    parts.push(
-      `${current}[v${index}]overlay=0:0:format=auto:enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'${next}`,
+      `${current}${trackLabel}overlay=x=0:y=0:format=rgb:eof_action=pass${next}`,
     );
     current = next;
   });
@@ -156,7 +184,6 @@ function buildFilterComplex(
     const end = Math.max(start + 0.01, text.timelineEndSec);
     const escaped = escapeDrawtext(text.content);
     const resolvedFont = resolveDrawtextFont(text.fontPath, fileExists);
-    // Windows drive letters need quotes; unquoted `C\:/...` breaks filter parsing.
     const fontfile = resolvedFont
       ? `:fontfile=${quoteFilterPath(resolvedFont)}`
       : "";
@@ -222,6 +249,103 @@ function buildFilterComplex(
   }
 
   return parts.join(";");
+}
+
+/**
+ * Build one video track: prepare clips, chain with xfade (matches preview transitions).
+ * Returns a label like `[trk0]` whose PTS starts at timeline 0 (leading black pad if needed).
+ */
+function buildTrackChain(
+  parts: string[],
+  group: { clip: RenderClipPlan; inputIndex: number }[],
+  width: number,
+  height: number,
+  trackIndex: number,
+): string {
+  const origin = group[0]!.clip.timelineStartSec;
+
+  group.forEach(({ clip, inputIndex }, i) => {
+    const start = Math.max(0, clip.timelineStartSec);
+    const end = Math.max(start + 0.01, clip.timelineEndSec);
+    const speed = clip.speed > 0 ? clip.speed : 1;
+    const opacity = Math.min(1, Math.max(0, clip.opacity));
+    const early = Math.max(0, clip.transitionOverlapSec);
+    const clipDur = Math.max(0.01, end - start);
+    const next = group[i + 1]?.clip;
+    const hold =
+      next && next.transitionIn.type !== "none"
+        ? Math.max(0, next.transitionOverlapSec)
+        : 0;
+    const setpts =
+      Math.abs(speed - 1) < 0.001
+        ? "setpts=PTS-STARTPTS"
+        : `setpts=(PTS-STARTPTS)/${speed}`;
+
+    const fx = ffmpegVideoEffectsChain(clip.effects, clipDur, {
+      delaySec: early,
+    });
+    const bits: string[] = [
+      `[${inputIndex}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease`,
+      `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
+      setpts,
+      "format=rgba",
+    ];
+    if (fx) bits.push(fx);
+
+    // First clip on track with transitionIn: RGB fade from black (preview over empty stage).
+    if (i === 0 && early > 0.001 && clip.transitionIn.type !== "none") {
+      const inFull = transitionDurationSec(clip.transitionIn);
+      if (clip.transitionIn.type === "fade") {
+        bits.push(
+          `fade=t=in:st=${(inFull / 2).toFixed(3)}:d=${(inFull / 2).toFixed(3)}`,
+        );
+      } else {
+        bits.push(`fade=t=in:st=0:d=${inFull.toFixed(3)}`);
+      }
+    }
+
+    if (hold > 0.001) {
+      bits.push(`tpad=stop_mode=clone:stop_duration=${hold.toFixed(3)}`);
+    }
+    if (opacity < 0.999) {
+      bits.push(`colorchannelmixer=aa=${opacity.toFixed(3)}`);
+    }
+    parts.push(`${bits.join(",")}[c${trackIndex}_${i}]`);
+  });
+
+  let acc = `[c${trackIndex}_0]`;
+  for (let i = 1; i < group.length; i += 1) {
+    const curr = group[i]!.clip;
+    const xname = xfadeTransitionName(curr.transitionIn.type);
+    const out =
+      i === group.length - 1 ? `[xf${trackIndex}_last]` : `[xf${trackIndex}_${i}]`;
+    const useXfade = xname && curr.transitionOverlapSec > 0.001;
+
+    if (useXfade) {
+      const dur = transitionDurationSec(curr.transitionIn);
+      const offset = Math.max(
+        0,
+        curr.timelineStartSec - origin - curr.transitionOverlapSec,
+      );
+      parts.push(
+        `${acc}[c${trackIndex}_${i}]xfade=transition=${xname}:duration=${dur.toFixed(3)}:offset=${offset.toFixed(3)}${out}`,
+      );
+    } else {
+      // Hard cut — concatenate (clips should abut).
+      parts.push(`${acc}[c${trackIndex}_${i}]concat=n=2:v=1:a=0${out}`);
+    }
+    acc = out;
+  }
+
+  const trackOut = `[trk${trackIndex}]`;
+  if (origin > 0.001) {
+    parts.push(
+      `${acc}tpad=start_mode=add:start_duration=${origin.toFixed(3)}:color=black@0${trackOut}`,
+    );
+  } else if (acc !== trackOut) {
+    parts.push(`${acc}null${trackOut}`);
+  }
+  return trackOut;
 }
 
 function atempoChain(speed: number): string {

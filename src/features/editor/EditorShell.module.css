@@ -1,6 +1,6 @@
 .shell {
   display: grid;
-  grid-template-rows: var(--toolbar-h) minmax(0, 1fr) var(--timeline-h);
+  grid-template-rows: var(--toolbar-h) minmax(0, 1fr) 6px var(--timeline-h);
   grid-template-columns: minmax(0, 1fr);
   height: 100%;
   width: 100%;
@@ -8,6 +8,33 @@
   min-width: 0;
   overflow: hidden;
   background: var(--bg-app);
+}
+
+.splitHandle {
+  grid-row: 3;
+  cursor: ns-resize;
+  background: var(--border);
+  border: none;
+  padding: 0;
+  position: relative;
+  z-index: 5;
+}
+
+.splitHandle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 36px;
+  height: 3px;
+  margin: -1.5px 0 0 -18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.splitHandle:hover,
+.splitHandle:active {
+  background: var(--accent);
 }
 
 .topbar {

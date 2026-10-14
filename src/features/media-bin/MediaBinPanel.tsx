@@ -6,6 +6,8 @@ import {
   formatActionError,
 } from "../../lib/projectActions";
 import { VideoThumb } from "../../components/VideoThumb";
+import { beginMediaQuietPeriod } from "../../lib/mediaDecodeGate";
+import { releaseFilmstripDecoders } from "../../lib/mediaFilmstrip";
 import { canShowThumbnail, resolveMediaUrl } from "../../lib/mediaUrl";
 import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
@@ -20,7 +22,6 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
   const assets = useProjectStore((s) => s.project.assets);
   const addAssets = useProjectStore((s) => s.addAssets);
   const setProject = useProjectStore((s) => s.setProject);
-  const playheadTicks = useEditorUiStore((s) => s.playheadTicks);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const [busy, setBusy] = useState(false);
   const visible = filter ? assets.filter((a) => a.kind === filter) : assets;
@@ -36,6 +37,9 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
         return;
       }
       addAssets(imported);
+      // Stop thumbs from grabbing the decoder so Play works immediately.
+      releaseFilmstripDecoders();
+      beginMediaQuietPeriod(3000);
       const missing = imported.filter((a) => a.missing).length;
       setStatusMessage(
         missing > 0
@@ -51,8 +55,12 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
 
   function handleAddToTimeline(assetId: string) {
     try {
+      releaseFilmstripDecoders();
+      beginMediaQuietPeriod(2500);
       commitProjectChange((project) =>
-        addMediaClip(project, assetId, { startTicks: playheadTicks }),
+        addMediaClip(project, assetId, {
+          startTicks: useEditorUiStore.getState().playheadTicks,
+        }),
       );
       setStatusMessage("Clip added to timeline");
     } catch (error) {

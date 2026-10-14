@@ -98,6 +98,9 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
+  will-change: opacity, clip-path, filter;
+  backface-visibility: hidden;
+  transform: translateZ(0);
 }
 
 .placeholder {
@@ -130,41 +133,146 @@
   font-size: 12px;
 }
 
-.transport {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 18px 14px;
+.transportBar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 16px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.15), transparent);
 }
 
-.transportLeft {
+.scrubRow {
+  position: relative;
+  display: grid;
+  grid-template-columns: 10px 1fr 10px;
+  align-items: center;
+  gap: 4px;
+  height: 16px;
+}
+
+.scrubHandle {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: #2a2a30;
+  padding: 0;
+}
+
+.scrubTrack {
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  cursor: pointer;
+}
+
+.scrubFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: rgba(255, 255, 255, 0.35);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.scrubThumb {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: #e8e8ec;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.markIn,
+.markOut {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 10px;
+  margin-left: -1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.transportTools {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
 }
 
-.transportLeft button,
-.fullscreen {
+.toolCluster {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.toolBtn {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border-radius: 999px;
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.04);
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: rgba(220, 220, 228, 0.85);
+  font-size: 13px;
   line-height: 1;
 }
 
+.toolBtn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.toolBtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.rateBtn {
+  min-width: 36px;
+  height: 28px;
+  margin: 0 2px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--accent, #7eb8ff);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.rateBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
 .playBtn {
-  width: 42px !important;
-  height: 42px !important;
-  background: rgba(255, 255, 255, 0.1) !important;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 28px;
+  margin: 0 4px;
+  border-radius: 4px;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 12px;
 }
 
 .playBtn:hover {
-  background: var(--accent) !important;
+  background: var(--accent);
   color: #041018;
 }
 
@@ -173,12 +281,13 @@
   font-size: 12px;
   color: var(--text);
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .clock span {
   color: var(--text-muted);
 }
 
-.fullscreen {
-  justify-self: end;
+.selHint {
+  color: var(--accent) !important;
 }

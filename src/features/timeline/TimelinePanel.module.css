@@ -65,7 +65,7 @@
 
 .scroll {
   display: grid;
-  grid-template-columns: 108px minmax(0, 1fr);
+  grid-template-columns: var(--track-label-w, 128px) minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
   flex: 1;
@@ -77,7 +77,28 @@
   left: 0;
   z-index: 2;
   background: var(--bg-track);
+  min-width: 0;
+  overflow: visible;
   border-right: 1px solid var(--border);
+}
+
+.labelSplit {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  z-index: 4;
+  margin: 0;
+  padding: 0;
+  border: none;
+  cursor: ew-resize;
+  background: transparent;
+}
+
+.labelSplit:hover,
+.labelSplit:active {
+  background: var(--accent);
 }
 
 .rulerSpacer {
@@ -135,6 +156,61 @@
   background: var(--accent-soft) !important;
 }
 
+.ctxMenu {
+  position: fixed;
+  z-index: 40;
+  min-width: 140px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ctxMenu button {
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+}
+
+.ctxMenu button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ctxMenu button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ctxKbd {
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.ctxSep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+.ctxDanger {
+  color: #ff8f8f !important;
+}
+
 .lanes {
   position: relative;
   min-width: max-content;
@@ -182,21 +258,33 @@
 
 .clip {
   position: absolute;
-  top: 8px;
-  height: 32px;
+  top: 4px;
+  height: 40px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  overflow: visible;
+  overflow: hidden;
   cursor: grab;
   display: flex;
-  align-items: center;
-  padding: 0 8px;
+  align-items: flex-start;
+  padding: 0;
   color: #fff;
   font-size: 11px;
   user-select: none;
   touch-action: none;
   will-change: left;
   z-index: 1;
+}
+
+.clipLabel {
+  position: relative;
+  z-index: 1;
+  max-width: calc(100% - 8px);
+  margin: 3px 6px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
 }
 
 .clipDragging {
@@ -226,27 +314,61 @@
   right: -3px;
 }
 
-.clip span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .clipSelected {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+  overflow: visible;
+}
+
+.transitionMark {
+  position: absolute;
+  top: 50%;
+  z-index: 4;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  margin-top: -8px;
+  border: none;
+  padding: 0;
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  box-shadow: 0 0 0 1px var(--border);
+  cursor: pointer;
+  transform: rotate(45deg);
+  display: grid;
+  place-items: center;
+}
+
+.transitionMark span {
+  transform: rotate(-45deg);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.transitionMarkOn {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .clip[data-kind="video"] {
-  background: var(--track-video);
+  background: #1a4a52;
 }
 
 .clip[data-kind="audio"] {
-  background: linear-gradient(90deg, #247a52, var(--track-audio));
+  background: linear-gradient(180deg, #1f6b48 0%, #165538 100%);
 }
 
 .clip[data-kind="text"] {
   background: linear-gradient(90deg, #6b4dff, var(--track-text));
+  align-items: center;
+  padding: 0 8px;
+}
+
+.clip[data-kind="text"] .clipLabel {
+  margin: 0;
 }
 
 .playhead {

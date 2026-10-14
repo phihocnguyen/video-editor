@@ -1,3 +1,5 @@
+import type { ClipEffects } from "./effects";
+import type { ClipTransition } from "./transitions";
 import type { Tick } from "./time";
 
 export const PROJECT_SCHEMA_VERSION = 1 as const;
@@ -63,6 +65,13 @@ export interface Clip {
   speed: number;
   transform: ClipTransform;
   volume: number;
+  /** Visual effects; missing on older projects → treat as DEFAULT_CLIP_EFFECTS. */
+  effects: ClipEffects;
+  /**
+   * Incoming transition from the previous clip on the same track.
+   * Missing on older projects → none.
+   */
+  transitionIn: ClipTransition;
   text: TextStyle | null;
 }
 

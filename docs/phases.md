@@ -14,12 +14,14 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 | Text in export (scale coords to resolution + Windows `fontfile` quote/fallback) | Done |
 | Silent / no-audio media (skip `[n:a]` filters) | Done |
 | Project save/open, media bin, undo/redo, settings | Done |
+| Phase 6 Slice A — clip effects (bright/contrast/sat/blur/gray/fade) | Done |
+| Phase 6 Slice B — transitions + Clip panel UX | Done |
 
-**Still open (not more MVP editor logic):**
+**Still open:**
 
-1. **Machine verify / packaging** — MSVC; `pnpm tauri:dev`; NSIS install on a clean Windows PC; offline QA.
-2. **Later (pro)** — transitions, keyframes, color grading, captions, full proxy/GPU compositor, templates, AI/licensing, macOS/Linux.
-3. **Optional polish** — export with the exact custom `.ttf` chosen in UI (today: path if set, else Arial/Segoe fallback).
+1. **Machine verify / packaging** — MSVC; `pnpm tauri:dev`; NSIS install; offline QA.
+2. **Phase 6 Pro** — Slice A effects (below); then transitions → keyframes → captions…
+3. **Optional polish** — export with the exact custom `.ttf` (else Arial/Segoe fallback).
 
 ---
 
@@ -131,15 +133,38 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 
 ---
 
-## Later — Pro features
+## Phase 6 — Pro effects (started)
 
-Only after Phase 5 packaging/QA is reliable:
+**Goal:** Per-clip visual effects that match in preview and export (FFmpeg filters). Keep schema backward-compatible (missing `effects` → defaults).
 
-- Transitions between clips
-- Keyframes / animation curves
-- Color grading
-- Captions / subtitles
-- Full proxy + GPU compositor
-- Templates
-- Optional AI / licensing
-- macOS / Linux
+### Slice A — Color / blur (now)
+
+- [x] `Clip.effects`: brightness, contrast, saturation, blur, grayscale, fadeInSec, fadeOutSec
+- [x] Inspector sliders for media clips
+- [x] Preview via CSS `filter` + fade opacity
+- [x] Export via FFmpeg `eq` / `gblur` / `hue` / `fade`
+- [x] Unit tests for effect → filter strings
+
+### Slice B — Transitions + Clip UX (now)
+
+- [x] `Clip.transitionIn`: cut / dissolve / fade / wipeLeft / wipeRight + duration
+- [x] Timeline diamond between adjacent clips (click to cycle)
+- [x] Clip panel: transition chips + slider UX for effects
+- [x] Preview crossfade / wipe during overlap window
+- [x] Export via early overlay + fade / wipe x-offset (TS + Rust)
+
+### Slice C — next
+
+- [ ] Flip H/V, vignette, sharpen
+- [ ] Effect presets (Warm / Cool / B&W)
+- [ ] Timeline badge when clip has non-default effects
+
+### Later slices (ordered)
+
+1. **Keyframes** — animate opacity/transform/effect params over time
+2. **Captions** — SRT import + burn-in (drawtext / ass)
+3. **Color grading** — curves / LUTs (beyond simple eq)
+4. **Proxy / GPU compositor** — smoother multi-track preview
+5. **Templates** — starter timelines
+6. **Platforms** — macOS / Linux packaging
+7. **Optional** — AI assist, licensing hooks
