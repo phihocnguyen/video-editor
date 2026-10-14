@@ -155,11 +155,12 @@ function buildFilterComplex(
     const start = Math.max(0, text.timelineStartSec);
     const end = Math.max(start + 0.01, text.timelineEndSec);
     const escaped = escapeDrawtext(text.content);
-    const fontfile =
-      text.fontPath && fileExists(text.fontPath)
-        ? `:fontfile=${escapeFilterPath(text.fontPath)}`
-        : "";
-    const fontsize = Math.max(8, text.fontSize);
+    const resolvedFont = resolveDrawtextFont(text.fontPath, fileExists);
+    // Windows drive letters need quotes; unquoted `C\:/...` breaks filter parsing.
+    const fontfile = resolvedFont
+      ? `:fontfile=${quoteFilterPath(resolvedFont)}`
+      : "";
+    const fontsize = Math.max(8, Math.round(text.fontSize));
     const color = normalizeColor(text.color);
     const alpha = Math.min(1, Math.max(0, text.opacity));
     const xExpr =
@@ -239,6 +240,25 @@ function atempoChain(speed: number): string {
   return `${filters.join(",")},`;
 }
 
+/** FFmpeg drawtext needs a real TTF/OTF path; UI fonts like Manrope often have none. */
+function resolveDrawtextFont(
+  fontPath: string | null,
+  fileExists: (path: string) => boolean,
+): string | null {
+  if (fontPath && fileExists(fontPath)) return fontPath;
+  const fallbacks = [
+    "C:/Windows/Fonts/arial.ttf",
+    "C:/Windows/Fonts/segoeui.ttf",
+    "C:/Windows/Fonts/calibri.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+  ];
+  for (const candidate of fallbacks) {
+    if (fileExists(candidate)) return candidate;
+  }
+  return null;
+}
+
 function escapeDrawtext(input: string): string {
   return input
     .replace(/\\/g, "\\\\")
@@ -250,6 +270,11 @@ function escapeDrawtext(input: string): string {
 
 function escapeFilterPath(path: string): string {
   return path.replace(/\\/g, "/").replace(/:/g, "\\:");
+}
+
+/** Quote a filesystem path for FFmpeg filter option values (fontfile=…). */
+function quoteFilterPath(path: string): string {
+  return `'${escapeFilterPath(path).replace(/'/g, "\\'")}'`;
 }
 
 function normalizeColor(color: string): string {

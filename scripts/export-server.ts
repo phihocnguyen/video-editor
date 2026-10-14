@@ -15,18 +15,26 @@ import {
 } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
-import { buildFfmpegArgs } from "../src/domain/ffmpegArgs.ts";
 import type { ProjectDocument } from "../src/domain/project.ts";
-import {
-  buildRenderPlan,
-  type RenderQualityPreset,
-  type RenderResolutionPreset,
+import type {
+  RenderQualityPreset,
+  RenderResolutionPreset,
 } from "../src/domain/renderPlan.ts";
 import {
   ffmpegMissingMessage,
   resolveFfmpegPath,
   sanitizePlanAudio,
 } from "./resolve-ffmpeg.ts";
+
+/** Fresh import each export so domain edits apply without restarting `pnpm dev`. */
+async function loadExportModules() {
+  const bust = `?t=${Date.now()}`;
+  const [{ buildFfmpegArgs }, { buildRenderPlan }] = await Promise.all([
+    import(`../src/domain/ffmpegArgs.ts${bust}`),
+    import(`../src/domain/renderPlan.ts${bust}`),
+  ]);
+  return { buildFfmpegArgs, buildRenderPlan };
+}
 
 const PORT = Number(process.env.CUTLINE_EXPORT_PORT ?? 1421);
 const ROOT = resolve(process.cwd(), ".cutline-cache");
@@ -147,6 +155,7 @@ async function handleExport(req: IncomingMessage, res: ServerResponse) {
   const project = raw.project;
   const preset = raw.preset ?? "1080";
   const quality = raw.quality ?? "standard";
+  const { buildFfmpegArgs, buildRenderPlan } = await loadExportModules();
   const plan = buildRenderPlan(project, preset, quality);
 
   if (plan.missingAssetIds.length > 0) {
@@ -191,8 +200,15 @@ async function handleExport(req: IncomingMessage, res: ServerResponse) {
       const ffmpeg = resolveFfmpegPath();
       const safePlan = sanitizePlanAudio(plan);
       const built = buildFfmpegArgs(safePlan, outputPath, { fileExists: existsSync });
-      job.message = `Rendering with ${ffmpeg}…`;
+      const textCount = safePlan.texts.length;
+      job.message =
+        textCount > 0
+          ? `Rendering ${textCount} text overlay(s) with ${ffmpeg}…`
+          : `Rendering with ${ffmpeg}…`;
       job.progress = 0.2;
+      console.log(
+        `[cutline-export] job ${id}: ${safePlan.clips.length} clips, ${textCount} texts, ${safePlan.width}x${safePlan.height}`,
+      );
       await runFfmpeg(ffmpeg, built.args);
       try {
         renameSync(built.tempOutput, outputPath);

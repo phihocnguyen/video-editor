@@ -60,6 +60,10 @@ export function buildRenderPlan(
   let durationTicks = 0;
   const clips: RenderClipPlan[] = [];
   const texts: RenderTextPlan[] = [];
+  const { width, height } = resolveSize(project, preset);
+  const scaleX = width / Math.max(1, project.canvas.width);
+  const scaleY = height / Math.max(1, project.canvas.height);
+  const fontScale = Math.min(scaleX, scaleY);
 
   for (const clip of project.clips) {
     const end = clip.startTicks + clipDurationTicks(clip);
@@ -73,11 +77,11 @@ export function buildRenderPlan(
         content: clip.text.content,
         fontFamily: clip.text.fontFamily,
         fontPath: clip.text.fontPath,
-        fontSize: clip.text.fontSize,
+        fontSize: clip.text.fontSize * fontScale,
         color: clip.text.color,
         align: clip.text.align,
-        x: clip.transform.x,
-        y: clip.transform.y,
+        x: clip.transform.x * scaleX,
+        y: clip.transform.y * scaleY,
         opacity: clip.transform.opacity,
         timelineStartSec: ticksToSeconds(clip.startTicks),
         timelineEndSec: ticksToSeconds(end),
@@ -111,7 +115,6 @@ export function buildRenderPlan(
 
   clips.sort((a, b) => a.trackOrder - b.trackOrder || a.timelineStartSec - b.timelineStartSec);
 
-  const { width, height } = resolveSize(project, preset);
   const { videoBitrate, audioBitrate } = qualityBitrates(quality);
 
   return {

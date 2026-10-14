@@ -2,6 +2,27 @@
 
 Maps `implementation_plan.md` milestones into executable phases. Keep the app buildable after each phase.
 
+## Status (2026-10-14)
+
+**MVP business logic: done** (Phases 0–5 code complete in browser/`pnpm dev` path).
+
+| Area | State |
+|------|--------|
+| Timeline edit (tracks, trim, split, snap, slide, speed, mute/lock/visible) | Done |
+| Preview (multi-track composite, audio, text overlays) | Done |
+| Export local (`pnpm dev` + helper `:1421` + portable `tools/ffmpeg`) | Done |
+| Text in export (scale coords to resolution + Windows `fontfile` quote/fallback) | Done |
+| Silent / no-audio media (skip `[n:a]` filters) | Done |
+| Project save/open, media bin, undo/redo, settings | Done |
+
+**Still open (not more MVP editor logic):**
+
+1. **Machine verify / packaging** — MSVC; `pnpm tauri:dev`; NSIS install on a clean Windows PC; offline QA.
+2. **Later (pro)** — transitions, keyframes, color grading, captions, full proxy/GPU compositor, templates, AI/licensing, macOS/Linux.
+3. **Optional polish** — export with the exact custom `.ttf` chosen in UI (today: path if set, else Arial/Segoe fallback).
+
+---
+
 ## Phase 0 — Desktop shell & feasibility (Milestone 0)
 
 **Goal:** Runnable Windows desktop scaffold with module boundaries and one typed native command.
@@ -15,7 +36,7 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Minimal CI: `pnpm typecheck` + `pnpm test`
 - [x] Setup docs for MSVC + FFmpeg (`docs/setup-windows.md`)
 - [ ] Machine verify: MSVC installed; `pnpm tauri:dev` launches a window
-- [ ] Machine verify: FFmpeg on PATH; probe/export on sample media
+- [x] Local FFmpeg via `tools/ffmpeg` (browser export path; PATH optional)
 
 **Exit:** App window on Windows; probe sample file; UI stays responsive; no web deploy.
 
@@ -75,13 +96,16 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 
 ## Phase 4 — Export (Milestone 4)
 
-**Goal:** Deterministic MP4 export via FFmpeg from Rust.
+**Goal:** Deterministic MP4 export via FFmpeg (Rust path + local CLI/helper).
 
 - [x] Render-plan generator (opacity, speed, track mute/order, quality bitrates)
 - [x] FFmpeg argv builder + job lifecycle
 - [x] Export dialog progress + cancel + quality presets
 - [x] Audio track mix (`amix` / `[outa]`) + atempo for speed
-- [x] Output validation with ffprobe
+- [x] Skip audio filters when probe finds no audio stream
+- [x] Local export helper (`scripts/export-server.ts` on `:1421`) without Tauri build
+- [x] Text overlays in export (`drawtext`: scale to preset, quoted Windows `fontfile`, system font fallback)
+- [x] Output validation with ffprobe (CLI path)
 - [ ] Machine verify on `pnpm tauri:dev` (MSVC + FFmpeg)
 
 **Exit:** Multi-clip project → valid MP4; cancel leaves no corrupt final; semantics match docs.
@@ -101,6 +125,7 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] README known limitations + licensing pointers
 - [x] Update strategy decision documented (manual NSIS; no auto-updater)
 - [ ] Offline QA pass on a clean Windows machine (human)
+- [ ] Produce NSIS installer (`pnpm tauri build` with MSVC)
 
 **Exit:** Clean Windows install; full MVP DoD in `implementation_plan.md` §16.
 
@@ -108,4 +133,13 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 
 ## Later — Pro features
 
-Only after Phase 5 is reliable: keyframes, transitions, color, captions, proxies, templates, optional AI/licensing, macOS/Linux.
+Only after Phase 5 packaging/QA is reliable:
+
+- Transitions between clips
+- Keyframes / animation curves
+- Color grading
+- Captions / subtitles
+- Full proxy + GPU compositor
+- Templates
+- Optional AI / licensing
+- macOS / Linux

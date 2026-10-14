@@ -269,13 +269,10 @@ fn build_filter_complex(
         let start = text.timeline_start_sec.max(0.0);
         let end = text.timeline_end_sec.max(start + 0.01);
         let escaped = escape_drawtext(&text.content);
-        let fontfile = text
-            .font_path
-            .as_ref()
-            .filter(|p| Path::new(p).is_file())
-            .map(|p| format!(":fontfile={}", escape_filter_path(p)))
+        let fontfile = resolve_drawtext_font(text.font_path.as_deref())
+            .map(|p| format!(":fontfile={}", quote_filter_path(&p)))
             .unwrap_or_default();
-        let fontsize = text.font_size.max(8.0);
+        let fontsize = text.font_size.max(8.0).round();
         let color = normalize_color(&text.color);
         let alpha = text.opacity.clamp(0.0, 1.0);
         let x_expr = match text.align.as_str() {
@@ -367,6 +364,25 @@ fn atempo_chain(speed: f64) -> String {
     format!("{},", filters.join(","))
 }
 
+fn resolve_drawtext_font(font_path: Option<&str>) -> Option<String> {
+    if let Some(path) = font_path {
+        if Path::new(path).is_file() {
+            return Some(path.to_string());
+        }
+    }
+    const FALLBACKS: &[&str] = &[
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/calibri.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ];
+    FALLBACKS
+        .iter()
+        .find(|p| Path::new(p).is_file())
+        .map(|p| (*p).to_string())
+}
+
 fn escape_drawtext(input: &str) -> String {
     input
         .replace('\\', "\\\\")
@@ -379,6 +395,10 @@ fn escape_drawtext(input: &str) -> String {
 fn escape_filter_path(path: &str) -> String {
     let normalized = path.replace('\\', "/");
     normalized.replace(':', "\\:")
+}
+
+fn quote_filter_path(path: &str) -> String {
+    format!("'{}'", escape_filter_path(path).replace('\'', "\\'"))
 }
 
 fn normalize_color(color: &str) -> String {
