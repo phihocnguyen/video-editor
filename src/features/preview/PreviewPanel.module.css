@@ -47,6 +47,26 @@
   display: block;
 }
 
+.mediaHidden {
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  position: absolute;
+  inset: 0;
+}
+
+.loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  background: #0a0a0c;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .placeholder {
   text-align: center;
   color: var(--text-muted);

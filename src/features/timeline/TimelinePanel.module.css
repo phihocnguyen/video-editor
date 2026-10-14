@@ -36,6 +36,12 @@
   color: var(--text-muted);
 }
 
+.toolOn {
+  color: var(--accent) !important;
+  border-color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+}
+
 .timecode {
   margin-left: 8px;
   font-family: var(--font-mono);
@@ -136,7 +142,7 @@
   height: 32px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  overflow: hidden;
+  overflow: visible;
   cursor: grab;
   display: flex;
   align-items: center;
@@ -144,6 +150,23 @@
   color: #fff;
   font-size: 11px;
   user-select: none;
+}
+
+.trimHandle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 8px;
+  border-radius: 4px;
+  background: var(--accent);
+  cursor: ew-resize;
+  z-index: 2;
+}
+
+.trimHandleRight {
+  left: auto;
+  right: -3px;
 }
 
 .clip span {
@@ -176,8 +199,10 @@
   width: 2px;
   background: #fff;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
-  pointer-events: none;
-  z-index: 3;
+  pointer-events: auto;
+  cursor: ew-resize;
+  z-index: 5;
+  touch-action: none;
 }
 
 .playhead::before {
@@ -186,7 +211,12 @@
   top: 0;
   left: 50%;
   transform: translateX(-50%);
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-top: 8px solid #fff;
+  width: 14px;
+  height: 14px;
+  margin-top: -1px;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  background: #fff;
+  clip-path: polygon(50% 100%, 0 0, 100% 0);
 }

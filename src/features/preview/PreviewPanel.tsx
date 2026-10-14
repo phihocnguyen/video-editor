@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { clipDurationTicks, ticksToSeconds } from "../../domain";
 import { resolveMediaUrl } from "../../lib/mediaUrl";
 import { useEditorUiStore } from "../../stores/editorUiStore";
@@ -17,11 +17,14 @@ export function PreviewPanel() {
   const assets = useProjectStore((s) => s.project.assets);
   const tracks = useProjectStore((s) => s.project.tracks);
   const isPlaying = useEditorUiStore((s) => s.isPlaying);
+  const isScrubbing = useEditorUiStore((s) => s.isScrubbing);
   const setPlaying = useEditorUiStore((s) => s.setPlaying);
   const playheadTicks = useEditorUiStore((s) => s.playheadTicks);
   const setPlayheadTicks = useEditorUiStore((s) => s.setPlayheadTicks);
   const durationTicks = useEditorUiStore((s) => s.durationTicks);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const lastSeekAtRef = useRef(0);
+  const [mediaReady, setMediaReady] = useState(false);
 
   const active = useMemo(() => {
     const videoTracks = tracks
@@ -48,6 +51,7 @@ export function PreviewPanel() {
   const mediaUrl = active
     ? resolveMediaUrl(active.asset.path, active.asset.id)
     : null;
+  const mediaKey = active ? `${active.asset.id}:${active.clip.id}` : "";
 
   const activeTexts = useMemo(() => {
     return clips.filter(
@@ -60,7 +64,11 @@ export function PreviewPanel() {
   }, [clips, playheadTicks]);
 
   useEffect(() => {
-    if (!isPlaying) return;
+    setMediaReady(false);
+  }, [mediaKey]);
+
+  useEffect(() => {
+    if (!isPlaying || isScrubbing) return;
     let frame = 0;
     let last = performance.now();
     const tick = (now: number) => {
@@ -77,23 +85,37 @@ export function PreviewPanel() {
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [durationTicks, isPlaying, setPlayheadTicks, setPlaying]);
+  }, [durationTicks, isPlaying, isScrubbing, setPlayheadTicks, setPlaying]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !active) return;
+    if (!video || !active || active.asset.kind !== "video") return;
+
     const localSec =
       ticksToSeconds(playheadTicks - active.clip.startTicks) +
       ticksToSeconds(active.clip.sourceInTicks);
-    if (Math.abs(video.currentTime - localSec) > 0.12) {
-      video.currentTime = Math.max(0, localSec);
-    }
-    if (isPlaying) {
+    const target = Math.max(0, localSec);
+
+    if (isPlaying && !isScrubbing) {
       void video.play().catch(() => undefined);
-    } else {
-      video.pause();
+      if (Math.abs(video.currentTime - target) > 0.35) {
+        video.currentTime = target;
+      }
+      return;
     }
-  }, [active, isPlaying, playheadTicks]);
+
+    video.pause();
+    const now = performance.now();
+    const minInterval = isScrubbing ? 40 : 0;
+    if (now - lastSeekAtRef.current < minInterval) return;
+    if (Math.abs(video.currentTime - target) < 0.04) return;
+    lastSeekAtRef.current = now;
+    try {
+      video.currentTime = target;
+    } catch {
+      /* ignore seek before ready */
+    }
+  }, [active, isPlaying, isScrubbing, playheadTicks]);
 
   return (
     <div className={styles.panel}>
@@ -103,9 +125,32 @@ export function PreviewPanel() {
           style={{ aspectRatio: `${canvas.width} / ${canvas.height}` }}
         >
           {mediaUrl && active?.asset.kind === "video" ? (
-            <video ref={videoRef} className={styles.media} src={mediaUrl} playsInline />
+            <>
+              {!mediaReady ? <div className={styles.loading}>Loading frame…</div> : null}
+              <video
+                key={mediaKey}
+                ref={videoRef}
+                className={mediaReady ? styles.media : styles.mediaHidden}
+                src={mediaUrl}
+                playsInline
+                preload="auto"
+                muted={false}
+                onLoadedData={(e) => {
+                  const video = e.currentTarget;
+                  if (!active) return;
+                  const localSec = ticksToSeconds(active.clip.sourceInTicks);
+                  try {
+                    video.currentTime = Math.max(0, localSec);
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+                onSeeked={() => setMediaReady(true)}
+                onCanPlay={() => setMediaReady(true)}
+              />
+            </>
           ) : mediaUrl && active?.asset.kind === "image" ? (
-            <img className={styles.media} src={mediaUrl} alt="" />
+            <img className={styles.media} src={mediaUrl} alt="" onLoad={() => setMediaReady(true)} />
           ) : (
             <div className={styles.placeholder}>
               <div className={styles.badge}>Preview</div>
