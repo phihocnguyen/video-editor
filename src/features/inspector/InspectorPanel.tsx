@@ -16,6 +16,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { ClipProps } from "./ClipProps";
 import styles from "./InspectorPanel.module.css";
 
 interface InspectorPanelProps {
@@ -38,6 +39,12 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
     return clip ?? null;
   }, [clips, selectedClipIds]);
 
+  const selectedClip = useMemo(() => {
+    const id = selectedClipIds[0];
+    if (!id) return null;
+    return clips.find((c) => c.id === id) ?? null;
+  }, [clips, selectedClipIds]);
+
   if (mode === "canvas") {
     return (
       <div className={styles.panel}>
@@ -51,6 +58,7 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
           <label className={styles.label}>Frame rate</label>
           <Field label="FPS" value={String(canvas.frameRate)} readOnly />
         </div>
+        {selectedClip ? <ClipProps clip={selectedClip} /> : null}
       </div>
     );
   }
@@ -131,6 +139,7 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
         <p className={styles.hint}>Add text or select a text clip on the timeline.</p>
       ) : (
         <>
+          <ClipProps clip={selectedTextClip} />
           <div className={styles.section}>
             <label className={styles.label}>Content</label>
             <textarea

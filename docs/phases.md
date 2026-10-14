@@ -46,8 +46,9 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Drag media to timeline; add at playhead
 - [x] History stack; Ctrl+Z / Ctrl+Y
 - [x] Unit tests for invariants and edge cases
-- [ ] Snap-to-edges polish
-- [ ] Trim handles in UI (domain trim exists)
+- [x] Snap-to-edges (toggle)
+- [x] Trim handles in UI
+- [x] Smooth playhead scrub (pointer drag follows mouse)
 
 **Exit:** Edit operations preserve model; UI responsive with representative clip count.
 
@@ -59,6 +60,7 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 
 - [x] Playback clock tied to ticks
 - [x] Active-clip video/image preview (single top video track)
+- [x] Reduce black-flash on import/seek (loading gate + scrub-aware seek)
 - [ ] Audio playback/mixing
 - [ ] Multi-track compositing / proxy cache
 - [x] Document preview limits in UI copy
@@ -89,7 +91,7 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Add text clip + edit content/font/color/position
 - [x] Browse custom fonts (desktop dialog / browser file picker)
 - [x] Preview text overlays
-- [ ] Transforms/volume inspector for media clips
+- [x] Opacity/volume for selected clips
 - [ ] Shortcuts, settings, recent projects
 - [ ] NSIS installer, icon, versioning
 - [ ] Offline QA pass; README known limitations + licenses
