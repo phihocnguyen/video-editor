@@ -1,9 +1,12 @@
 import { useState } from "react";
-import type { MediaKind } from "../../domain";
+import { addMediaClip, relinkAsset, type MediaKind } from "../../domain";
 import {
   actionImportMedia,
+  actionRelinkAsset,
   formatActionError,
 } from "../../lib/projectActions";
+import { canShowThumbnail, resolveMediaUrl } from "../../lib/mediaUrl";
+import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import styles from "./MediaBinPanel.module.css";
@@ -15,6 +18,8 @@ interface MediaBinPanelProps {
 export function MediaBinPanel({ filter }: MediaBinPanelProps) {
   const assets = useProjectStore((s) => s.project.assets);
   const addAssets = useProjectStore((s) => s.addAssets);
+  const setProject = useProjectStore((s) => s.setProject);
+  const playheadTicks = useEditorUiStore((s) => s.playheadTicks);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const [busy, setBusy] = useState(false);
   const visible = filter ? assets.filter((a) => a.kind === filter) : assets;
@@ -43,6 +48,37 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
     }
   }
 
+  function handleAddToTimeline(assetId: string) {
+    try {
+      commitProjectChange((project) =>
+        addMediaClip(project, assetId, { startTicks: playheadTicks }),
+      );
+      setStatusMessage("Clip added to timeline");
+    } catch (error) {
+      setStatusMessage(formatActionError(error));
+    }
+  }
+
+  async function handleRelink(assetId: string) {
+    const asset = useProjectStore.getState().project.assets.find((a) => a.id === assetId);
+    if (!asset) return;
+    try {
+      const relinked = await actionRelinkAsset(asset);
+      const before = useProjectStore.getState().project;
+      setProject(
+        relinkAsset(before, assetId, relinked.path, {
+          name: relinked.name,
+          missing: relinked.missing,
+        }),
+      );
+      setStatusMessage(`Relinked ${relinked.name}`);
+    } catch (error) {
+      if (formatActionError(error) !== "Relink cancelled") {
+        setStatusMessage(formatActionError(error));
+      }
+    }
+  }
+
   return (
     <div className={styles.panel}>
       <div className={styles.header}>
@@ -52,7 +88,7 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
           className={styles.importBtn}
           onClick={() => void handleImport()}
           disabled={busy}
-          title="Import local media (desktop app)"
+          title="Import local media"
         >
           {busy ? "Importing…" : "+ Import"}
         </button>
@@ -72,23 +108,60 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
         <p className={styles.empty}>No {title.toLowerCase()} imported yet.</p>
       ) : (
         <div className={styles.grid}>
-          {visible.map((asset) => (
-            <article
-              key={asset.id}
-              className={asset.missing ? `${styles.card} ${styles.missing}` : styles.card}
-            >
-              <div className={styles.thumb} data-kind={asset.kind}>
-                {asset.kind === "audio" ? "♪" : asset.kind === "image" ? "▣" : "▶"}
-              </div>
-              <div className={styles.meta}>
-                <strong title={asset.path}>{asset.name}</strong>
-                <span>
-                  {asset.kind}
-                  {asset.missing ? " · missing" : ""}
-                </span>
-              </div>
-            </article>
-          ))}
+          {visible.map((asset) => {
+            const thumbUrl = canShowThumbnail(asset.kind, asset.path, asset.id)
+              ? resolveMediaUrl(asset.path, asset.id)
+              : null;
+            return (
+              <article
+                key={asset.id}
+                className={asset.missing ? `${styles.card} ${styles.missing}` : styles.card}
+              >
+                <button
+                  type="button"
+                  className={styles.thumbBtn}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData("text/cutline-asset", asset.id);
+                    e.dataTransfer.effectAllowed = "copy";
+                  }}
+                  onDoubleClick={() => handleAddToTimeline(asset.id)}
+                  title="Drag to timeline or double-click to add at playhead"
+                >
+                  <div className={styles.thumb} data-kind={asset.kind}>
+                    {thumbUrl && (asset.kind === "image" || asset.kind === "video") ? (
+                      asset.kind === "image" ? (
+                        <img src={thumbUrl} alt="" />
+                      ) : (
+                        <video src={thumbUrl} muted preload="metadata" />
+                      )
+                    ) : asset.kind === "audio" ? (
+                      "♪"
+                    ) : (
+                      "▶"
+                    )}
+                  </div>
+                </button>
+                <div className={styles.meta}>
+                  <strong title={asset.path}>{asset.name}</strong>
+                  <span>
+                    {asset.kind}
+                    {asset.missing ? " · missing" : ""}
+                  </span>
+                  <div className={styles.cardActions}>
+                    <button type="button" onClick={() => handleAddToTimeline(asset.id)}>
+                      Add
+                    </button>
+                    {asset.missing ? (
+                      <button type="button" onClick={() => void handleRelink(asset.id)}>
+                        Relink
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
     </div>
