@@ -41,10 +41,10 @@ export interface TextStyle {
 export function createDefaultTextStyle(content = "Title text"): TextStyle {
   return {
     content,
-    fontFamily: "Segoe UI",
+    fontFamily: "Manrope Variable",
     fontPath: null,
-    fontSize: 64,
-    color: "#FFFFFF",
+    fontSize: 72,
+    color: "#FFE566",
     align: "center",
   };
 }

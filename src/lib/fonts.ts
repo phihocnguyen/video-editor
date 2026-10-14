@@ -6,17 +6,17 @@ export interface FontOption {
   source: "system" | "custom";
 }
 
-/** Common desktop fonts — safe defaults without requiring OS enumeration APIs. */
+/** Common fonts — bundled UI faces first, then system fallbacks. */
 export const BUILTIN_FONTS: FontOption[] = [
-  { id: "segoe-ui", family: "Segoe UI", path: null, source: "system" },
+  { id: "manrope", family: "Manrope Variable", path: null, source: "system" },
+  { id: "jetbrains-mono", family: "JetBrains Mono Variable", path: null, source: "system" },
   { id: "arial", family: "Arial", path: null, source: "system" },
+  { id: "arial-black", family: "Arial Black", path: null, source: "system" },
   { id: "georgia", family: "Georgia", path: null, source: "system" },
-  { id: "times", family: "Times New Roman", path: null, source: "system" },
-  { id: "courier", family: "Courier New", path: null, source: "system" },
-  { id: "verdana", family: "Verdana", path: null, source: "system" },
-  { id: "trebuchet", family: "Trebuchet MS", path: null, source: "system" },
   { id: "impact", family: "Impact", path: null, source: "system" },
-  { id: "comic", family: "Comic Sans MS", path: null, source: "system" },
+  { id: "segoe-ui", family: "Segoe UI", path: null, source: "system" },
+  { id: "verdana", family: "Verdana", path: null, source: "system" },
+  { id: "times", family: "Times New Roman", path: null, source: "system" },
 ];
 
 const customFonts: FontOption[] = [];

@@ -20,8 +20,8 @@
   --track-sub: #4a8fd4;
   --radius: 8px;
   --radius-sm: 6px;
-  --font-ui: "Segoe UI", "Helvetica Neue", sans-serif;
-  --font-mono: "Cascadia Code", "Consolas", monospace;
+  --font-ui: "Manrope Variable", Manrope, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
   --toolbar-h: 52px;
   --rail-w: 72px;
   --side-w: 300px;
