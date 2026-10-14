@@ -1,29 +1,40 @@
 # Windows setup
 
-## Render video without building the desktop app
+## Render without building the desktop app
 
-Only **FFmpeg on PATH** is required:
+Only **FFmpeg on PATH** is required.
+
+### Export button in the UI (recommended)
 
 ```powershell
 ffmpeg -version
 pnpm install
-pnpm export:video -- path\to\project.cutline.json path\to\out.mp4
-pnpm export:video -- project.json out.mp4 --preset 720 --quality high
-pnpm export:video -- project.json out.mp4 --dry-run
+pnpm dev
 ```
 
-Project JSON must use real filesystem media paths (not browser `blob:` URLs). Save a project from the editor after desktop import, or hand-author paths.
+`pnpm dev` starts Vite **and** a local export helper on `http://127.0.0.1:1421`.
+
+1. Open the app in the browser  
+2. **Import media** (cached under `.cutline-cache/media`)  
+3. Edit the timeline  
+4. Click **Export** — MP4 downloads when finished  
+
+### Optional CLI
+
+```powershell
+pnpm export:video -- path\to\project.cutline.json path\to\out.mp4
+```
 
 ## Desktop app (optional — needs MSVC)
 
-1. Install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with **Desktop development with C++**.
-2. Confirm `where.exe link`.
-3. `pnpm tauri:dev` / `pnpm tauri:build` (NSIS under `src-tauri/target/release/bundle/nsis/`).
+1. Install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with **Desktop development with C++**.  
+2. Confirm `where.exe link`.  
+3. `pnpm tauri:dev` / `pnpm tauri:build`.
 
 ## FFmpeg / ffprobe
 
-1. Download a release build (prefer LGPL for redistribution — `docs/licensing.md`).
-2. Add `bin` to `PATH`.
+1. Download a release build (prefer LGPL for redistribution — `docs/licensing.md`).  
+2. Add `bin` to `PATH`.  
 3. `ffmpeg -version` and `ffprobe -version`.
 
 ## Update strategy (MVP)

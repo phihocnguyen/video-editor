@@ -19,16 +19,16 @@ See `docs/setup-windows.md` for MSVC + FFmpeg details.
 
 ```bash
 pnpm install
-pnpm dev                # browser UI
-pnpm export:video -- project.cutline.json out.mp4   # render (FFmpeg only; no MSVC)
-pnpm tauri:dev          # desktop shell (needs MSVC) — optional for now
+pnpm dev          # browser UI + export helper (FFmpeg) — use Export button
+pnpm tauri:dev    # optional desktop shell (needs MSVC)
 ```
 
 ## Scripts
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm export:video` | Render MP4 from project JSON via FFmpeg (no Tauri build) |
+| `pnpm dev` | Vite + local export helper (`:1421`) — **Export button works** |
+| `pnpm export:video` | Optional CLI render from project JSON |
 | `pnpm tauri:dev` | Desktop app |
 | `pnpm build` | Frontend production build |
 | `pnpm tauri:build` | Windows NSIS installer |

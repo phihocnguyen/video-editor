@@ -29,4 +29,5 @@ Thumbs.db
 
 # App cache / user projects (local)
 .cutline/
+.cutline-cache/
 *.cutline.bak

@@ -5,7 +5,9 @@
   "type": "module",
   "description": "Windows desktop video editor — React + TypeScript + Tauri 2 + FFmpeg",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -k -n vite,export -c cyan,magenta \"vite\" \"tsx scripts/export-server.ts\"",
+    "dev:ui": "vite",
+    "export:server": "tsx scripts/export-server.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
@@ -32,6 +34,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^10.0.6",
     "tsx": "^4.23.15",
     "typescript": "~5.8.3",
     "vite": "^8.0.16",

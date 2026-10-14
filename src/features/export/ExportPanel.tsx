@@ -5,6 +5,12 @@ import {
   type RenderResolutionPreset,
 } from "../../domain";
 import {
+  localDownloadUrl,
+  localExportHealth,
+  localGetExportStatus,
+  localStartExport,
+} from "../../lib/localExport";
+import {
   cancelExport,
   getExportStatus,
   isTauriRuntime,
@@ -21,48 +27,91 @@ export function ExportPanel() {
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const [preset, setPreset] = useState<RenderResolutionPreset>("1080");
   const [quality, setQuality] = useState<RenderQualityPreset>("standard");
-  const [job, setJob] = useState<ExportJobStatus | null>(null);
+  const [job, setJob] = useState<(ExportJobStatus & { downloadUrl?: string | null }) | null>(
+    null,
+  );
   const [busy, setBusy] = useState(false);
+  const [helperOnline, setHelperOnline] = useState(false);
   const plan = useMemo(
     () => buildRenderPlan(project, preset, quality),
     [preset, project, quality],
   );
+  const hasBlob = plan.clips.some((c) => c.assetPath.startsWith("blob:"));
   const blocked =
     plan.missingAssetIds.length > 0 ||
     (plan.clips.length === 0 && plan.texts.length === 0) ||
-    plan.clips.some((c) => c.assetPath.startsWith("blob:"));
+    hasBlob;
+
+  useEffect(() => {
+    let cancelled = false;
+    const ping = () => {
+      void localExportHealth().then((ok) => {
+        if (!cancelled) setHelperOnline(ok);
+      });
+    };
+    ping();
+    const timer = window.setInterval(ping, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     if (!job || (job.state !== "running" && job.state !== "queued")) return;
     const timer = window.setInterval(() => {
-      void getExportStatus()
-        .then((status) => {
-          if (status) setJob(status);
-        })
-        .catch(() => undefined);
+      void (async () => {
+        try {
+          if (isTauriRuntime()) {
+            const status = await getExportStatus();
+            if (status) setJob(status);
+            return;
+          }
+          const status = await localGetExportStatus(job.id);
+          setJob(status);
+          if (status.state === "succeeded" && status.downloadUrl) {
+            localDownloadUrl(status.downloadUrl);
+            setStatusMessage(`Export ready · ${status.outputPath ?? "download"}`);
+          }
+        } catch {
+          /* ignore poll errors */
+        }
+      })();
     }, 500);
     return () => window.clearInterval(timer);
-  }, [job]);
+  }, [job, setStatusMessage]);
 
   async function handleExport() {
-    if (!isTauriRuntime()) {
-      setStatusMessage("Export requires desktop app + FFmpeg on PATH");
-      return;
-    }
     if (blocked) {
-      setStatusMessage("Fix missing/blob media before export");
+      setStatusMessage(
+        hasBlob
+          ? "Re-import media while export helper is running (pnpm dev)"
+          : "Fix missing media / add clips before export",
+      );
       return;
     }
+
     setBusy(true);
     try {
-      const outputPath = await pickExportOutputPath(project.name || "cutline-export");
-      if (!outputPath) {
-        setStatusMessage("Export cancelled");
+      if (isTauriRuntime()) {
+        const outputPath = await pickExportOutputPath(project.name || "cutline-export");
+        if (!outputPath) {
+          setStatusMessage("Export cancelled");
+          return;
+        }
+        const started = await startExport(plan, outputPath);
+        setJob(started);
+        setStatusMessage("Export started");
         return;
       }
-      const started = await startExport(plan, outputPath);
+
+      if (!(await localExportHealth())) {
+        setStatusMessage("Export helper offline — run `pnpm dev` (Vite + export server)");
+        return;
+      }
+      const started = await localStartExport(project, preset, quality);
       setJob(started);
-      setStatusMessage("Export started");
+      setStatusMessage("Export started (local FFmpeg helper)");
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -71,6 +120,10 @@ export function ExportPanel() {
   }
 
   async function handleCancel() {
+    if (!isTauriRuntime()) {
+      setStatusMessage("Cancel is limited in browser helper — wait for job to finish");
+      return;
+    }
     try {
       const status = await cancelExport();
       setJob(status);
@@ -80,12 +133,28 @@ export function ExportPanel() {
     }
   }
 
+  const canExport =
+    !busy &&
+    !blocked &&
+    job?.state !== "running" &&
+    (isTauriRuntime() || helperOnline);
+
   return (
     <div className={styles.panel}>
       <h2>Export</h2>
       <p className={styles.lead}>
-        Local MP4 via FFmpeg (H.264 / AAC). Requires desktop app and FFmpeg on PATH.
+        {isTauriRuntime()
+          ? "Desktop export via FFmpeg (PATH)."
+          : helperOnline
+            ? "Browser export via local helper + FFmpeg (same as Export button)."
+            : "Start `pnpm dev` so the export helper is online, then import media and export."}
       </p>
+
+      {!isTauriRuntime() ? (
+        <p className={helperOnline ? styles.ok : styles.warn}>
+          Helper: {helperOnline ? "online · http://127.0.0.1:1421" : "offline"}
+        </p>
+      ) : null}
 
       <label className={styles.field}>
         <span>Resolution</span>
@@ -131,9 +200,9 @@ export function ExportPanel() {
             {plan.missingAssetIds.length} missing media — export blocked.
           </p>
         ) : null}
-        {plan.clips.some((c) => c.assetPath.startsWith("blob:")) ? (
+        {hasBlob ? (
           <p className={styles.warn}>
-            Browser blob imports cannot be exported. Re-import in the desktop app.
+            Some clips still use blob URLs. Re-import media while the helper is online.
           </p>
         ) : null}
       </div>
@@ -156,12 +225,12 @@ export function ExportPanel() {
         <button
           type="button"
           className={styles.exportBtn}
-          disabled={busy || blocked || job?.state === "running"}
+          disabled={!canExport}
           onClick={() => void handleExport()}
         >
           Export MP4
         </button>
-        {job?.state === "running" ? (
+        {job?.state === "running" && isTauriRuntime() ? (
           <button type="button" className={styles.cancelBtn} onClick={() => void handleCancel()}>
             Cancel
           </button>

@@ -198,6 +198,7 @@ function downloadBrowserText(filename: string, contents: string) {
 
 async function pickBrowserMediaFiles(): Promise<MediaAsset[]> {
   const { rememberBrowserObjectUrl } = await import("./mediaUrl");
+  const { localExportHealth, localImportFile } = await import("./localExport");
   return new Promise((resolve, reject) => {
     const input = document.createElement("input");
     input.type = "file";
@@ -210,6 +211,7 @@ async function pickBrowserMediaFiles(): Promise<MediaAsset[]> {
         return;
       }
       try {
+        const helperUp = await localExportHealth();
         const assets: MediaAsset[] = [];
         for (const file of files) {
           const id = crypto.randomUUID();
@@ -234,10 +236,19 @@ async function pickBrowserMediaFiles(): Promise<MediaAsset[]> {
             height = size.height;
             durationTicks = 5_000_000;
           }
+          let path = url;
+          if (helperUp) {
+            try {
+              const cached = await localImportFile(file);
+              path = cached.path;
+            } catch {
+              /* keep blob preview; export will warn */
+            }
+          }
           assets.push({
             id,
             kind,
-            path: url,
+            path,
             name: file.name,
             durationTicks,
             width,
