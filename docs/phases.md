@@ -2,7 +2,7 @@
 
 Maps `implementation_plan.md` milestones into executable phases. Keep the app buildable after each phase.
 
-## Phase 0 — Desktop shell & feasibility (current / Milestone 0)
+## Phase 0 — Desktop shell & feasibility (Milestone 0)
 
 **Goal:** Runnable Windows desktope scaffold with module boundaries and one typed native command.
 
@@ -11,6 +11,7 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Typed `get_app_info` / `probe_media` commands
 - [x] Docs stubs + preview ADR
 - [x] Vitest smoke tests for time math
+- [x] CapCut-like editor chrome (Cutline branding)
 - [ ] Install MSVC Build Tools; `pnpm tauri:dev` launches a window
 - [ ] FFmpeg on PATH; probe/export PoC on sample media
 - [ ] Minimal CI: `pnpm typecheck` + `pnpm test`
@@ -19,15 +20,17 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 
 ---
 
-## Phase 1 — Project & media foundation (Milestone 1)
+## Phase 1 — Project & media foundation (in progress / Milestone 1)
 
 **Goal:** Local projects and media bin work across restarts.
 
-- Project JSON save/open/validate (Rust + TS schema)
-- Native file dialogs for import
-- Async probe + thumbnails + disk cache
-- Autosave/recovery foundation; missing-media detection
-- Relink UX (confirm before swap)
+- [x] Project JSON validate/serialize (TypeScript)
+- [x] Project save/open/validate + autosave paths (Rust)
+- [x] Native dialogs for open/save/import (Tauri plugin)
+- [x] Import → probe → media bin; missing-media flag
+- [ ] Thumbnail generation + disk cache
+- [ ] Relink UX (confirm before swap)
+- [ ] Verify end-to-end on `pnpm tauri:dev` (needs MSVC)
 
 **Exit:** Create → import → save → reopen; originals untouched; missing media flagged.
 
