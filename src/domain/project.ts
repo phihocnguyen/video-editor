@@ -31,9 +31,22 @@ export interface ClipTransform {
 export interface TextStyle {
   content: string;
   fontFamily: string;
+  /** Optional absolute path to a .ttf/.otf file (custom font). */
+  fontPath: string | null;
   fontSize: number;
   color: string;
   align: "left" | "center" | "right";
+}
+
+export function createDefaultTextStyle(content = "Title text"): TextStyle {
+  return {
+    content,
+    fontFamily: "Segoe UI",
+    fontPath: null,
+    fontSize: 64,
+    color: "#FFFFFF",
+    align: "center",
+  };
 }
 
 export interface Clip {

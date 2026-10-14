@@ -1,4 +1,12 @@
-import type { Clip, MediaAsset, ProjectDocument, Track, TrackKind } from "./project";
+import {
+  createDefaultTextStyle,
+  type Clip,
+  type MediaAsset,
+  type ProjectDocument,
+  type TextStyle,
+  type Track,
+  type TrackKind,
+} from "./project";
 import type { Tick } from "./time";
 
 const DEFAULT_TRANSFORM = {
@@ -174,6 +182,66 @@ export function relinkAsset(
     assets,
     updatedAt: new Date().toISOString(),
   };
+}
+
+export function addTextClip(
+  project: ProjectDocument,
+  options?: {
+    trackId?: string;
+    startTicks?: Tick;
+    durationTicks?: Tick;
+    text?: Partial<TextStyle>;
+  },
+): ProjectDocument {
+  const track =
+    (options?.trackId
+      ? project.tracks.find((t) => t.id === options.trackId)
+      : undefined) ?? project.tracks.find((t) => t.kind === "video" && !t.locked);
+
+  if (!track) throw new Error("No video track for text");
+  if (track.locked) throw new Error("Track is locked");
+  if (track.kind !== "video") throw new Error("Text clips require a video track");
+
+  const duration = Math.max(1, options?.durationTicks ?? 5_000_000);
+  const text = { ...createDefaultTextStyle(), ...options?.text };
+  const clip: Clip = {
+    id: crypto.randomUUID(),
+    trackId: track.id,
+    assetId: null,
+    kind: "text",
+    startTicks: Math.max(0, options?.startTicks ?? 0),
+    sourceInTicks: 0,
+    sourceOutTicks: duration,
+    speed: 1,
+    transform: {
+      ...DEFAULT_TRANSFORM,
+      x: project.canvas.width / 2,
+      y: project.canvas.height / 2,
+    },
+    volume: 1,
+    text,
+  };
+
+  return withUpdatedClips(project, [...project.clips, clip]);
+}
+
+export function updateClipText(
+  project: ProjectDocument,
+  clipId: string,
+  text: TextStyle,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => {
+    if (clip.kind !== "text") throw new Error("Clip is not a text clip");
+    return { ...clip, text };
+  });
+}
+
+export function updateClipTransform(
+  project: ProjectDocument,
+  clipId: string,
+  transform: Clip["transform"],
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => ({ ...clip, transform }));
 }
 
 function mapClip(
