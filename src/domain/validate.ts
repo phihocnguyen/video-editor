@@ -7,7 +7,6 @@ import {
   type Track,
 } from "./project";
 import { normalizeSpeedRamp } from "./speedRamp";
-import { normalizeTextAnimation } from "./textAnimation";
 import { normalizeClipTransition } from "./transitions";
 
 export interface ValidationIssue {
@@ -200,17 +199,6 @@ function validateClip(clip: unknown, path: string, issues: ValidationIssue[]) {
     }
   }
 
-  if (clip.animation !== undefined && clip.animation !== null) {
-    if (!isRecord(clip.animation)) {
-      issues.push({ path: `${path}.animation`, message: "Expected animation object" });
-    } else if (
-      clip.animation.in !== undefined &&
-      typeof clip.animation.in !== "string"
-    ) {
-      issues.push({ path: `${path}.animation.in`, message: "Expected string" });
-    }
-  }
-
   if (clip.effects !== undefined && clip.effects !== null) {
     if (!isRecord(clip.effects)) {
       issues.push({ path: `${path}.effects`, message: "Expected effects object" });
@@ -302,18 +290,16 @@ export function normalizeProjectDocument(project: ProjectDocument): ProjectDocum
         effects?: Partial<Clip["effects"]> | null;
         transitionIn?: Partial<Clip["transitionIn"]> | null;
         speedRamp?: Partial<Clip["speedRamp"]> | null;
-        animation?: Partial<Clip["animation"]> | null;
         transform?: Partial<Clip["transform"]> | null;
+        animation?: unknown;
       };
       const normalizedRamp = normalizeSpeedRamp(raw.speedRamp ?? null);
+      const { animation: _removedAnim, ...rest } = raw;
       return {
-        ...clip,
+        ...rest,
         transform: { ...DEFAULT_TRANSFORM, ...(raw.transform ?? {}) },
         effects: normalizeClipEffects(raw.effects),
         transitionIn: normalizeClipTransition(raw.transitionIn),
-        animation: raw.animation
-          ? normalizeTextAnimation(raw.animation)
-          : clip.animation ?? null,
         speedRamp: normalizedRamp,
       };
     }),

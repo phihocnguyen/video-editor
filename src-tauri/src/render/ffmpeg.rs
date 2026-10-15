@@ -148,19 +148,6 @@ pub struct RenderTextPlan {
     pub opacity: f64,
     pub timeline_start_sec: f64,
     pub timeline_end_sec: f64,
-    #[serde(default)]
-    pub animation: Option<RenderTextAnimation>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct RenderTextAnimation {
-    #[serde(default = "default_none", rename = "in")]
-    pub anim_in: String,
-    #[serde(default = "default_none", rename = "out")]
-    pub anim_out: String,
-    #[serde(default = "default_half_sec_ticks")]
-    pub duration_ticks: i64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -421,115 +408,6 @@ fn media_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) -> St
     parts.join(",")
 }
 
-struct TextAnimExpr {
-    alpha: String,
-    dx: String,
-    dy: String,
-    scale: String,
-}
-
-fn ease_expr(p: &str) -> String {
-    format!("({p})*({p})*(3-2*({p}))")
-}
-
-fn progress_expr(tvar: &str, start: f64, dur: f64) -> String {
-    format!(
-        "min(1\\,max(0\\,(({tvar})-{start:.3})/{:.3}))",
-        dur.max(0.05)
-    )
-}
-
-fn ffmpeg_text_anim(
-    anim: Option<&RenderTextAnimation>,
-    start_sec: f64,
-    end_sec: f64,
-) -> TextAnimExpr {
-    let identity = TextAnimExpr {
-        alpha: "1".into(),
-        dx: "0".into(),
-        dy: "0".into(),
-        scale: "1".into(),
-    };
-    let Some(anim) = anim else {
-        return identity;
-    };
-    if anim.anim_in == "none" && anim.anim_out == "none" {
-        return identity;
-    }
-    let total = (end_sec - start_sec).max(0.01);
-    let win = (anim.duration_ticks as f64 / 1_000_000.0).min(total);
-    let in_start = start_sec;
-    let out_start = (end_sec - win).max(start_sec);
-    let p_in = progress_expr("t", in_start, win);
-    let p_out = progress_expr("t", out_start, win);
-
-    let in_is_none = anim.anim_in == "none";
-    let out_is_none = anim.anim_out == "none";
-
-    let mask_in = matches!(anim.anim_in.as_str(), "wipe" | "cutPaste" | "blockCover" | "driftH");
-    let mask_out = matches!(anim.anim_out.as_str(), "wipe" | "cutPaste" | "blockCover" | "driftH");
-
-    let a_in = if in_is_none || mask_in {
-        "1".to_string()
-    } else if anim.anim_in == "slam" {
-        format!("if(gte({p_in}\\,0.02)\\,1\\,0)")
-    } else {
-        ease_expr(&p_in)
-    };
-    let a_out = if out_is_none || mask_out {
-        "1".to_string()
-    } else {
-        format!("(1-{})", ease_expr(&p_out))
-    };
-
-    let s = format!("{start_sec:.3}");
-    let en = format!("{end_sec:.3}");
-    let alpha = format!(
-        "if(lt(t\\,{s})\\,0\\,if(gt(t\\,{en})\\,0\\,min(1\\,({a_in})*({a_out}))))"
-    );
-
-    let dx_in = if matches!(anim.anim_in.as_str(), "slide" | "driftH") {
-        format!("((1-{})*0.4*w)", ease_expr(&p_in))
-    } else {
-        "0".into()
-    };
-    let dx_out = if matches!(anim.anim_out.as_str(), "slide" | "driftH") {
-        format!("({}*0.4*w)", ease_expr(&p_out))
-    } else {
-        "0".into()
-    };
-    let dy_in = if anim.anim_in == "pushUp" {
-        format!("((1-{})*0.4*h)", ease_expr(&p_in))
-    } else {
-        "0".into()
-    };
-    let dy_out = if anim.anim_out == "pushUp" {
-        format!("({}*0.4*h)", ease_expr(&p_out))
-    } else {
-        "0".into()
-    };
-
-    let scale_in = match anim.anim_in.as_str() {
-        "pop" | "expand" | "converge" => format!("(0.4+0.6*{})", ease_expr(&p_in)),
-        "slam" => format!("(3-2*{})", ease_expr(&p_in)),
-        "spin" => format!("(0.4+0.6*{})", ease_expr(&p_in)),
-        _ => "1".into(),
-    };
-    let scale_out = match anim.anim_out.as_str() {
-        "expand" | "pop" | "converge" | "spin" => {
-            format!("(0.4+0.6*(1-{}))", ease_expr(&p_out))
-        }
-        _ => "1".into(),
-    };
-
-    TextAnimExpr {
-        alpha,
-        dx: format!("({dx_in})+({dx_out})"),
-        dy: format!("({dy_in})+({dy_out})"),
-        scale: format!("({scale_in})*({scale_out})"),
-    }
-}
-
 fn build_filter_complex(
     plan: &RenderPlan,
     visuals: &[&RenderClipPlan],
@@ -587,10 +465,8 @@ fn build_filter_complex(
             if tin == "fade" || tin == "fadeWhite" {
                 extras.push(ffmpeg_smooth_fade_in_alpha(in_full / 2.0, in_full / 2.0));
             } else {
+                // dissolve (crossfade): full-window eased alpha
                 extras.push(ffmpeg_smooth_fade_in_alpha(in_full, 0.0));
-            }
-            if tin == "wipeLeft" || tin == "wipeRight" {
-                extras.push(ffmpeg_wipe_reveal(tin, in_full, width, height));
             }
         }
         if hold > 0.001 {
@@ -636,36 +512,15 @@ fn build_filter_complex(
         let base_size = text.font_size.max(8.0).round();
         let color = normalize_color(&text.color);
         let alpha = text.opacity.clamp(0.0, 1.0);
-        let anim = ffmpeg_text_anim(text.animation.as_ref(), start, end);
-        let fontsize_expr = if anim.scale == "1" {
-            format!("{base_size}")
-        } else {
-            format!("{base_size}*{}", anim.scale)
-        };
-        let base_x = match text.align.as_str() {
+        let x_expr = match text.align.as_str() {
             "left" => format!("{}", text.x.max(0.0) as i64),
             "right" => format!("{}-text_w", text.x.max(0.0) as i64),
             _ => format!("{}-(text_w/2)", text.x.max(0.0) as i64),
         };
-        let x_expr = if anim.dx == "0" {
-            base_x
-        } else {
-            format!("({base_x})+({})", anim.dx)
-        };
-        let base_y = format!("{}-(text_h/2)", text.y.max(0.0) as i64);
-        let y_expr = if anim.dy == "0" {
-            base_y
-        } else {
-            format!("({base_y})+({})", anim.dy)
-        };
-        let alpha_expr = if anim.alpha == "1" {
-            format!("{alpha:.3}")
-        } else {
-            format!("({alpha:.3})*({})", anim.alpha)
-        };
+        let y_expr = format!("{}-(text_h/2)", text.y.max(0.0) as i64);
         let next = format!("[txt{ti}]");
         parts.push(format!(
-            "{current}drawtext=text='{escaped}'{fontfile}:fontsize='{fontsize_expr}':fontcolor={color}@1:x='{x_expr}':y='{y_expr}':alpha='{alpha_expr}':enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
+            "{current}drawtext=text='{escaped}'{fontfile}:fontsize={base_size}:fontcolor={color}@1:x='{x_expr}':y='{y_expr}':alpha={alpha:.3}:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
         ));
         current = next;
     }
@@ -781,20 +636,6 @@ fn ffmpeg_smooth_fade_out_alpha(start_sec: f64, duration_sec: f64) -> String {
     geq_rgb_alpha(&format!(
         "if(lt(T\\,{st:.3})\\,255\\,if(gte(T\\,{en:.3})\\,0\\,255*(1-{ease})))"
     ))
-}
-
-fn ffmpeg_wipe_reveal(kind: &str, duration_sec: f64, width: u32, height: u32) -> String {
-    let d = duration_sec.max(0.05);
-    let p = eased01(&clamped_progress(0.0, d));
-    let w = width.max(2);
-    let h = height.max(2);
-    if kind == "wipeLeft" {
-        format!(
-            "crop=w='max(2\\,{w}*{p})':h={h}:x='{w}-out_w':y=0,pad={w}:{h}:({w}-ow):0:black@0"
-        )
-    } else {
-        format!("crop=w='max(2\\,{w}*{p})':h={h}:x=0:y=0,pad={w}:{h}:0:0:black@0")
-    }
 }
 
 fn ffmpeg_video_effects_chain(

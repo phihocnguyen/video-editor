@@ -11,7 +11,6 @@ import {
   transitionHalfSec,
   type ClipTransition,
 } from "./transitions";
-import { normalizeTextAnimation, type TextAnimation } from "./textAnimation";
 import { normalizeSpeedRamp, type SpeedRamp } from "./speedRamp";
 
 export type RenderResolutionPreset = "source" | "720" | "1080";
@@ -62,8 +61,6 @@ export interface RenderTextPlan {
   opacity: number;
   timelineStartSec: number;
   timelineEndSec: number;
-  /** In/out text animation (null = none). */
-  animation: TextAnimation | null;
 }
 
 export interface RenderPlan {
@@ -119,7 +116,6 @@ export function buildRenderPlan(
         opacity: clip.transform.opacity,
         timelineStartSec: ticksToSeconds(clip.startTicks),
         timelineEndSec: ticksToSeconds(end),
-        animation: clip.animation ? normalizeTextAnimation(clip.animation) : null,
       });
       continue;
     }

@@ -18,11 +18,6 @@ import {
   type ClipTransition,
 } from "./transitions";
 import {
-  DEFAULT_TEXT_ANIMATION,
-  normalizeTextAnimation,
-  type TextAnimation,
-} from "./textAnimation";
-import {
   clampRampSpeed,
   createSpeedPoint,
   getRampProfile,
@@ -161,7 +156,6 @@ export function addMediaClip(
     volume: 1,
     effects: { ...DEFAULT_CLIP_EFFECTS },
     transitionIn: { ...DEFAULT_CLIP_TRANSITION },
-    animation: null,
     text: null,
   };
 
@@ -515,7 +509,6 @@ export function addTextClip(
     volume: 1,
     effects: { ...DEFAULT_CLIP_EFFECTS },
     transitionIn: { ...DEFAULT_CLIP_TRANSITION },
-    animation: { ...DEFAULT_TEXT_ANIMATION },
     text,
   };
 
@@ -543,20 +536,6 @@ export function updateClipTransition(
     transitionIn: normalizeClipTransition({
       ...normalizeClipTransition(clip.transitionIn),
       ...transitionIn,
-    }),
-  }));
-}
-
-export function updateClipAnimation(
-  project: ProjectDocument,
-  clipId: string,
-  animation: TextAnimation | Partial<TextAnimation>,
-): ProjectDocument {
-  return mapClip(project, clipId, (clip) => ({
-    ...clip,
-    animation: normalizeTextAnimation({
-      ...normalizeTextAnimation(clip.animation),
-      ...animation,
     }),
   }));
 }

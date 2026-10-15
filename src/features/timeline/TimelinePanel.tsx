@@ -61,7 +61,6 @@ import {
   ZoomInIcon,
   ZoomOutIcon,
 } from "../../components/icons";
-import { ClipFilmstrip } from "./ClipFilmstrip";
 import { ClipWaveform } from "./ClipWaveform";
 import { RampEditor } from "./RampEditor";
 import styles from "./TimelinePanel.module.css";
@@ -759,8 +758,6 @@ export function TimelinePanel() {
                       : null;
                   const sourceInSec = ticksToSeconds(clip.sourceInTicks);
                   const sourceOutSec = ticksToSeconds(clip.sourceOutTicks);
-                  // Temporarily disabled — filmstrip seeks were contending with preview Play.
-                  const showFilmstrip = false;
                   const showWaveform =
                     clip.kind === "media" &&
                     track.kind === "audio" &&
@@ -840,16 +837,6 @@ export function TimelinePanel() {
                       }}
                       title={label}
                     >
-                      {showFilmstrip && asset && mediaUrl ? (
-                        <ClipFilmstrip
-                          mediaUrl={mediaUrl}
-                          filePath={asset.path}
-                          kind={asset.kind === "image" ? "image" : "video"}
-                          sourceInSec={sourceInSec}
-                          sourceOutSec={sourceOutSec}
-                          widthPx={clipWidthPx}
-                        />
-                      ) : null}
                       {showWaveform && asset && mediaUrl ? (
                         <ClipWaveform
                           cacheKey={asset.id}

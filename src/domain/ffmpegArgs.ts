@@ -6,7 +6,6 @@ import {
   rampTimeMapSegments,
   type RampExprSegment,
 } from "./speedRamp";
-import { ffmpegTextAnim } from "./textAnimation";
 import {
   transitionDef,
   transitionDurationSec,
@@ -248,26 +247,17 @@ function buildFilterComplex(
       : "";
     const baseSize = Math.max(8, Math.round(text.fontSize));
     const color = normalizeColor(text.color);
-    const alpha = Math.min(1, Math.max(0, text.opacity));
-    const anim = ffmpegTextAnim(text.animation, start, end);
-    const fontsizeExpr =
-      anim.scale === "1" ? `${baseSize}` : `${baseSize}*${anim.scale}`;
-    const baseX =
+    const alpha = Math.min(1, Math.max(0, text.opacity)).toFixed(3);
+    const xExpr =
       text.align === "left"
         ? `${Math.max(0, Math.round(text.x))}`
         : text.align === "right"
           ? `${Math.max(0, Math.round(text.x))}-text_w`
           : `${Math.max(0, Math.round(text.x))}-(text_w/2)`;
-    const xExpr = anim.dx === "0" ? baseX : `(${baseX})+(${anim.dx})`;
-    const yBase = `${Math.max(0, Math.round(text.y))}-(text_h/2)`;
-    const yExpr = anim.dy === "0" ? yBase : `(${yBase})+(${anim.dy})`;
-    const alphaExpr =
-      anim.alpha === "1"
-        ? `${alpha.toFixed(3)}`
-        : `(${alpha.toFixed(3)})*(${anim.alpha})`;
+    const yExpr = `${Math.max(0, Math.round(text.y))}-(text_h/2)`;
     const next = `[txt${step.textIndex}]`;
     parts.push(
-      `${current}drawtext=text='${escaped}'${fontfile}:fontsize='${fontsizeExpr}':fontcolor=${color}@1:x='${xExpr}':y='${yExpr}':alpha='${alphaExpr}':enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'${next}`,
+      `${current}drawtext=text='${escaped}'${fontfile}:fontsize=${baseSize}:fontcolor=${color}@1:x='${xExpr}':y='${yExpr}':alpha=${alpha}:enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'${next}`,
     );
     current = next;
   }

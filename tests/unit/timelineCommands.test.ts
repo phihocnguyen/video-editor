@@ -17,7 +17,6 @@ import {
   splitClipAt,
   trimClip,
   updateCanvas,
-  updateClipAnimation,
   updateClipSpeed,
   updateTrack,
 } from "../../src/domain/timelineCommands";
@@ -51,27 +50,18 @@ describe("timelineCommands", () => {
     expect(next.clips[0].trackId).toBe(project.tracks.find((t) => t.kind === "video")!.id);
   });
 
-  it("centres a new media clip transform and defaults text animation", () => {
+  it("centres a new media clip transform", () => {
     const media = addMediaClip(withAsset(), "asset-1");
     expect(media.clips[0].transform.x).toBe(960);
     expect(media.clips[0].transform.y).toBe(540);
-    expect(media.clips[0].animation).toBeNull();
 
     const withText = addTextClip(media, { text: { content: "Hi" } });
     const textClip = withText.clips.find((c) => c.kind === "text")!;
-    expect(textClip.animation).toEqual({
-      in: "none",
-      out: "none",
-      durationTicks: 600_000,
-    });
+    expect(textClip.text?.content).toBe("Hi");
   });
 
-  it("updates text animation and canvas settings", () => {
+  it("updates canvas settings", () => {
     let project = addTextClip(createEmptyProject());
-    const clipId = project.clips[0]!.id;
-    project = updateClipAnimation(project, clipId, { in: "fade", out: "pop" });
-    expect(project.clips[0]!.animation).toMatchObject({ in: "fade", out: "pop" });
-
     project = updateCanvas(project, { width: 1080, height: 1920, backgroundColor: "#abcdef" });
     expect(project.canvas.width).toBe(1080);
     expect(project.canvas.backgroundColor).toBe("#abcdef");

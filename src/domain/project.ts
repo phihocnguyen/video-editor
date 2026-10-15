@@ -1,6 +1,5 @@
 import type { ClipEffects } from "./effects";
 import type { ClipTransition } from "./transitions";
-import type { TextAnimation } from "./textAnimation";
 import type { Tick } from "./time";
 import type { SpeedRamp } from "./speedRamp";
 
@@ -85,11 +84,6 @@ export interface Clip {
    * Missing on older projects → none.
    */
   transitionIn: ClipTransition;
-  /**
-   * In/out animation for text clips. Missing on older projects → no animation.
-   * Ignored for media clips.
-   */
-  animation?: TextAnimation | null;
   text: TextStyle | null;
   /**
    * Optional speed ramp (variable speed over the source range). Missing on older

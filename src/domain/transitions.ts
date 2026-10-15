@@ -14,34 +14,8 @@ function durationTicksOf(clip: Clip): number {
   return Math.max(0, Math.round(source / speed));
 }
 
-export type TransitionType =
-  | "none"
-  // Fade group
-  | "dissolve"
-  | "fade"
-  | "fadeWhite"
-  // Wipe group
-  | "wipeLeft"
-  | "wipeRight"
-  | "wipeUp"
-  | "wipeDown"
-  // Slide group
-  | "slideLeft"
-  | "slideRight"
-  | "slideUp"
-  | "slideDown"
-  // Circle group
-  | "circleOpen"
-  | "circleClose"
-  // Zoom group
-  | "zoomIn"
-  | "zoomOut"
-  // Blur group
-  | "blurDissolve"
-  // Glitch group
-  | "glitch"
-  // Whip group
-  | "whipPan";
+/** Simple fade-family transitions between adjacent clips. */
+export type TransitionType = "none" | "dissolve" | "fade" | "fadeWhite";
 
 export interface ClipTransition {
   type: TransitionType;
@@ -55,17 +29,7 @@ export const DEFAULT_CLIP_TRANSITION: ClipTransition = {
   durationTicks: 600_000,
 };
 
-/** Coarse preview/export family a transition belongs to. */
-export type TransitionGroup =
-  | "cut"
-  | "fade"
-  | "wipe"
-  | "slide"
-  | "circle"
-  | "zoom"
-  | "blur"
-  | "glitch"
-  | "whip";
+export type TransitionGroup = "cut" | "fade";
 
 export interface TransitionDef {
   type: TransitionType;
@@ -81,21 +45,6 @@ export const TRANSITION_DEFS: TransitionDef[] = [
   { type: "dissolve", label: "Dissolve", hint: "Crossfade", group: "fade", xfade: "fade" },
   { type: "fade", label: "Fade", hint: "Through black", group: "fade", xfade: "fadeblack" },
   { type: "fadeWhite", label: "Fade trắng", hint: "Through white", group: "fade", xfade: "fadewhite" },
-  { type: "wipeLeft", label: "Wipe ←", hint: "Wipe to the left", group: "wipe", xfade: "wipeleft" },
-  { type: "wipeRight", label: "Wipe →", hint: "Wipe to the right", group: "wipe", xfade: "wiperight" },
-  { type: "wipeUp", label: "Wipe ↑", hint: "Wipe upward", group: "wipe", xfade: "wipeup" },
-  { type: "wipeDown", label: "Wipe ↓", hint: "Wipe downward", group: "wipe", xfade: "wipedown" },
-  { type: "slideLeft", label: "Trượt ←", hint: "Slide in from the right", group: "slide", xfade: "slideleft" },
-  { type: "slideRight", label: "Trượt →", hint: "Slide in from the left", group: "slide", xfade: "slideright" },
-  { type: "slideUp", label: "Trượt ↑", hint: "Slide up", group: "slide", xfade: "slideup" },
-  { type: "slideDown", label: "Trượt ↓", hint: "Slide down", group: "slide", xfade: "slidedown" },
-  { type: "circleOpen", label: "Mở vòng", hint: "Circle opens", group: "circle", xfade: "circleopen" },
-  { type: "circleClose", label: "Đóng vòng", hint: "Circle closes", group: "circle", xfade: "circleclose" },
-  { type: "zoomIn", label: "Zoom vào", hint: "Zoom in", group: "zoom", xfade: "zoomin" },
-  { type: "zoomOut", label: "Zoom ra", hint: "Zoom out", group: "zoom", xfade: "smoothright" },
-  { type: "blurDissolve", label: "Mờ dần", hint: "Dissolve with blur", group: "blur", xfade: "hblur" },
-  { type: "glitch", label: "Nhiễu", hint: "Glitch", group: "glitch", xfade: "pixelize" },
-  { type: "whipPan", label: "Vung tay", hint: "Whip pan", group: "whip", xfade: "smoothleft" },
 ];
 
 export const TRANSITION_OPTIONS: {
@@ -107,13 +56,6 @@ export const TRANSITION_OPTIONS: {
 export const TRANSITION_GROUPS: { id: TransitionGroup; label: string }[] = [
   { id: "cut", label: "Cắt" },
   { id: "fade", label: "Mờ" },
-  { id: "wipe", label: "Gạt" },
-  { id: "slide", label: "Trượt" },
-  { id: "circle", label: "Vòng" },
-  { id: "zoom", label: "Zoom" },
-  { id: "blur", label: "Mờ nhòe" },
-  { id: "glitch", label: "Nhiễu" },
-  { id: "whip", label: "Vung" },
 ];
 
 export function transitionDef(type: TransitionType): TransitionDef {
@@ -128,7 +70,7 @@ export function normalizeClipTransition(
     typeof input?.durationTicks === "number" && Number.isFinite(input.durationTicks)
       ? Math.min(5_000_000, Math.max(100_000, Math.round(input.durationTicks)))
       : DEFAULT_CLIP_TRANSITION.durationTicks;
-  return { type, durationTicks: type === "none" ? durationTicks : durationTicks };
+  return { type, durationTicks };
 }
 
 function isTransitionType(value: unknown): value is TransitionType {
@@ -215,7 +157,6 @@ export function transitionOpacityPair(
   progress: number,
 ): { prev: number; curr: number } {
   const p = Math.min(1, Math.max(0, progress));
-  const group = transitionDef(type).group;
   switch (type) {
     case "fade":
     case "fadeWhite": {
@@ -229,88 +170,43 @@ export function transitionOpacityPair(
     case "none":
       return { prev: 1, curr: 1 };
     default: {
-      // Every non-fade transition crossfades opacity while its geometry animates.
-      if (group === "slide" || group === "whip") {
-        // Slides keep both layers opaque; the incoming layer slides in on top.
-        return { prev: 1, curr: 1 };
-      }
       const a = easeTransition(p);
       return { prev: 1 - a, curr: a };
     }
   }
 }
 
-/** CSS clip-path for wipe / circle / mask transitions on the incoming clip. */
-export function wipeClipPath(
-  type: TransitionType,
-  progress: number,
-): string | undefined {
-  const p = easeTransition(Math.min(1, Math.max(0, progress)));
-  const pct = (1 - p) * 100;
-  switch (type) {
-    case "wipeLeft":
-      return `inset(0 0 0 ${pct}%)`;
-    case "wipeRight":
-      return `inset(0 ${pct}% 0 0)`;
-    case "wipeUp":
-      return `inset(${pct}% 0 0 0)`;
-    case "wipeDown":
-      return `inset(0 0 ${pct}% 0)`;
-    case "circleOpen":
-      return `circle(${(p * 75).toFixed(1)}% at 50% 50%)`;
-    case "circleClose":
-      return `circle(${(p * 75).toFixed(1)}% at 50% 50%)`;
-    default:
-      return undefined;
-  }
-}
-
-/** CSS transform (relative to the layer's own box) for the incoming clip. */
-export function transitionTransform(type: TransitionType, progress: number): string {
-  const p = easeTransition(Math.min(1, Math.max(0, progress)));
-  const off = (1 - p) * 100;
-  switch (type) {
-    case "slideLeft":
-      // Incoming enters from the right, moving left.
-      return `translateX(${off.toFixed(2)}%)`;
-    case "slideRight":
-      return `translateX(${(-off).toFixed(2)}%)`;
-    case "slideUp":
-      return `translateY(${off.toFixed(2)}%)`;
-    case "slideDown":
-      return `translateY(${(-off).toFixed(2)}%)`;
-    case "zoomIn":
-      return `scale(${(0.5 + 0.5 * p).toFixed(3)})`;
-    case "zoomOut":
-      return `scale(${(1.5 - 0.5 * p).toFixed(3)})`;
-    case "whipPan":
-      return `translateX(${(-off * 1.4).toFixed(2)}%) scale(${(1 + (1 - p) * 0.15).toFixed(3)})`;
-    default:
-      return "";
-  }
-}
-
-/** Combined preview visual for the incoming clip of a transition. */
+/** Preview visual for the incoming clip — opacity only (fade family). */
 export function transitionPreview(
   type: TransitionType,
   progress: number,
-): { opacity: number; transform?: string; clipPath?: string; filter?: string } {
+): { opacity: number } {
   const p = Math.min(1, Math.max(0, progress));
   const { curr } = transitionOpacityPair(type, p);
-  const transform = transitionTransform(type, p);
-  const clipPath = wipeClipPath(type, p);
-  const filter =
-    type === "blurDissolve"
-      ? `blur(${((1 - easeTransition(p)) * 18).toFixed(1)}px)`
-      : type === "glitch"
-        ? `hue-rotate(${Math.round((1 - p) * 40)}deg) contrast(${(1 + (1 - p) * 0.6).toFixed(2)})`
-        : undefined;
-  return {
-    opacity: curr,
-    transform: transform || undefined,
-    clipPath,
-    filter,
-  };
+  return { opacity: curr };
+}
+
+/**
+ * Eased alpha fade-in (matches preview `easeTransition`) over [startSec, startSec+duration].
+ * Stream PTS must start at 0 (`setpts=PTS-STARTPTS`).
+ */
+export function ffmpegSmoothFadeInAlpha(durationSec: number, startSec = 0): string {
+  const d = Math.max(0.05, durationSec);
+  const st = Math.max(0, startSec);
+  const en = st + d;
+  const p = clampedProgress("T", st, d);
+  const a = `if(lt(T\\,${st.toFixed(3)})\\,0\\,if(gte(T\\,${en.toFixed(3)})\\,255\\,255*${eased01(p)}))`;
+  return geqRgbAlpha(a);
+}
+
+/** Eased alpha fade-out starting at `startSec` for `durationSec`. */
+export function ffmpegSmoothFadeOutAlpha(startSec: number, durationSec: number): string {
+  const d = Math.max(0.05, durationSec);
+  const st = Math.max(0, startSec);
+  const en = st + d;
+  const p = clampedProgress("T", st, d);
+  const a = `if(lt(T\\,${st.toFixed(3)})\\,255\\,if(gte(T\\,${en.toFixed(3)})\\,0\\,255*(1-${eased01(p)})))`;
+  return geqRgbAlpha(a);
 }
 
 /**
@@ -377,79 +273,11 @@ export function mediaSpeedAtTimelineTicks(clip: Clip, playheadTicks: number): nu
 }
 
 /**
- * Pass RGB through; rewrite alpha only.
- * Commas inside expressions must be `\,` or filter_complex splits the graph.
- */
-function geqRgbAlpha(alphaExpr: string): string {
-  return `geq=r='r(X\\,Y)':g='g(X\\,Y)':b='b(X\\,Y)':a='${alphaExpr}'`;
-}
-
-/** Hermite smoothstep in an FFmpeg expression, given a 0..1 progress term `pExpr`. */
-function eased01(pExpr: string): string {
-  return `(${pExpr})*(${pExpr})*(3-2*(${pExpr}))`;
-}
-
-function clampedProgress(tExpr: string, startSec: number, durationSec: number): string {
-  const st = startSec.toFixed(3);
-  const d = durationSec.toFixed(3);
-  return `min(1\\,max(0\\,((${tExpr})-${st})/${d}))`;
-}
-
-/**
- * Eased alpha fade-in (matches preview `easeTransition`) over [startSec, startSec+duration].
- * Stream PTS must start at 0 (`setpts=PTS-STARTPTS`).
- */
-export function ffmpegSmoothFadeInAlpha(durationSec: number, startSec = 0): string {
-  const d = Math.max(0.05, durationSec);
-  const st = Math.max(0, startSec);
-  const en = st + d;
-  const p = clampedProgress("T", st, d);
-  const a = `if(lt(T\\,${st.toFixed(3)})\\,0\\,if(gte(T\\,${en.toFixed(3)})\\,255\\,255*${eased01(p)}))`;
-  return geqRgbAlpha(a);
-}
-
-/** Eased alpha fade-out starting at `startSec` for `durationSec`. */
-export function ffmpegSmoothFadeOutAlpha(startSec: number, durationSec: number): string {
-  const d = Math.max(0.05, durationSec);
-  const st = Math.max(0, startSec);
-  const en = st + d;
-  const p = clampedProgress("T", st, d);
-  const a = `if(lt(T\\,${st.toFixed(3)})\\,255\\,if(gte(T\\,${en.toFixed(3)})\\,0\\,255*(1-${eased01(p)})))`;
-  return geqRgbAlpha(a);
-}
-
-/**
- * Wipe crop+pad matching preview CSS `inset` reveal (transparent outside).
- * Stream time 0..durationSec maps progress 0→1 with the same ease as preview.
- */
-export function ffmpegWipeReveal(
-  type: "wipeLeft" | "wipeRight",
-  durationSec: number,
-  width: number,
-  height: number,
-): string {
-  const d = Math.max(0.05, durationSec);
-  const p = eased01(clampedProgress("T", 0, d));
-  const w = Math.max(2, width);
-  const h = Math.max(2, height);
-  // wipeLeft: inset from left → show right portion growing leftward? Preview uses
-  // inset(0 0 0 (1-p)%) so left is clipped; visible starts at x=(1-p)*W.
-  if (type === "wipeLeft") {
-    return [
-      `crop=w='max(2\\,${w}*${p})':h=${h}:x='${w}-out_w':y=0`,
-      `pad=${w}:${h}:(${w}-ow):0:black@0`,
-    ].join(",");
-  }
-  // wipeRight: inset(0 (1-p)% 0 0) → clip from right; visible is left portion.
-  return [
-    `crop=w='max(2\\,${w}*${p})':h=${h}:x=0:y=0`,
-    `pad=${w}:${h}:0:0:black@0`,
-  ].join(",");
-}
-
-/**
  * Visible if inside nominal range, early half of an incoming transition,
- * or late half while the *next* clip's centered transition is finishing.
+ * or while held as the outgoing side of the *next* clip's centered transition.
+ *
+ * The cut is always `next.startTicks` (diamond), not necessarily this clip's end
+ * — that keeps preview aligned when clips have a small gap/overlap.
  */
 export function clipVisibleWithTransition(
   clip: Clip,
@@ -470,6 +298,43 @@ export function clipVisibleWithTransition(
   if (!next) return false;
   const nextTin = normalizeClipTransition(next.transitionIn);
   if (nextTin.type === "none") return false;
-  const hold = transitionHalfTicks(nextTin);
-  return playheadTicks >= end && playheadTicks <= end + hold;
+  const half = transitionHalfTicks(nextTin);
+  const cut = next.startTicks;
+  // Outgoing hold for the full centered window, but only after this clip ended.
+  return (
+    playheadTicks >= end &&
+    playheadTicks >= cut - half &&
+    playheadTicks <= cut + half
+  );
+}
+
+/** True when playhead is inside any centered transition window on the project. */
+export function playheadInTransitionWindow(
+  project: ProjectDocument,
+  playheadTicks: number,
+): boolean {
+  for (const clip of project.clips) {
+    if (clip.kind !== "media" && clip.kind !== "text") continue;
+    if (incomingTransitionProgress(clip, playheadTicks)) return true;
+  }
+  return false;
+}
+
+/**
+ * Pass RGB through; rewrite alpha only.
+ * Commas inside expressions must be `\,` or filter_complex splits the graph.
+ */
+function geqRgbAlpha(alphaExpr: string): string {
+  return `geq=r='r(X\\,Y)':g='g(X\\,Y)':b='b(X\\,Y)':a='${alphaExpr}'`;
+}
+
+/** Hermite smoothstep in an FFmpeg expression, given a 0..1 progress term `pExpr`. */
+function eased01(pExpr: string): string {
+  return `(${pExpr})*(${pExpr})*(3-2*(${pExpr}))`;
+}
+
+function clampedProgress(tExpr: string, startSec: number, durationSec: number): string {
+  const st = startSec.toFixed(3);
+  const d = durationSec.toFixed(3);
+  return `min(1\\,max(0\\,((${tExpr})-${st})/${d}))`;
 }

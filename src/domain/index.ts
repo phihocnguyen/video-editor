@@ -1,7 +1,6 @@
 export * from "./time";
 export * from "./effects";
 export * from "./transitions";
-export * from "./textAnimation";
 export * from "./speedRamp";
 export * from "./project";
 export * from "./mediaTransform";

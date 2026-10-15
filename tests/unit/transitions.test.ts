@@ -3,10 +3,12 @@ import {
   addMediaClip,
   buildFfmpegArgs,
   buildRenderPlan,
+  clipVisibleWithTransition,
   createEmptyProject,
   DEFAULT_CLIP_EFFECTS,
   incomingTransitionProgress,
   normalizeClipTransition,
+  playheadInTransitionWindow,
   TRANSITION_DEFS,
   transitionDef,
   transitionOpacityPair,
@@ -121,28 +123,69 @@ describe("transitions", () => {
     expect(b.transitionOverlapSec).toBeGreaterThan(0.2);
   });
 
-  it("normalizes every grouped transition type", () => {
+  it("normalizes fade-family transition types", () => {
     for (const def of TRANSITION_DEFS) {
       expect(normalizeClipTransition({ type: def.type }).type).toBe(def.type);
     }
-    // Unique ids, and all non-cut types map to a distinct xfade (except zoomOut/whipPan).
-    expect(new Set(TRANSITION_DEFS.map((d) => d.type)).size).toBe(TRANSITION_DEFS.length);
+    expect(TRANSITION_DEFS).toHaveLength(4);
+    expect(new Set(TRANSITION_DEFS.map((d) => d.type)).size).toBe(4);
     expect(transitionDef("dissolve").xfade).toBe("fade");
-    expect(transitionDef("slideLeft").xfade).toBe("slideleft");
-    expect(transitionDef("circleOpen").xfade).toBe("circleopen");
+    expect(transitionDef("fade").xfade).toBe("fadeblack");
+    expect(transitionDef("fadeWhite").xfade).toBe("fadewhite");
     expect(transitionDef("none").xfade).toBeNull();
+    // Unknown / legacy types collapse to a hard cut.
+    expect(normalizeClipTransition({ type: "wipeLeft" as never }).type).toBe("none");
   });
 
-  it("reports a rich preview visual for slides and masks", () => {
-    const slide = transitionPreview("slideLeft", 0);
-    expect(slide.transform).toContain("translateX");
-    const wipe = transitionPreview("wipeUp", 0);
-    expect(wipe.clipPath).toContain("inset");
-    const blur = transitionPreview("blurDissolve", 0);
-    expect(blur.filter).toContain("blur");
+  it("preview visual is opacity-only", () => {
+    const mid = transitionPreview("dissolve", 0.5);
+    expect(mid.opacity).toBeGreaterThan(0.4);
+    expect(mid.opacity).toBeLessThan(0.6);
+    expect(transitionPreview("fade", 0).opacity).toBe(0);
+    expect(transitionPreview("fade", 1).opacity).toBe(1);
   });
 
-  it("maps the new transitions to xfade names in the export graph", () => {
+  it("hands visibility from clip1 to clip2 across a centered dissolve", () => {
+    let project = createEmptyProject();
+    const mk = (id: string, name: string): MediaAsset => ({
+      id,
+      kind: "video",
+      path: `C:/media/${name}`,
+      name,
+      durationTicks: 3_000_000,
+      width: 1280,
+      height: 720,
+      frameRate: 30,
+      hasAudio: false,
+      missing: false,
+    });
+    project = { ...project, assets: [mk("a1", "a.mp4"), mk("a2", "b.mp4")] };
+    project = addMediaClip(project, "a1", { startTicks: 0 });
+    project = addMediaClip(project, "a2", { startTicks: 3_000_000 });
+    const first = project.clips.find((c) => c.assetId === "a1")!;
+    const second = project.clips.find((c) => c.assetId === "a2")!;
+    project = updateClipTransition(project, second.id, {
+      type: "dissolve",
+      durationTicks: 600_000,
+    });
+
+    // Before window — only clip 1.
+    expect(clipVisibleWithTransition(first, 2_500_000, project)).toBe(true);
+    expect(clipVisibleWithTransition(second, 2_500_000, project)).toBe(false);
+    expect(playheadInTransitionWindow(project, 2_500_000)).toBe(false);
+
+    // Mid-transition — both visible, cut-centered.
+    expect(clipVisibleWithTransition(first, 3_000_000, project)).toBe(true);
+    expect(clipVisibleWithTransition(second, 3_000_000, project)).toBe(true);
+    expect(playheadInTransitionWindow(project, 3_000_000)).toBe(true);
+
+    // After window — only clip 2 (this was the stuck-on-clip-1 bug).
+    expect(clipVisibleWithTransition(first, 3_400_000, project)).toBe(false);
+    expect(clipVisibleWithTransition(second, 3_400_000, project)).toBe(true);
+    expect(playheadInTransitionWindow(project, 3_400_000)).toBe(false);
+  });
+
+  it("maps fade transitions to xfade names in the export graph", () => {
     let project = createEmptyProject();
     const mk = (id: string, name: string): MediaAsset => ({
       id,
@@ -161,12 +204,12 @@ describe("transitions", () => {
     project = addMediaClip(project, "a2", { startTicks: 3_000_000 });
     const second = project.clips.find((c) => c.assetId === "a2")!;
     project = updateClipTransition(project, second.id, {
-      type: "circleOpen",
+      type: "fade",
       durationTicks: 600_000,
     });
     const plan = buildRenderPlan(project, "720", "draft");
     const built = buildFfmpegArgs(plan, "C:/out/x.mp4", { fileExists: () => true });
     const filter = built.args[built.args.indexOf("-filter_complex") + 1];
-    expect(filter).toContain("xfade=transition=circleopen");
+    expect(filter).toContain("xfade=transition=fadeblack");
   });
 });

@@ -1,12 +1,9 @@
 /**
- * Grouped, illustrated effect browser — the CapCut-style card grid.
- *
- * Renders category sub-tabs plus a grid of cards, each showing an
- * `EffectThumb` (animated mini-preview) with its label underneath.
+ * Grouped effect browser for simple fade transitions.
  */
 
 import { useMemo, useState } from "react";
-import type { TextAnimId, TransitionType } from "../../domain";
+import type { TransitionType } from "../../domain";
 import { EffectThumb } from "./EffectThumb";
 import styles from "./PresetGrid.module.css";
 
@@ -22,9 +19,7 @@ interface PresetGridProps {
   groups: { id: string; label: string }[];
   /** Currently-selected preset id. */
   value: string;
-  media: "text" | "video";
   onSelect: (id: string) => void;
-  /** Optional note shown under the grid (e.g. export approximation warning). */
   footnote?: string;
 }
 
@@ -32,7 +27,6 @@ export function PresetGrid({
   items,
   groups,
   value,
-  media,
   onSelect,
   footnote,
 }: PresetGridProps) {
@@ -74,13 +68,7 @@ export function PresetGrid({
               title={item.hint}
               onClick={() => onSelect(item.id)}
             >
-              <EffectThumb
-                media={media}
-                textAnim={media === "text" ? (item.id as TextAnimId) : undefined}
-                transition={
-                  media === "video" ? (item.id as TransitionType) : undefined
-                }
-              />
+              <EffectThumb transition={item.id as TransitionType} />
               <span className={styles.cardLabel}>{item.label}</span>
             </button>
           );

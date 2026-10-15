@@ -237,7 +237,6 @@ export function ClipProps({ clip }: ClipPropsProps) {
             items={TRANSITION_ITEMS}
             groups={TRANSITION_GROUPS}
             value={transition.type}
-            media="video"
             onSelect={(id) => {
               if (!canTransition && id !== "none") return;
               commitProjectChange((p) =>

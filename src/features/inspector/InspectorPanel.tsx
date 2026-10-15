@@ -2,17 +2,11 @@ import { useMemo, useState } from "react";
 import {
   addTextClip,
   createDefaultTextStyle,
-  normalizeTextAnimation,
-  TEXT_ANIM_GROUPS,
-  TEXT_ANIM_PRESETS,
   updateCanvas,
-  updateClipAnimation,
   updateClipText,
   updateClipTransform,
-  type TextAnimId,
   type TextStyle,
 } from "../../domain";
-import { PresetGrid, type PresetItem } from "../effects/PresetGrid";
 import {
   listFontOptions,
   pickBrowserFontFile,
@@ -25,13 +19,6 @@ import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { ClipProps } from "./ClipProps";
 import styles from "./InspectorPanel.module.css";
-
-const TEXT_ANIM_ITEMS: PresetItem[] = TEXT_ANIM_PRESETS.map((p) => ({
-  id: p.id,
-  label: p.label,
-  hint: p.hint,
-  group: p.group,
-}));
 
 const CANVAS_PRESETS: { label: string; width: number; height: number; fps: number }[] = [
   { label: "16:9 · 1920×1080", width: 1920, height: 1080, fps: 30 },
@@ -205,7 +192,6 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
   }
 
   const text = selectedTextClip?.text ?? createDefaultTextStyle();
-  const animation = normalizeTextAnimation(selectedTextClip?.animation);
 
   function applyText(next: TextStyle) {
     if (!selectedTextClip) return;
@@ -392,63 +378,6 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
             </div>
           </div>
 
-          <div className={styles.section}>
-            <div className={styles.blockHead}>
-              <label className={styles.label}>In animation</label>
-            </div>
-            <PresetGrid
-              items={TEXT_ANIM_ITEMS}
-              groups={TEXT_ANIM_GROUPS}
-              value={animation.in}
-              media="text"
-              onSelect={(id) =>
-                commitProjectChange((project) =>
-                  updateClipAnimation(project, selectedTextClip.id, {
-                    in: id as TextAnimId,
-                  }),
-                )
-              }
-            />
-            <div className={styles.blockHead}>
-              <label className={styles.label}>Out animation</label>
-            </div>
-            <PresetGrid
-              items={TEXT_ANIM_ITEMS}
-              groups={TEXT_ANIM_GROUPS}
-              value={animation.out}
-              media="text"
-              onSelect={(id) =>
-                commitProjectChange((project) =>
-                  updateClipAnimation(project, selectedTextClip.id, {
-                    out: id as TextAnimId,
-                  }),
-                )
-              }
-              footnote="Một số hiệu ứng dùng mặt nạ (wipe/cắt dán) chỉ được mô phỏng gần đúng khi export."
-            />
-            <label className={styles.sliderField}>
-              <div className={styles.sliderHead}>
-                <span>Duration</span>
-                <span className={styles.sliderValue}>
-                  {(animation.durationTicks / 1_000_000).toFixed(2)}s
-                </span>
-              </div>
-              <input
-                type="range"
-                min={0.1}
-                max={2}
-                step={0.05}
-                value={animation.durationTicks / 1_000_000}
-                onChange={(e) =>
-                  commitProjectChange((project) =>
-                    updateClipAnimation(project, selectedTextClip.id, {
-                      durationTicks: Math.round(Number(e.target.value) * 1_000_000),
-                    }),
-                  )
-                }
-              />
-            </label>
-          </div>
         </>
       )}
     </div>
