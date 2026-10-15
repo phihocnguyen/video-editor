@@ -334,7 +334,8 @@ fn clamp_ramp_speed(v: f64) -> f64 {
     if !v.is_finite() {
         1.0
     } else {
-        v.clamp(0.1, 8.0)
+        // Match TS MAX_RAMP_SPEED (Premiere-like ceiling).
+        v.clamp(0.1, 3.0)
     }
 }
 
@@ -349,58 +350,31 @@ struct HermiteSegment {
     d: f64,
 }
 
-fn mono_tangents(xs: &[f64], ys: &[f64]) -> Vec<f64> {
-    let n = xs.len();
-    let mut slopes = Vec::with_capacity(n - 1);
-    for i in 0..n - 1 {
-        slopes.push((ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]));
+/// Smoothstep between two speeds (Hermite m0=m1=0): t'=t²(3−2t), v=v0+(v1−v0)t'.
+fn ease_segment(x0: f64, y0: f64, x1: f64, y1: f64) -> HermiteSegment {
+    let width = (x1 - x0).max(1e-9);
+    let v0 = clamp_ramp_speed(y0);
+    let v1 = clamp_ramp_speed(y1);
+    HermiteSegment {
+        x0,
+        x1,
+        width,
+        a: 2.0 * v0 - 2.0 * v1,
+        b: -3.0 * v0 + 3.0 * v1,
+        c: 0.0,
+        d: v0,
     }
-    let mut m = vec![0.0; n];
-    m[0] = slopes[0];
-    m[n - 1] = slopes[n - 2];
-    for i in 1..n - 1 {
-        m[i] = (slopes[i - 1] + slopes[i]) / 2.0;
-    }
-    for i in 0..n - 1 {
-        let d = slopes[i];
-        if d == 0.0 {
-            m[i] = 0.0;
-            m[i + 1] = 0.0;
-            continue;
-        }
-        let a = m[i] / d;
-        let b = m[i + 1] / d;
-        let s = a * a + b * b;
-        if s > 9.0 {
-            let tau = 3.0 / s.sqrt();
-            m[i] = tau * a * d;
-            m[i + 1] = tau * b * d;
-        }
-    }
-    m
 }
 
 fn build_hermite(points: &[(f64, f64)]) -> Vec<HermiteSegment> {
-    let xs: Vec<f64> = points.iter().map(|p| p.0).collect();
-    let ys: Vec<f64> = points.iter().map(|p| p.1).collect();
-    let m = mono_tangents(&xs, &ys);
     let mut segments = Vec::with_capacity(points.len().saturating_sub(1));
-    for i in 0..points.len() - 1 {
-        let x0 = xs[i];
-        let x1 = xs[i + 1];
-        let width = (x1 - x0).max(1e-9);
-        let h = width;
-        let y0 = ys[i];
-        let y1 = ys[i + 1];
-        segments.push(HermiteSegment {
-            x0,
-            x1,
-            width,
-            a: 2.0 * y0 - 2.0 * y1 + h * (m[i] + m[i + 1]),
-            b: -3.0 * y0 + 3.0 * y1 - h * (2.0 * m[i] + m[i + 1]),
-            c: h * m[i],
-            d: y0,
-        });
+    for i in 0..points.len().saturating_sub(1) {
+        segments.push(ease_segment(
+            points[i].0,
+            points[i].1,
+            points[i + 1].0,
+            points[i + 1].1,
+        ));
     }
     segments
 }
@@ -444,10 +418,8 @@ fn integrate_hermite(seg: &HermiteSegment, t: f64) -> f64 {
 }
 
 struct RampProfile {
-    user: Vec<HermiteSegment>,
+    segments: Vec<HermiteSegment>,
     cumulative: Vec<f64>,
-    lo: f64,
-    hi: f64,
 }
 
 impl RampProfile {
@@ -457,11 +429,11 @@ impl RampProfile {
 
     fn speed_at_progress(&self, progress: f64) -> f64 {
         let p = progress.clamp(0.0, 1.0);
-        if p < self.lo || p > self.hi {
+        if self.segments.is_empty() {
             return 1.0;
         }
-        let last = self.user.len() - 1;
-        for (i, seg) in self.user.iter().enumerate() {
+        let last = self.segments.len() - 1;
+        for (i, seg) in self.segments.iter().enumerate() {
             if p <= seg.x1 || i == last {
                 let t = ((p - seg.x0) / seg.width).clamp(0.0, 1.0);
                 return eval_hermite(seg, t);
@@ -503,20 +475,14 @@ fn ramp_profile(ramp: &SpeedRamp) -> Option<RampProfile> {
     }
     let lo = spaced[0].0;
     let hi = spaced[spaced.len() - 1].0;
-    let user = build_hermite(&spaced);
+    let lead_speed = spaced[0].1;
+    let trail_speed = spaced[spaced.len() - 1].1;
     let mut segments: Vec<HermiteSegment> = Vec::new();
+    // Ease from default 1× into the first anchor (not a hard step at `lo`).
     if lo > 0.0 {
-        segments.push(HermiteSegment {
-            x0: 0.0,
-            x1: lo,
-            width: (lo - 0.0).max(1e-9),
-            a: 0.0,
-            b: 0.0,
-            c: 0.0,
-            d: 1.0,
-        });
+        segments.push(ease_segment(0.0, 1.0, lo, lead_speed));
     }
-    segments.extend(user.clone());
+    segments.extend(build_hermite(&spaced));
     if hi < 1.0 {
         segments.push(HermiteSegment {
             x0: hi,
@@ -525,7 +491,7 @@ fn ramp_profile(ramp: &SpeedRamp) -> Option<RampProfile> {
             a: 0.0,
             b: 0.0,
             c: 0.0,
-            d: 1.0,
+            d: trail_speed,
         });
     }
     let mut cumulative = vec![0.0];
@@ -534,10 +500,8 @@ fn ramp_profile(ramp: &SpeedRamp) -> Option<RampProfile> {
         cumulative.push(prev + seg.width * integrate_hermite(seg, 1.0));
     }
     Some(RampProfile {
-        user,
+        segments,
         cumulative,
-        lo,
-        hi,
     })
 }
 

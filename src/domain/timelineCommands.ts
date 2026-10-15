@@ -477,7 +477,7 @@ export function applySpeedToRange(
   if (!(speed > 0) || !Number.isFinite(speed)) {
     throw new Error("Speed must be a positive number");
   }
-  const clampedSpeed = Math.min(8, Math.max(0.1, speed));
+  const clampedSpeed = clampRampSpeed(speed);
 
   const clip = project.clips.find((c) => c.id === clipId);
   if (!clip) throw new Error("Unknown clipId");
@@ -836,7 +836,7 @@ export function updateClipSpeed(
     if (clip.kind === "text") throw new Error("Text clips do not support speed");
     // A constant speed supersedes (and clears) any ramp so the change is visible.
     const { speedRamp: _dropped, ...rest } = clip;
-    return { ...(rest as Clip), speed: Math.min(8, Math.max(0.1, speed)) };
+    return { ...(rest as Clip), speed: clampRampSpeed(speed) };
   });
 }
 
@@ -1095,8 +1095,8 @@ export function setClipRamp(
 }
 
 /**
- * Seed a brand-new ramp with two anchors centered on the playhead.
- * Both points are freely draggable; the curve exists only between them.
+ * Seed a new ramp with two anchors around the playhead (minimum for a curve).
+ * Speeds default to 1× → 2× so the ramp is visible immediately.
  */
 export function enableSpeedRamp(
   project: ProjectDocument,
@@ -1112,7 +1112,6 @@ export function enableSpeedRamp(
   const duration = clipDurationTicks(clip);
   const local = Math.min(duration, Math.max(0, playheadTicks - clip.startTicks));
   const progress = local / Math.max(1, duration);
-  // ~16% window around the playhead so the curve is visibly "at" the playhead.
   const half = 0.08;
   let lo = progress - half;
   let hi = progress + half;
@@ -1134,14 +1133,14 @@ export function enableSpeedRamp(
 }
 
 /**
- * Create a ramp anchor at the playhead. If the clip has no ramp yet, seeds a
- * 2-point ramp around the playhead first.
+ * Add exactly one ramp anchor at the playhead.
+ * If the clip has no ramp yet, seeds the minimum 2-point ramp (a curve needs two).
  */
 export function addRampPointAtPlayhead(
   project: ProjectDocument,
   clipId: string,
   playheadTicks: Tick,
-  speed = 1,
+  speed?: number,
 ): { project: ProjectDocument; pointId: string } {
   const clip = project.clips.find((c) => c.id === clipId);
   if (!clip) throw new Error("Unknown clipId");
@@ -1153,25 +1152,39 @@ export function addRampPointAtPlayhead(
 
   const existing = normalizeSpeedRamp(clip.speedRamp);
   if (!existing) {
-    // Brand-new: two points spanning a window around the playhead.
-    const lo = Math.max(0.02, Math.min(0.7, progress - 0.15));
-    const hi = Math.min(0.98, Math.max(lo + 0.2, progress + 0.15));
-    const a = createSpeedPoint(lo, 1);
-    const b = createSpeedPoint(hi, speed);
-    const next = normalizeSpeedRamp([a, b])!;
+    // First time: need two anchors to form a curve — not four.
+    const seeded = enableSpeedRamp(
+      project,
+      clipId,
+      playheadTicks,
+      1,
+      speed !== undefined ? clampRampSpeed(speed) : 2,
+    );
+    const ramp = normalizeSpeedRamp(
+      seeded.clips.find((c) => c.id === clipId)?.speedRamp,
+    )!;
     return {
-      project: mapClip(project, clipId, (c) => ({ ...c, speedRamp: next })),
-      pointId: b.id,
+      project: seeded,
+      pointId: ramp.points[ramp.points.length - 1]!.id,
     };
   }
 
-  // Keep new points strictly between existing first/last (curve region).
-  const lo = existing.points[0].atProgress + MIN_RAMP_POINT_GAP;
-  const hi = existing.points[existing.points.length - 1].atProgress - MIN_RAMP_POINT_GAP;
-  if (hi <= lo) throw new Error("Not enough space for another ramp point");
-  progress = Math.min(hi, Math.max(lo, progress));
-  const point = createSpeedPoint(progress, speed);
-  const next = normalizeSpeedRamp([...existing.points, point])!;
+  const profile = getRampProfile(existing);
+  const atSpeed =
+    speed !== undefined
+      ? clampRampSpeed(speed)
+      : (profile?.speedAtProgress(progress) ?? 1);
+
+  progress = Math.min(1 - MIN_RAMP_POINT_GAP, Math.max(MIN_RAMP_POINT_GAP, progress));
+  for (const p of existing.points) {
+    if (Math.abs(p.atProgress - progress) < MIN_RAMP_POINT_GAP) {
+      throw new Error("Playhead too close to an existing ramp point");
+    }
+  }
+
+  const point = createSpeedPoint(progress, atSpeed);
+  const next = normalizeSpeedRamp([...existing.points, point]);
+  if (!next) throw new Error("Not enough space for another ramp point");
   return {
     project: mapClip(project, clipId, (c) => ({ ...c, speedRamp: next })),
     pointId: point.id,
@@ -1266,11 +1279,12 @@ export function updateRampPoint(
 
 /**
  * Restore a clip's timeline duration after a ramp edit by trimming /
- * extending `sourceOutTicks` (the timeline start stays anchored, so the
- * track never stretches while dragging — Premiere-style).
+ * extending `sourceOutTicks` (timeline start stays anchored — clip width
+ * on the track does not grow/shrink while shaping the curve).
  *
  * Extension is capped at the asset's media end when known; hitting the cap
- * lets the duration change (unavoidable: no more source to consume).
+ * lets the duration change only if the caller does not constrain further
+ * (see `updateRampPointLocked`).
  * No-op for text clips, unknown clips, or when already within a tick.
  */
 export function relockClipDuration(
@@ -1307,13 +1321,12 @@ export function relockClipDuration(
 }
 
 /**
- * Drag-style ramp edit that NEVER changes the timeline duration (Premiere
- * behavior): the patch is applied, then the duration is relocked. When the
- * relock would hit the media end, the patch is pulled back (bisection
- * between the current point state and the desired patch) until it fits, so
- * the point feels "blocked" at the wall instead of stretching the track.
+ * Drag-style ramp edit that never changes timeline duration: apply patch,
+ * then relock. If media end blocks the relock, bisect the patch back so the
+ * point stops at the wall instead of stretching the clip.
  *
- * Returns the project plus whether the patch had to be constrained.
+ * (Premiere Time Remapping usually *does* grow/shrink the clip; we lock
+ * width like CapCut so neighboring clips stay put.)
  */
 export function updateRampPointLocked(
   project: ProjectDocument,

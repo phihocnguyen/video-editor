@@ -1,26 +1,28 @@
 /**
  * Speed ramp domain math.
  *
- * A ramp is a curve mapping *source* progress s ∈ [0, 1] (across a clip's
- * sourceIn..sourceOut range) to a playback speed v(s) > 0. It is modelled as a
- * monotone cubic (Fritsch–Carlson) Hermite spline through a small set of anchor
- * points, which keeps the curve smooth without overshooting into negative or
- * non-monotone speeds.
+ * A ramp maps *source* progress s ∈ [0, 1] (sourceIn..sourceOut) to playback
+ * speed v(s) > 0. Between anchors we use Premiere-style smoothstep Hermite
+ * (zero end-tangents / auto-Bezier ease):
+ *
+ *     t' = t² (3 − 2t)
+ *     v(t) = v₀ + (v₁ − v₀) t'
+ *
+ * so each ramp starts and ends flat (no corner jerk). Before the first anchor
+ * we ease from default 1×; after the last we hold its speed.
  *
  * Timeline duration of a ramped clip is
  *
  *     T = span · ∫₀¹ ds / v(s)          (span = sourceOut − sourceIn, in ticks)
  *
- * so a slower segment lengthens the clip and a faster one shortens it. Both the
- * integral and its inverse (needed to map timeline → source for preview/seek and
- * for exporting a `setpts` expression) are computed here so preview and FFmpeg
- * stay in lockstep.
+ * Integral + inverse keep preview and FFmpeg `setpts` in lockstep.
  */
 
 import type { Tick } from "./time";
 
 export const MIN_RAMP_SPEED = 0.1;
-export const MAX_RAMP_SPEED = 8;
+/** Premiere-like ceiling — 8× was too extreme for editing. */
+export const MAX_RAMP_SPEED = 3;
 
 export interface SpeedPoint {
   id: string;
@@ -55,8 +57,9 @@ const MIN_POINT_GAP = 0.005;
 
 /**
  * Sort, clamp, and de-duplicate anchors. Does **not** invent clip-edge
- * endpoints — the curve lives only between the first and last user point;
- * outside that range speed is treated as 1× (see RampProfile).
+ * endpoints — user anchors live between the first and last point. Playback
+ * eases from 1× at progress 0 into the first anchor (Premiere-style), then
+ * holds the last anchor’s speed after the final point (see RampProfile).
  * Returns null with fewer than 2 anchors (need a segment to form a curve).
  */
 export function normalizeSpeedRamp(
@@ -88,10 +91,36 @@ export function normalizeSpeedRamp(
   return { points: spaced };
 }
 
-/** Constant-speed Hermite segment (flat 1× pads before/after the user curve). */
+/** Constant-speed Hermite segment (flat hold after the last user anchor). */
 function constantSegment(x0: number, x1: number, speed: number): HermiteSegment {
   const width = Math.max(1e-9, x1 - x0);
   return { x0, x1, width, a: 0, b: 0, c: 0, d: clampRampSpeed(speed) };
+}
+
+/**
+ * Smoothstep between two speeds (cubic Hermite with m₀ = m₁ = 0):
+ *   t' = t²(3−2t),  v = v₀ + (v₁−v₀)t'
+ * Same S-curve Premiere gets from auto-Bezier handles on a speed transition.
+ */
+function easeSegment(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+): HermiteSegment {
+  const width = Math.max(1e-9, x1 - x0);
+  const v0 = clampRampSpeed(y0);
+  const v1 = clampRampSpeed(y1);
+  // Power form of v₀ + (v₁−v₀)·t²(3−2t).
+  return {
+    x0,
+    x1,
+    width,
+    a: 2 * v0 - 2 * v1,
+    b: -3 * v0 + 3 * v1,
+    c: 0,
+    d: v0,
+  };
 }
 
 /** True when every anchor sits at speed ≈ 1 (i.e. the ramp is a no-op). */
@@ -118,61 +147,18 @@ interface HermiteSegment {
   d: number;
 }
 
-/**
- * Fritsch–Carlson monotone tangents. Prevents the cubic from overshooting, which
- * would otherwise produce impossible speeds (negative, or a local bump between
- * two anchors that were meant to be monotone).
- */
-function monoTangents(xs: number[], ys: number[]): number[] {
-  const n = xs.length;
-  const slopes: number[] = [];
-  for (let i = 0; i < n - 1; i += 1) {
-    slopes.push((ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]));
-  }
-  const m: number[] = new Array(n).fill(0);
-  m[0] = slopes[0];
-  m[n - 1] = slopes[n - 2];
-  for (let i = 1; i < n - 1; i += 1) m[i] = (slopes[i - 1] + slopes[i]) / 2;
-
-  for (let i = 0; i < n - 1; i += 1) {
-    const d = slopes[i];
-    if (d === 0) {
-      m[i] = 0;
-      m[i + 1] = 0;
-      continue;
-    }
-    const a = m[i] / d;
-    const b = m[i + 1] / d;
-    const s = a * a + b * b;
-    if (s > 9) {
-      const tau = 3 / Math.sqrt(s);
-      m[i] = tau * a * d;
-      m[i + 1] = tau * b * d;
-    }
-  }
-  return m;
-}
-
 function buildSegments(ramp: SpeedRamp): HermiteSegment[] {
   const pts = ramp.points;
-  const xs = pts.map((p) => p.atProgress);
-  const ys = pts.map((p) => p.speed);
-  const m = monoTangents(xs, ys);
-
   const segments: HermiteSegment[] = [];
   for (let i = 0; i < pts.length - 1; i += 1) {
-    const x0 = xs[i];
-    const x1 = xs[i + 1];
-    const width = Math.max(1e-9, x1 - x0);
-    const h = width;
-    const y0 = ys[i];
-    const y1 = ys[i + 1];
-    // Hermite basis expanded to power form.
-    const a = 2 * y0 - 2 * y1 + h * (m[i] + m[i + 1]);
-    const b = -3 * y0 + 3 * y1 - h * (2 * m[i] + m[i + 1]);
-    const c = h * m[i];
-    const d = y0;
-    segments.push({ x0, x1, width, a, b, c, d });
+    segments.push(
+      easeSegment(
+        pts[i].atProgress,
+        pts[i].speed,
+        pts[i + 1].atProgress,
+        pts[i + 1].speed,
+      ),
+    );
   }
   return segments;
 }
@@ -213,25 +199,22 @@ function integrateSegment(seg: HermiteSegment, t: number): number {
 
 export class RampProfile {
   readonly ramp: SpeedRamp;
-  /** Full [0,1] coverage: 1× pads + user Hermite (for integrals). */
+  /** Full [0,1] coverage: ease-in from 1× + user Hermite + trail hold. */
   private readonly segments: HermiteSegment[];
-  /** User curve only — used by speedAtProgress so edge pts aren't stolen by pads. */
-  private readonly userSegments: HermiteSegment[];
-  private readonly lo: number;
-  private readonly hi: number;
   /** Cumulative ∫₀^x ds/v(s) at each segment boundary (covers full [0,1]). */
   private readonly cumulative: number[];
 
   constructor(ramp: SpeedRamp) {
     this.ramp = ramp;
-    this.lo = ramp.points[0].atProgress;
-    this.hi = ramp.points[ramp.points.length - 1].atProgress;
-    this.userSegments = buildSegments(ramp);
-    // Outside the user anchors: hold 1× so the visible curve is only between points.
+    const lo = ramp.points[0].atProgress;
+    const hi = ramp.points[ramp.points.length - 1].atProgress;
+    const leadSpeed = clampRampSpeed(ramp.points[0].speed);
+    const trailSpeed = clampRampSpeed(ramp.points[ramp.points.length - 1].speed);
     const segments: HermiteSegment[] = [];
-    if (this.lo > 0) segments.push(constantSegment(0, this.lo, 1));
-    segments.push(...this.userSegments);
-    if (this.hi < 1) segments.push(constantSegment(this.hi, 1, 1));
+    // Premiere: before the first keyframe, ease from default 1× — not a hard step.
+    if (lo > 0) segments.push(easeSegment(0, 1, lo, leadSpeed));
+    segments.push(...buildSegments(ramp));
+    if (hi < 1) segments.push(constantSegment(hi, 1, trailSpeed));
     this.segments = segments;
     this.cumulative = [0];
     for (const seg of this.segments) {
@@ -252,10 +235,9 @@ export class RampProfile {
 
   speedAtProgress(progress: number): number {
     const p = Math.min(1, Math.max(0, progress));
-    if (p < this.lo || p > this.hi) return 1;
-    const last = this.userSegments.length - 1;
-    for (let i = 0; i < this.userSegments.length; i += 1) {
-      const seg = this.userSegments[i];
+    const last = this.segments.length - 1;
+    for (let i = 0; i < this.segments.length; i += 1) {
+      const seg = this.segments[i];
       if (p <= seg.x1 || i === last) {
         const t = (p - seg.x0) / seg.width;
         return evalSegment(seg, Math.min(1, Math.max(0, t)));

@@ -19,7 +19,6 @@ import {
   clipShortLabel,
   deleteClips,
   enableSpeedRamp,
-  getRampProfile,
   hasActiveRamp,
   hasEffectKeyframes,
   moveClip,
@@ -30,6 +29,7 @@ import {
   normalizeEffectKeyframes,
   projectDurationTicks,
   pruneEmptyTrack,
+  relockClipDuration,
   removeTrack,
   setClipRamp,
   snapTicks,
@@ -1393,21 +1393,24 @@ export function TimelinePanel() {
                   const clip = p.clips.find((c) => c.id === id);
                   const already = hasActiveRamp(clip?.speedRamp);
                   // First time: 2 points centered on playhead. Otherwise clear.
-                  // Free duration: the clip stretches/shrinks with speed.
+                  // Duration stays put (source range absorbs it, Premiere-style).
                   if (already) return setClipRamp(p, id, null);
                   added = true;
                   if (!clip) throw new Error("Unknown clipId");
-                  return enableSpeedRamp(
-                    p,
+                  const locked = clipDurationTicks(clip);
+                  return relockClipDuration(
+                    enableSpeedRamp(
+                      p,
+                      id,
+                      useEditorUiStore.getState().playheadTicks,
+                    ),
                     id,
-                    useEditorUiStore.getState().playheadTicks,
-                    1,
-                    2,
+                    locked,
                   );
                 });
                 setStatusMessage(
                   added
-                    ? "Speed ramp at playhead — drag points vertically for speed, horizontally for timing"
+                    ? "Speed ramp at playhead — drag points for speed and timing"
                     : "Speed ramp removed",
                 );
               } catch (error) {
@@ -1431,15 +1434,16 @@ export function TimelinePanel() {
                 commitProjectChange((p) => {
                   const clip = p.clips.find((c) => c.id === id);
                   if (!clip) throw new Error("Unknown clipId");
-                  return addRampPointAtPlayhead(
-                    p,
+                  const locked = clipDurationTicks(clip);
+                  return relockClipDuration(
+                    addRampPointAtPlayhead(
+                      p,
+                      id,
+                      useEditorUiStore.getState().playheadTicks,
+                    ).project,
                     id,
-                    useEditorUiStore.getState().playheadTicks,
-                    getRampProfile(
-                      useProjectStore.getState().project.clips.find((c) => c.id === id)
-                        ?.speedRamp,
-                    )?.speedAtProgress(0.5) ?? 1,
-                  ).project;
+                    locked,
+                  );
                 });
                 setStatusMessage("Ramp point added — drag vertically to change speed");
               } catch (error) {

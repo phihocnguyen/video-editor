@@ -1,24 +1,23 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   MAX_RAMP_SPEED,
   MIN_RAMP_SPEED,
-  createSpeedPoint,
+  clampRampSpeed,
   getRampProfile,
-  rampSpeedRangeLabel,
   type SpeedPoint,
 } from "../../domain/speedRamp";
-import { clampRampSpeed } from "../../domain/speedRamp";
 import type { Clip, ProjectDocument } from "../../domain/project";
-import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
-import { useEditorUiStore } from "../../stores/editorUiStore";
-import { useProjectStore } from "../../stores/projectStore";
 import {
-  addRampPointAtPlayhead,
+  clipDurationTicks,
   removeRampPoint,
-  setClipRamp,
-  updateRampPoint,
+  relockClipDuration,
+  updateRampPointLocked,
 } from "../../domain/timelineCommands";
-import { PlusIcon, RampIcon, TrashIcon } from "../../components/icons";
+import type { Tick } from "../../domain/time";
+import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
+import { useProjectStore } from "../../stores/projectStore";
+import { TrashIcon } from "../../components/icons";
 import styles from "./RampEditor.module.css";
 
 interface RampEditorProps {
@@ -31,25 +30,34 @@ interface RampEditorProps {
 
 const PAD_X = 8;
 const PAD_Y = 6;
+const DRAG_THRESHOLD_PX = 4;
+
+/** Click-menu speeds as % of 1× (slow → fast). */
+const SPEED_PERCENT_OPTIONS = [25, 50, 75, 100, 150, 200, 300] as const;
 
 /**
  * Speed-curve overlay on the selected clip.
  *
- * The curve is drawn only between the first and last ramp point. Outside that
- * range the clip plays at 1× (no curve). Every anchor is freely draggable.
+ * Click a point → pick speed % / delete. Double-click → reset to 1×.
+ * Drag still reshapes the curve; timeline duration stays locked.
  */
 export function RampEditor({ clip, widthPx, heightPx, interactive = true }: RampEditorProps) {
-  const speedRange = useMemo(() => rampSpeedRangeLabel(clip.speedRamp), [clip.speedRamp]);
   const ramp = useMemo(
     () => getRampProfile(clip.speedRamp)?.ramp ?? null,
     [clip.speedRamp],
   );
   const dragRef = useRef<RampGesture | null>(null);
+  const clickTimerRef = useRef<number | null>(null);
+  /** Viewport coords — menu is portaled so clip `overflow:hidden` cannot crop it. */
+  const [menu, setMenu] = useState<{
+    pointId: string;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
 
   const plotW = Math.max(1, widthPx - PAD_X * 2);
   const plotH = Math.max(1, heightPx - PAD_Y * 2);
 
-  // Log-scale speed→y so slow-mo and fast-forward both stay legible.
   const speedToY = (speed: number) => {
     const t =
       (Math.log(clampRampSpeed(speed)) - Math.log(MIN_RAMP_SPEED)) /
@@ -67,12 +75,10 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     if (!ramp || ramp.points.length < 2) return "";
     const profile = getRampProfile(ramp);
     if (!profile) return "";
-    const lo = ramp.points[0].atProgress;
-    const hi = ramp.points[ramp.points.length - 1].atProgress;
-    const samples = 48;
+    const samples = 64;
     let d = "";
     for (let i = 0; i <= samples; i += 1) {
-      const p = lo + (i / samples) * (hi - lo);
+      const p = i / samples;
       const x = PAD_X + p * plotW;
       const y = speedToY(profile.speedAtProgress(p));
       d += `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)} `;
@@ -81,14 +87,39 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ramp, plotW, plotH]);
 
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenu(null);
+    };
+    const onDown = (e: PointerEvent) => {
+      const t = e.target;
+      if (t instanceof Element && t.closest(`.${styles.pointMenu}`)) return;
+      setMenu(null);
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onDown, true);
+    };
+  }, [menu]);
+
+  useEffect(
+    () => () => {
+      if (clickTimerRef.current != null) window.clearTimeout(clickTimerRef.current);
+    },
+    [],
+  );
+
   if (!ramp) return null;
 
   const progressToX = (atProgress: number) => PAD_X + atProgress * plotW;
-  const lo = ramp.points[0].atProgress;
-  const hi = ramp.points[ramp.points.length - 1].atProgress;
+  const menuPoint = menu
+    ? ramp.points.find((p) => p.id === menu.pointId) ?? null
+    : null;
 
-  /** Common speeds the drag snaps to (within 6%) so 0.5×/1×/2× land exactly. */
-  const SNAP_SPEEDS = [0.25, 0.5, 1, 1.5, 2, 4];
+  const SNAP_SPEEDS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3];
 
   function snapSpeed(speed: number): number {
     for (const s of SNAP_SPEEDS) {
@@ -97,67 +128,15 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     return speed;
   }
 
-  function handleAddPoint() {
-    const playhead = useEditorUiStore.getState().playheadTicks;
-    try {
-      commitProjectChange((p) => addRampPointAtPlayhead(p, clip.id, playhead, 1.5).project);
-      useEditorUiStore.getState().setStatusMessage("Ramp point added at playhead");
-    } catch (error) {
-      useEditorUiStore
-        .getState()
-        .setStatusMessage(error instanceof Error ? error.message : "Add point failed");
-    }
-  }
-
-  /** One-tap curves: replace anchors, keep the same source range. Duration follows speed. */
-  function applyPreset(kind: "slow" | "normal" | "fast" | "up" | "down") {
-    try {
-      commitProjectChange((p) => {
-        const cur = p.clips.find((c) => c.id === clip.id);
-        if (!cur) return p;
-        switch (kind) {
-          case "slow":
-            return setClipRamp(p, clip.id, {
-              points: [createSpeedPoint(0, 0.5), createSpeedPoint(1, 0.5)],
-            });
-          case "fast":
-            return setClipRamp(p, clip.id, {
-              points: [createSpeedPoint(0, 2), createSpeedPoint(1, 2)],
-            });
-          case "up":
-            return setClipRamp(p, clip.id, {
-              points: [
-                createSpeedPoint(0, 0.5),
-                createSpeedPoint(0.5, 1),
-                createSpeedPoint(1, 2),
-              ],
-            });
-          case "down":
-            return setClipRamp(p, clip.id, {
-              points: [
-                createSpeedPoint(0, 2),
-                createSpeedPoint(0.5, 1),
-                createSpeedPoint(1, 0.5),
-              ],
-            });
-          default:
-            return setClipRamp(p, clip.id, null);
-        }
-      });
-      useEditorUiStore.getState().setStatusMessage(
-        kind === "normal" ? "Speed reset to 1×" : `Ramp preset: ${kind}`,
-      );
-    } catch (error) {
-      useEditorUiStore
-        .getState()
-        .setStatusMessage(error instanceof Error ? error.message : "Preset failed");
-    }
-  }
-
   interface RampGesture {
     pointId: string;
+    lockedDuration: Tick;
     plotW: number;
     rect: DOMRect;
+    startX: number;
+    startY: number;
+    dragging: boolean;
+    historyPushed: boolean;
     pending: { progress: number; speed: number } | null;
     raf: number;
   }
@@ -167,20 +146,18 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     g: RampGesture,
     patch: { progress: number; speed: number },
   ) {
-    // Free-duration edit: speed changes stretch/shrink the clip on the
-    // timeline (source range untouched, so nothing ever "blocks at a wall").
-    return updateRampPoint(project, clip.id, g.pointId, {
-      atProgress: Number(patch.progress.toFixed(4)),
-      speed: Number(snapSpeed(patch.speed).toFixed(3)),
-    });
+    return updateRampPointLocked(
+      project,
+      clip.id,
+      g.pointId,
+      {
+        atProgress: Number(patch.progress.toFixed(4)),
+        speed: Number(snapSpeed(patch.speed).toFixed(3)),
+      },
+      g.lockedDuration,
+    ).project;
   }
 
-  /**
-   * True when a flush would change nothing (pinned at a neighbor clamp, the
-   * media wall, or identical values). Skipping `setProject` avoids a full
-   * timeline re-render + project-wide normalize per frame while pushing
-   * against a clamp — that storm is the visible "stuck" stutter.
-   */
   function isNoopPatch(cur: Clip, next: Clip, pointId: string): boolean {
     if (cur.sourceInTicks !== next.sourceInTicks) return false;
     if (cur.sourceOutTicks !== next.sourceOutTicks) return false;
@@ -190,9 +167,44 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     return a.atProgress === b.atProgress && a.speed === b.speed;
   }
 
-  function beginDragPoint(event: React.PointerEvent, point: SpeedPoint) {
+  function setPointSpeed(pointId: string, speed: number) {
+    commitProjectChange((p) => {
+      const cur = p.clips.find((c) => c.id === clip.id);
+      const locked = clipDurationTicks(cur ?? clip);
+      return updateRampPointLocked(
+        p,
+        clip.id,
+        pointId,
+        { speed: clampRampSpeed(speed) },
+        locked,
+      ).project;
+    });
+  }
+
+  function handleRemovePoint(pointId: string) {
+    commitProjectChange((p) => {
+      const cur = p.clips.find((c) => c.id === clip.id);
+      const locked = clipDurationTicks(cur ?? clip);
+      const next = removeRampPoint(p, clip.id, pointId);
+      if (!next.clips.find((c) => c.id === clip.id)?.speedRamp) return next;
+      return relockClipDuration(next, clip.id, locked);
+    });
+  }
+
+  function openPointMenu(point: SpeedPoint, anchorEl?: HTMLElement | null) {
+    const rect = anchorEl?.getBoundingClientRect();
+    const clientX = rect
+      ? rect.left + rect.width / 2
+      : progressToX(point.atProgress);
+    const clientY = rect ? rect.top : speedToY(point.speed);
+    setMenu({ pointId: point.id, clientX, clientY });
+  }
+
+  function beginPointPointer(event: React.PointerEvent, point: SpeedPoint) {
+    if (event.button !== 0) return;
     event.stopPropagation();
     event.preventDefault();
+    setMenu(null);
     const surface = event.currentTarget.parentElement;
     if (!surface) return;
     try {
@@ -200,15 +212,17 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     } catch {
       /* ignore */
     }
-    // Snapshot geometry + duration at dragstart and reuse for the whole
-    // gesture: with the duration locked the overlay never resizes mid-drag,
-    // so the cursor mapping stays exact (no grab drift / jitter).
     const store = useProjectStore.getState();
-    useHistoryStore.getState().pushHistory(store.project);
+    const live = store.project.clips.find((c) => c.id === clip.id) ?? clip;
     const gesture: RampGesture = {
       pointId: point.id,
+      lockedDuration: clipDurationTicks(live),
       plotW,
       rect: surface.getBoundingClientRect(),
+      startX: event.clientX,
+      startY: event.clientY,
+      dragging: false,
+      historyPushed: false,
       pending: null,
       raf: 0,
     };
@@ -220,6 +234,10 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
       const patch = gesture.pending;
       if (!patch) return;
       gesture.pending = null;
+      if (!gesture.historyPushed) {
+        useHistoryStore.getState().pushHistory(useProjectStore.getState().project);
+        gesture.historyPushed = true;
+      }
       const st = useProjectStore.getState();
       const cur = st.project.clips.find((c) => c.id === clip.id);
       const next = applyGesturePatch(st.project, gesture, patch);
@@ -227,23 +245,40 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
       if (cur && nextClip && isNoopPatch(cur, nextClip, gesture.pointId)) return;
       st.setProject(next, { dirty: true });
     };
+
     const onMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - gesture.startX;
+      const dy = ev.clientY - gesture.startY;
+      if (
+        !gesture.dragging &&
+        dx * dx + dy * dy >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX
+      ) {
+        gesture.dragging = true;
+        if (clickTimerRef.current != null) {
+          window.clearTimeout(clickTimerRef.current);
+          clickTimerRef.current = null;
+        }
+      }
+      if (!gesture.dragging) return;
       const x = ev.clientX - gesture.rect.left;
       const y = ev.clientY - gesture.rect.top;
       gesture.pending = {
         progress: Math.min(1, Math.max(0, (x - PAD_X) / gesture.plotW)),
         speed: yToSpeed(y),
       };
-      // One live update per frame — no history spam, no layout thrash.
       if (!gesture.raf) gesture.raf = requestAnimationFrame(flush);
     };
+
     const endGesture = () => {
       if (gesture.raf) cancelAnimationFrame(gesture.raf);
       gesture.raf = 0;
-      // Apply the trailing patch synchronously so the final position lands.
-      if (gesture.pending) {
+      if (gesture.dragging && gesture.pending) {
         const patch = gesture.pending;
         gesture.pending = null;
+        if (!gesture.historyPushed) {
+          useHistoryStore.getState().pushHistory(useProjectStore.getState().project);
+          gesture.historyPushed = true;
+        }
         const st = useProjectStore.getState();
         const cur = st.project.clips.find((c) => c.id === clip.id);
         const next = applyGesturePatch(st.project, gesture, patch);
@@ -251,6 +286,21 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
         if (!cur || !nextClip || !isNoopPatch(cur, nextClip, gesture.pointId)) {
           st.setProject(next, { dirty: true });
         }
+      } else if (!gesture.dragging) {
+        // Click (no drag): open speed menu after a beat so double-click can cancel.
+        const livePoint =
+          useProjectStore
+            .getState()
+            .project.clips.find((c) => c.id === clip.id)
+            ?.speedRamp?.points.find((p) => p.id === point.id) ?? point;
+        const anchor = document.querySelector(
+          `[data-ramp-point="${point.id}"]`,
+        ) as HTMLElement | null;
+        if (clickTimerRef.current != null) window.clearTimeout(clickTimerRef.current);
+        clickTimerRef.current = window.setTimeout(() => {
+          clickTimerRef.current = null;
+          openPointMenu(livePoint, anchor);
+        }, 220);
       }
       if (dragRef.current === gesture) dragRef.current = null;
       document.body.style.cursor = "";
@@ -258,13 +308,10 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
       window.removeEventListener("pointerup", endGesture);
       window.removeEventListener("pointercancel", endGesture);
     };
+
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", endGesture);
     window.addEventListener("pointercancel", endGesture);
-  }
-
-  function handleRemovePoint(point: SpeedPoint) {
-    commitProjectChange((p) => removeRampPoint(p, clip.id, point.id));
   }
 
   return (
@@ -281,7 +328,6 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
           className={styles.plotBg}
           rx={3}
         />
-        {/* 1× reference line */}
         <line
           x1={PAD_X}
           x2={PAD_X + plotW}
@@ -289,25 +335,6 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
           y2={speedToY(1)}
           className={styles.refLine}
         />
-        {/* Outside the ramp region: flat 1× (no curve). */}
-        {lo > 0.01 ? (
-          <line
-            x1={progressToX(0)}
-            x2={progressToX(lo)}
-            y1={speedToY(1)}
-            y2={speedToY(1)}
-            className={styles.flatOutside}
-          />
-        ) : null}
-        {hi < 0.99 ? (
-          <line
-            x1={progressToX(hi)}
-            x2={progressToX(1)}
-            y1={speedToY(1)}
-            y2={speedToY(1)}
-            className={styles.flatOutside}
-          />
-        ) : null}
         <path d={curvePath} className={styles.curve} />
       </svg>
 
@@ -319,20 +346,28 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
           className={[
             styles.anchor,
             interactive ? "" : styles.anchorReadOnly,
+            menu?.pointId === point.id ? styles.anchorActive : "",
           ]
             .filter(Boolean)
             .join(" ")}
+          data-ramp-point={point.id}
           style={{
             left: progressToX(point.atProgress),
             top: speedToY(point.speed),
           }}
-          title={`${point.speed.toFixed(2)}× @ ${(point.atProgress * 100).toFixed(0)}% — drag to adjust`}
-          onPointerDown={interactive ? (e) => beginDragPoint(e, point) : undefined}
+          title={`${Math.round(point.speed * 100)}% — click for speed, drag to adjust, double-click for 100%`}
+          onPointerDown={interactive ? (e) => beginPointPointer(e, point) : undefined}
           onDoubleClick={
             interactive
               ? (e) => {
                   e.stopPropagation();
-                  handleRemovePoint(point);
+                  e.preventDefault();
+                  if (clickTimerRef.current != null) {
+                    window.clearTimeout(clickTimerRef.current);
+                    clickTimerRef.current = null;
+                  }
+                  setMenu(null);
+                  setPointSpeed(point.id, 1);
                 }
               : undefined
           }
@@ -341,61 +376,71 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
               ? (e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  handleRemovePoint(point);
+                  if (clickTimerRef.current != null) {
+                    window.clearTimeout(clickTimerRef.current);
+                    clickTimerRef.current = null;
+                  }
+                  openPointMenu(point, e.currentTarget);
                 }
               : undefined
           }
         />
       ))}
 
-      {interactive ? (
-        <div className={styles.toolbar}>
-          <span className={styles.badge} title="Speed range on this clip">
-            <RampIcon size={12} />
-            {speedRange ?? "ramp"}
-          </span>
-          {(
-            [
-              ["slow", "½×"],
-              ["normal", "1×"],
-              ["fast", "2×"],
-              ["up", "↗"],
-              ["down", "↘"],
-            ] as const
-          ).map(([kind, label]) => (
-            <button
-              key={kind}
-              type="button"
-              className={styles.toolBtn}
-              title={
-                kind === "slow"
-                  ? "Slow motion 0.5× (clip gets longer)"
-                  : kind === "fast"
-                    ? "Fast 2× (clip gets shorter)"
-                    : kind === "normal"
-                      ? "Reset to normal speed"
-                      : kind === "up"
-                        ? "Ramp up: slow → fast"
-                        : "Ramp down: fast → slow"
-              }
+      {menu && menuPoint
+        ? createPortal(
+            <div
+              className={[
+                styles.pointMenu,
+                menu.clientY < 96 ? styles.pointMenuBelow : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              style={{
+                left: Math.min(
+                  window.innerWidth - 12,
+                  Math.max(12, menu.clientX),
+                ),
+                top: Math.max(12, menu.clientY),
+              }}
               onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => applyPreset(kind)}
             >
-              {label}
-            </button>
-          ))}
-          <button
-            type="button"
-            className={styles.toolBtn}
-            title="Add ramp point at playhead"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={handleAddPoint}
-          >
-            <PlusIcon size={12} />
-            Point
-          </button>
-        </div>
-      ) : null}
+              <div className={styles.pointMenuLabel}>Speed</div>
+              <div className={styles.pointMenuRow}>
+                {SPEED_PERCENT_OPTIONS.map((pct) => {
+                  const active = Math.abs(menuPoint.speed * 100 - pct) < 3;
+                  return (
+                    <button
+                      key={pct}
+                      type="button"
+                      className={[styles.pctBtn, active ? styles.pctBtnActive : ""]
+                        .filter(Boolean)
+                        .join(" ")}
+                      onClick={() => {
+                        setPointSpeed(menu.pointId, pct / 100);
+                        setMenu(null);
+                      }}
+                    >
+                      {pct}%
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                className={styles.deleteBtn}
+                onClick={() => {
+                  handleRemovePoint(menu.pointId);
+                  setMenu(null);
+                }}
+              >
+                <TrashIcon size={12} />
+                Delete point
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
