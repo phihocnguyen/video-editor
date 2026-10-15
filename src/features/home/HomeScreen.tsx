@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CutlineLogo } from "@/components/CutlineLogo";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -11,11 +11,13 @@ import {
   TrashIcon,
 } from "@/components/icons";
 import {
+  actionEnsureLibraryProject,
+  actionListLibraryProjects,
   actionOpenProject,
   actionOpenProjectAtPath,
   formatActionError,
 } from "../../lib/projectActions";
-import { isTauriRuntime } from "../../lib/tauri";
+import { isTauriRuntime, type LibraryProjectInfo } from "../../lib/tauri";
 import { useAppShellStore } from "../../stores/appShellStore";
 import { useHistoryStore } from "../../stores/historyStore";
 import { useProjectStore } from "../../stores/projectStore";
@@ -67,8 +69,29 @@ export function HomeScreen() {
   const [rail, setRail] = useState<RailTab>("start");
   const [status, setStatus] = useState<string | null>(null);
   const [statusError, setStatusError] = useState(false);
+  const [library, setLibrary] = useState<LibraryProjectInfo[]>([]);
   const topRef = useRef<HTMLElement | null>(null);
   const recentRef = useRef<HTMLElement | null>(null);
+
+  const refreshLibrary = useCallback(async () => {
+    if (!isTauriRuntime()) {
+      setLibrary([]);
+      return;
+    }
+    try {
+      const entries = await actionListLibraryProjects();
+      setLibrary(entries);
+      for (const entry of entries.slice(0, 12)) {
+        rememberRecent(entry.path, entry.name);
+      }
+    } catch {
+      /* ignore — recent localStorage still works */
+    }
+  }, [rememberRecent]);
+
+  useEffect(() => {
+    void refreshLibrary();
+  }, [refreshLibrary]);
 
   const enterEditor = useCallback(() => {
     clearHistory();
@@ -76,13 +99,24 @@ export function HomeScreen() {
   }, [clearHistory, goEditor]);
 
   const handleCreate = useCallback(
-    (width: number, height: number) => {
+    async (width: number, height: number) => {
       newProject("Untitled project", { width, height, frameRate: 30 });
       setStatus(null);
       setStatusError(false);
+      try {
+        const project = useProjectStore.getState().project;
+        const path = await actionEnsureLibraryProject(project);
+        if (path) {
+          useProjectStore.getState().setProjectPath(path);
+          rememberRecent(path, project.name || "Untitled project");
+        }
+      } catch (error) {
+        setStatus(formatActionError(error));
+        setStatusError(true);
+      }
       enterEditor();
     },
-    [enterEditor, newProject],
+    [enterEditor, newProject, rememberRecent],
   );
 
   const loadOpened = useCallback(
@@ -141,7 +175,16 @@ export function HomeScreen() {
     [loadOpened, removeRecent],
   );
 
-  const showTip = !homeTipDismissed && recent.length === 0;
+  const drafts: Array<{ path: string; name: string; openedAt: string }> =
+    library.length > 0
+      ? library.map((e) => ({
+          path: e.path,
+          name: e.name,
+          openedAt: e.updatedAt || new Date().toISOString(),
+        }))
+      : recent;
+
+  const showTip = !homeTipDismissed && drafts.length === 0;
 
   const scrollTo = (tab: RailTab) => {
     setRail(tab);
@@ -175,7 +218,7 @@ export function HomeScreen() {
           {(
             [
               { id: "start" as const, label: "Start" },
-              { id: "recent" as const, label: `Recent (${recent.length})` },
+              { id: "recent" as const, label: `Recent (${drafts.length})` },
             ] as const
           ).map((item) => (
             <button
@@ -199,7 +242,7 @@ export function HomeScreen() {
             Local-first
           </p>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Projects stay on this PC. Exports are plain MP4 files you own.
+            Drafts auto-save with media copies on this PC. Exports are MP4 files you own.
           </p>
         </div>
       </aside>
@@ -283,7 +326,7 @@ export function HomeScreen() {
               </span>
               <span className="block text-sm leading-relaxed text-muted-foreground">
                 {isTauriRuntime()
-                  ? "Open a .cutline.json from disk."
+                  ? "Open a .cutline.json — drafts also auto-save in AppData."
                   : "Open a project JSON in the browser."}
               </span>
             </span>
@@ -330,27 +373,27 @@ export function HomeScreen() {
         <section ref={recentRef} aria-label="Recent drafts" className="scroll-mt-4">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-base font-bold text-foreground">Recent drafts</h2>
-            {recent.length > 0 ? (
+            {drafts.length > 0 ? (
               <span className="text-xs text-muted-foreground">
-                {recent.length} project{recent.length === 1 ? "" : "s"}
+                {drafts.length} project{drafts.length === 1 ? "" : "s"}
               </span>
             ) : null}
           </div>
 
-          {recent.length === 0 ? (
+          {drafts.length === 0 ? (
             <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-border px-6 py-12 text-center">
               <span className="grid size-11 place-items-center rounded-xl bg-primary/10 text-primary">
                 <MediaIcon size={20} />
               </span>
               <p className="text-sm font-bold text-foreground">Nothing here yet</p>
               <p className="max-w-sm text-sm text-muted-foreground">
-                Create a video above or open a project — it will show up here for
-                quick access.
+                Create a video above — drafts auto-save locally with a copy of
+                imported media.
               </p>
             </div>
           ) : (
             <ul className="flex flex-col gap-2">
-              {recent.map((entry) => (
+              {drafts.map((entry) => (
                 <li
                   key={entry.path}
                   className="group flex items-center gap-3.5 rounded-xl border border-border bg-card px-4 py-3 transition-colors hover:border-primary/50"
@@ -371,20 +414,23 @@ export function HomeScreen() {
                       {entry.name || shortPath(entry.path)}
                     </span>
                     <span className="block truncate text-xs text-muted-foreground">
-                      {entry.path} · {formatRelative(entry.openedAt)}
+                      {formatRelative(entry.openedAt)}
+                      {library.length === 0 ? ` · ${entry.path}` : ""}
                     </span>
                   </button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-xs"
-                    className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-                    title="Remove from list"
-                    aria-label={`Remove ${entry.name || shortPath(entry.path)}`}
-                    onClick={() => removeRecent(entry.path)}
-                  >
-                    <TrashIcon size={13} />
-                  </Button>
+                  {library.length === 0 ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                      title="Remove from list"
+                      aria-label={`Remove ${entry.name || shortPath(entry.path)}`}
+                      onClick={() => removeRecent(entry.path)}
+                    >
+                      <TrashIcon size={13} />
+                    </Button>
+                  ) : null}
                 </li>
               ))}
             </ul>

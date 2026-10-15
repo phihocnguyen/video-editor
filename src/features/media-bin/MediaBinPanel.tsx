@@ -22,6 +22,7 @@ interface MediaBinPanelProps {
 
 export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps) {
   const assets = useProjectStore((s) => s.project.assets);
+  const projectId = useProjectStore((s) => s.project.id);
   const addAssets = useProjectStore((s) => s.addAssets);
   const setProject = useProjectStore((s) => s.setProject);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
@@ -42,7 +43,7 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
   async function handleImport() {
     setBusy(true);
     try {
-      const imported = await actionImportMedia();
+      const imported = await actionImportMedia(projectId);
       if (imported.length === 0) {
         setStatusMessage("Import cancelled");
         return;
@@ -86,7 +87,7 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
     const asset = useProjectStore.getState().project.assets.find((a) => a.id === assetId);
     if (!asset) return;
     try {
-      const relinked = await actionRelinkAsset(asset);
+      const relinked = await actionRelinkAsset(asset, projectId);
       const before = useProjectStore.getState().project;
       setProject(
         relinkAsset(before, assetId, relinked.path, {

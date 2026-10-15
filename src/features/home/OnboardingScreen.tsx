@@ -28,7 +28,7 @@ const STEPS = [
   {
     kicker: "Private by design",
     title: "Everything stays on this machine",
-    body: "Projects, media, autosaves and exports live on your PC. Work fully offline — missing files are flagged and can be relinked, originals are never modified.",
+    body: "Drafts and imported media copies live in AppData on this PC. Work fully offline — originals stay untouched, and missing files can be relinked.",
     points: [
       { Icon: LockIcon, label: "Offline capable" },
       { Icon: UndoIcon, label: "Autosave + undo" },

@@ -8,16 +8,19 @@ import {
 } from "../domain";
 import { toAppError } from "./errors";
 import {
-  autosaveProject,
   checkMediaPaths,
+  importMediaIntoProject,
   importMediaPaths,
   isTauriRuntime,
+  listLibraryProjects,
   openProjectFile,
   pickMediaPaths,
   pickOpenProjectPath,
   pickSaveProjectPath,
   recoverAutosave,
+  saveLibraryProject,
   saveProjectFile,
+  type LibraryProjectInfo,
   type ProbeResult,
 } from "./tauri";
 
@@ -79,22 +82,60 @@ export async function actionOpenProject(): Promise<{
 export async function actionSaveProject(
   project: ProjectDocument,
   currentPath: string | null,
+  options?: { saveAs?: boolean },
 ): Promise<string | null> {
   if (!isTauriRuntime()) {
     downloadBrowserText(`${project.name || "project"}.cutline.json`, serializeProject(project));
     return currentPath;
   }
 
-  const path = currentPath ?? (await pickSaveProjectPath(project.name || "Untitled project"));
-  if (!path) {
-    throw new Error("Save cancelled");
-  }
   const stamped = { ...project, updatedAt: new Date().toISOString() };
-  await saveProjectFile(path, stamped);
-  return path;
+
+  if (options?.saveAs) {
+    const path = await pickSaveProjectPath(project.name || "Untitled project");
+    if (!path) throw new Error("Save cancelled");
+    await saveProjectFile(path, stamped);
+    try {
+      await saveLibraryProject(stamped);
+    } catch {
+      /* non-fatal */
+    }
+    return path;
+  }
+
+  // Prefer the AppData library draft when no external path is set.
+  if (!currentPath) {
+    return saveLibraryProject(stamped);
+  }
+
+  await saveProjectFile(currentPath, stamped);
+  // Keep the library draft in sync when editing an external copy.
+  try {
+    await saveLibraryProject(stamped);
+  } catch {
+    /* non-fatal */
+  }
+  return currentPath;
 }
 
-export async function actionImportMedia(): Promise<MediaAsset[]> {
+/** Create/update the AppData draft folder for a project; returns its path. */
+export async function actionEnsureLibraryProject(
+  project: ProjectDocument,
+): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const stamped = {
+    ...project,
+    updatedAt: project.updatedAt || new Date().toISOString(),
+  };
+  return saveLibraryProject(stamped);
+}
+
+export async function actionListLibraryProjects(): Promise<LibraryProjectInfo[]> {
+  if (!isTauriRuntime()) return [];
+  return listLibraryProjects();
+}
+
+export async function actionImportMedia(projectId?: string): Promise<MediaAsset[]> {
   if (!isTauriRuntime()) {
     return pickBrowserMediaFiles();
   }
@@ -102,11 +143,18 @@ export async function actionImportMedia(): Promise<MediaAsset[]> {
   if (paths.length === 0) {
     return [];
   }
+  if (projectId) {
+    const probed = await importMediaIntoProject(projectId, paths);
+    return probed.map(assetFromProbe);
+  }
   const probed = await importMediaPaths(paths);
   return probed.map(assetFromProbe);
 }
 
-export async function actionRelinkAsset(asset: MediaAsset): Promise<MediaAsset> {
+export async function actionRelinkAsset(
+  asset: MediaAsset,
+  projectId?: string,
+): Promise<MediaAsset> {
   if (!isTauriRuntime()) {
     throw new Error("Relink requires the desktop app (pnpm tauri:dev)");
   }
@@ -117,12 +165,14 @@ export async function actionRelinkAsset(asset: MediaAsset): Promise<MediaAsset> 
   const [path] = paths;
   if (
     !window.confirm(
-      `Relink "${asset.name}" to:\n${path}\n\nOriginal file will not be modified.`,
+      `Relink "${asset.name}" to:\n${path}\n\nA copy will be stored in the project library; the original stays untouched.`,
     )
   ) {
     throw new Error("Relink cancelled");
   }
-  const probed = await importMediaPaths([path]);
+  const probed = projectId
+    ? await importMediaIntoProject(projectId, [path])
+    : await importMediaPaths([path]);
   const next = assetFromProbe(probed[0]);
   return {
     ...asset,
@@ -152,9 +202,11 @@ export async function actionRefreshMissing(project: ProjectDocument): Promise<Pr
   };
 }
 
-export async function actionAutosave(project: ProjectDocument): Promise<void> {
-  if (!isTauriRuntime()) return;
-  await autosaveProject({ ...project, updatedAt: new Date().toISOString() });
+/** Debounced draft write to AppData projects/<id>/ (+ recovery copy). */
+export async function actionAutosave(project: ProjectDocument): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const stamped = { ...project, updatedAt: new Date().toISOString() };
+  return saveLibraryProject(stamped);
 }
 
 export async function actionRecoverAutosave(): Promise<ProjectDocument | null> {

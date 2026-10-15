@@ -72,6 +72,34 @@ export async function recoverAutosave(): Promise<ProjectDocument | null> {
   return invoke<ProjectDocument | null>("recover_autosave");
 }
 
+export interface LibraryProjectInfo {
+  id: string;
+  name: string;
+  path: string;
+  updatedAt: string;
+}
+
+/** Write/create AppData draft at projects/<id>/project.cutline.json */
+export async function saveLibraryProject(project: ProjectDocument): Promise<string> {
+  return invoke<string>("save_library_project", { project });
+}
+
+export async function listLibraryProjects(): Promise<LibraryProjectInfo[]> {
+  return invoke<LibraryProjectInfo[]>("list_library_projects");
+}
+
+/** Copy files into the project media folder, then probe the copies. */
+export async function importMediaIntoProject(
+  projectId: string,
+  paths: string[],
+): Promise<ProbeResult[]> {
+  return invoke<ProbeResult[]>("import_media_into_project", { projectId, paths });
+}
+
+export async function isLibraryProjectPath(path: string): Promise<boolean> {
+  return invoke<boolean>("is_library_project_path", { path });
+}
+
 export async function pickOpenProjectPath(): Promise<string | null> {
   const selected = await open({
     multiple: false,

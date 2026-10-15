@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { deleteClips } from "../../domain";
 import {
   actionAutosave,
+  actionEnsureLibraryProject,
   actionOpenProject,
   actionOpenProjectAtPath,
   actionRecoverAutosave,
@@ -266,8 +267,27 @@ export function EditorShell() {
     clearHistory();
     setSelectedClipIds([]);
     setPlaying(false);
-    setStatusMessage("New project");
-  }, [clearHistory, newProject, setPlaying, setSelectedClipIds, setStatusMessage]);
+    void (async () => {
+      try {
+        const project = useProjectStore.getState().project;
+        const path = await actionEnsureLibraryProject(project);
+        if (path) {
+          useProjectStore.getState().setProjectPath(path);
+          rememberRecent(path, project.name || "Untitled project");
+        }
+        setStatusMessage("New project · draft saved locally");
+      } catch (error) {
+        setStatusMessage(formatActionError(error));
+      }
+    })();
+  }, [
+    clearHistory,
+    newProject,
+    rememberRecent,
+    setPlaying,
+    setSelectedClipIds,
+    setStatusMessage,
+  ]);
 
   useEffect(() => {
     hydrateSettings();
@@ -301,15 +321,30 @@ export function EditorShell() {
     };
   }, [setStatusMessage]);
 
+  const autosaveGenRef = useRef(0);
   useEffect(() => {
     if (!dirty || !isTauriRuntime()) return;
+    const gen = ++autosaveGenRef.current;
     const timer = window.setTimeout(() => {
-      void actionAutosave(useProjectStore.getState().project).catch(() => {
-        /* non-fatal */
-      });
+      void (async () => {
+        try {
+          const current = useProjectStore.getState().project;
+          const path = await actionAutosave(current);
+          if (!path || gen !== autosaveGenRef.current) return;
+          const store = useProjectStore.getState();
+          if (!store.projectPath) store.setProjectPath(path);
+          store.markClean();
+          rememberRecent(path, current.name || "Untitled project");
+        } catch {
+          /* non-fatal */
+        }
+      })();
     }, 2500);
-    return () => window.clearTimeout(timer);
-  }, [dirty, project]);
+    return () => {
+      window.clearTimeout(timer);
+      autosaveGenRef.current += 1;
+    };
+  }, [dirty, project, rememberRecent]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
