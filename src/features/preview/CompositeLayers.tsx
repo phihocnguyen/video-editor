@@ -8,6 +8,7 @@ import {
   strobeIsFlashFrame,
   vignetteOverlayOpacity,
   findNextClipOnTrack,
+  findPreviousClipOnTrack,
   getRampProfile,
   hasActiveRamp,
   incomingTransitionProgress,
@@ -83,6 +84,32 @@ function isOutgoingHoldClip(
   const half = transitionHalfTicks(tin);
   const cut = next.startTicks;
   return playheadTicks >= cut - half && playheadTicks <= cut + half;
+}
+
+/**
+ * Start of a real blend window (incoming transition with a previous clip on
+ * the track), or null when this clip has no blend to pre-mount for.
+ * Preview pre-mounts the incoming side ~1s early so replaying after a scrub
+ * doesn't hitch on a cold decoder mount exactly at the window start.
+ */
+export function preTransitionWindowStart(
+  project: ProjectDocument,
+  clip: Clip,
+): number | null {
+  const tin = normalizeClipTransition(clip.transitionIn);
+  if (tin.type === "none") return null;
+  if (!findPreviousClipOnTrack(project, clip.id)) return null;
+  return clip.startTicks - transitionHalfTicks(tin);
+}
+
+/** True while pre-mounted ahead of the blend window (must stay invisible + paused). */
+export function isPreTransitionMount(
+  project: ProjectDocument,
+  clip: Clip,
+  playheadTicks: number,
+): boolean {
+  const windowStart = preTransitionWindowStart(project, clip);
+  return windowStart != null && playheadTicks < windowStart;
 }
 
 function transitionVisualMul(
@@ -173,6 +200,8 @@ function layerVisualStyle(
   const flash = strobeIsFlashFrame(effects, localSec, project.canvas.frameRate);
   const txVisual = transitionVisualMul(project, clip, playheadTicks);
   const opacityMul = txVisual.opacity;
+  // Pre-mounted ahead of the blend window: hold fully invisible until it opens.
+  const preMount = isPreTransitionMount(project, clip, playheadTicks) ? 0 : 1;
   const filter = cssFilterFromEffects(effects, pxScale) || undefined;
 
   const geom = clipMediaGeometry(clip, canvasWidth, canvasHeight, asset);
@@ -184,7 +213,7 @@ function layerVisualStyle(
 
   return {
     zIndex,
-    opacity: clip.transform.opacity * fadeMul * opacityMul,
+    opacity: clip.transform.opacity * fadeMul * opacityMul * preMount,
     filter,
     clipPath: txVisual.clipPath,
     leftPct: (geom.centerX / Math.max(1, canvasWidth)) * 100 + txVisual.offsetXPct,
@@ -382,6 +411,17 @@ function needsPerFrameVisual(
 const SEEK_CLOSE_SEC = 0.08;
 /** A seek pending longer than this never resolves — re-issue instead of freezing. */
 const SEEK_STUCK_MS = 600;
+/**
+ * After a transition catch-up seek, let the decoder settle this long before
+ * even considering another one. Without it, a seek that resolves slightly
+ * off-target (keyframe-approximated frame) triggers an immediate re-seek
+ * every frame — each aborting the last — which is the replay judder:
+ * first play needs no catch-up (warm decoder, small drift), replay after a
+ * scrub mounts mid-transition with a cold/stale position (big drift).
+ */
+const TRANSITION_RESEEK_MS = 320;
+/** After one catch-up, accept keyframe snap within this delta (don't reseek). */
+const TRANSITION_ACCEPT_SEC = 0.28;
 /** Sustainable reverse cadence: backward seeks decode from the keyframe. */
 const REVERSE_SEEK_MIN_GAP_MS = 110;
 
@@ -414,8 +454,11 @@ export function CompositeLayers({
   const playbackRate = useEditorUiStore((s) => s.playbackRate);
   const videoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
   const imageRefs = useRef<Map<string, HTMLImageElement>>(new Map());
-  const primedVideosRef = useRef<WeakSet<HTMLVideoElement>>(new WeakSet());
   const lastSeekAtRef = useRef(0);
+  /** Per-clip seek cadence so dual transition decoders don't block each other. */
+  const lastSeekAtByClipRef = useRef(new Map<string, number>());
+  /** After scrub, Play must re-anchor once (resume-without-seek leaves wrong frames). */
+  const needsResyncAfterScrubRef = useRef(false);
   /** Per-clip last applied playbackRate — avoid resetting the decoder every frame. */
   const lastRateByClipRef = useRef(new Map<string, number>());
   /** Was live-visual last frame — force one clean style pass after transition ends. */
@@ -430,6 +473,8 @@ export function CompositeLayers({
    * SEEK_STUCK_MS never resolves (UHD), so a new one may be issued.
    */
   const seekStartRef = useRef(new Map<string, number>());
+  /** Last transition catch-up seek per clip — survives resolve (settle window). */
+  const lastCatchupRef = useRef(new Map<string, number>());
   const layersRef = useRef(layers);
   const projectRef = useRef(project);
   const isPlayingRef = useRef(isPlaying);
@@ -460,12 +505,21 @@ export function CompositeLayers({
 
   const ensurePlaying = (video: HTMLVideoElement, clipId?: string) => {
     if (!isPlayingRef.current || isScrubbingRef.current) return;
-    // Outgoing hold side must stay frozen — never (re)play it, not even from
-    // a seeked-event wakeup, or it drifts and gets yanked back every ~120ms.
     if (clipId) {
       const layer = layersRef.current.find((l) => l.clip.id === clipId);
       if (layer) {
         const ticks = useEditorUiStore.getState().playheadTicks;
+        // Pre-mounted blend side stays paused until its window opens.
+        if (isPreTransitionMount(projectRef.current, layer.clip, ticks)) {
+          try {
+            video.pause();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+        // Outgoing hold side must stay frozen — never (re)play it, not even from
+        // a seeked-event wakeup, or it drifts and gets yanked back every ~120ms.
         if (isOutgoingHoldClip(layer.clip, ticks, projectRef.current)) {
           try {
             video.pause();
@@ -476,9 +530,12 @@ export function CompositeLayers({
         }
       }
     }
-    // Still seeking from an earlier scrub — play() after seeked (listener below).
-    // Don't early-return when paused+seeking: we still want play() queued.
+    // Already playing and not mid-seek — nothing to do.
     if (!video.paused && !video.ended && !video.seeking) return;
+    // Never pile play() onto an in-flight seek: that is the post-scrub
+    // transition judder (playhead freewheels, decoder keeps aborting seeks).
+    // `seeked` listener below will call ensurePlaying once.
+    if (video.seeking) return;
     // ended / near-end: must rewind before play() will advance frames again.
     if (video.ended) {
       try {
@@ -532,8 +589,27 @@ export function CompositeLayers({
         /* ignore */
       }
     }
+    // Pre-mounted blend side: buffer paused, never play early.
+    if (playing && isPreTransitionMount(projectRef.current, layer.clip, ticks)) {
+      try {
+        video.pause();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     ensurePlaying(video, clipId);
   };
+
+  /** Listeners bound per attach — an element moving between clips must not
+   * keep firing closures over a stale clipId (wrong-target wakeups could
+   * play a paused pre-mounted clip early). */
+  const elListenersRef = useRef(
+    new WeakMap<
+      HTMLVideoElement,
+      { ready: () => void; seeked: () => void }
+    >(),
+  );
 
   const attachVideo = (clipId: string, el: HTMLVideoElement | null) => {
     if (!el) {
@@ -542,24 +618,26 @@ export function CompositeLayers({
       return;
     }
     videoRefs.current.set(clipId, el);
-    if (primedVideosRef.current.has(el)) {
-      // Re-used pooled element: still prime for this clip (playhead/source may differ).
-      primeVideo(clipId, el);
-      return;
+    const prev = elListenersRef.current.get(el);
+    if (prev) {
+      el.removeEventListener("loadedmetadata", prev.ready);
+      el.removeEventListener("canplay", prev.ready);
+      el.removeEventListener("seeked", prev.seeked);
     }
-    primedVideosRef.current.add(el);
 
     const onReady = () => {
       primeVideo(clipId, el);
       ensurePlaying(el, clipId);
     };
-    el.addEventListener("loadedmetadata", onReady);
-    el.addEventListener("canplay", onReady);
-    el.addEventListener("seeked", () => {
+    const onSeeked = () => {
       wakePendingRef.current.delete(el);
       seekStartRef.current.delete(clipId);
       ensurePlaying(el, clipId);
-    });
+    };
+    el.addEventListener("loadedmetadata", onReady);
+    el.addEventListener("canplay", onReady);
+    el.addEventListener("seeked", onSeeked);
+    elListenersRef.current.set(el, { ready: onReady, seeked: onSeeked });
 
     // Pooled/warmed videos are often already past metadata — don't call load()
     // (that would discard the warm decode). Only kick cold elements.
@@ -610,6 +688,11 @@ export function CompositeLayers({
     return cb;
   };
 
+  // Scrub marks decoders dirty — next Play must re-anchor once.
+  useEffect(() => {
+    if (isScrubbing) needsResyncAfterScrubRef.current = true;
+  }, [isScrubbing]);
+
   // Start/stop decoder when transport changes.
   // IMPORTANT:
   //  - do NOT depend on `layers` (remount mid-play freezes the frame)
@@ -637,6 +720,12 @@ export function CompositeLayers({
 
     // Do NOT snap the playhead to video.currentTime on Play — a stale decoder
     // time jumps the timeline a fraction of a second and looks like a glitch.
+    // Exception: after scrub, decoders are often keyframe-snapped / unfinished —
+    // one bounded re-anchor (especially in a transition) prevents judder.
+    const resync = needsResyncAfterScrubRef.current;
+    needsResyncAfterScrubRef.current = false;
+    const nowPlay = performance.now();
+
     layersRef.current.forEach((layer, stackIndex) => {
       const z = mediaZ(layer.track.order, stackIndex);
       if (layer.asset.kind === "image") {
@@ -653,12 +742,13 @@ export function CompositeLayers({
       wakePendingRef.current.delete(video);
       rampArmedRef.current.delete(layer.clip.id);
 
-      // Resume must NOT seek. UHD seeks often never finish, leaving a stuck
-      // frame while the software playhead keeps advancing.
+      const target = transitionAwareMediaTimeSec(layer.clip, ticks);
+      const transitioning = inTransitionWindow(proj, layer.clip, ticks);
+      const drift = Math.abs(video.currentTime - target);
+
       // Outgoing hold side stays frozen even at Play-from-transition.
       if (isOutgoingHoldClip(layer.clip, ticks, proj)) {
-        const target = transitionAwareMediaTimeSec(layer.clip, ticks);
-        if (Math.abs(video.currentTime - target) > 0.08) {
+        if (drift > 0.08) {
           safeSeek(video, target);
         }
         try {
@@ -668,6 +758,19 @@ export function CompositeLayers({
         }
         return;
       }
+
+      // Post-scrub: one seek if far off (or any mid-transition mismatch).
+      if (
+        resync &&
+        !video.seeking &&
+        (transitioning ? drift > 0.08 : drift > 0.25)
+      ) {
+        lastSeekAtByClipRef.current.set(layer.clip.id, nowPlay);
+        seekStartRef.current.set(layer.clip.id, nowPlay);
+        lastCatchupRef.current.set(layer.clip.id, nowPlay);
+        safeSeek(video, target);
+      }
+
       const speed = mediaSpeedAtTimelineTicks(layer.clip, ticks);
       video.playbackRate = Math.min(16, Math.max(0.0625, speed * (shuttle || 1)));
       lastRateByClipRef.current.set(layer.clip.id, video.playbackRate);
@@ -863,6 +966,7 @@ export function CompositeLayers({
           el.pause();
           videoRefs.current.delete(id);
           seekStartRef.current.delete(id);
+          lastCatchupRef.current.delete(id);
           releaseMediaVideo(id);
         }
       }
@@ -914,13 +1018,41 @@ export function CompositeLayers({
         const muted =
           !layer.isTopVideo || layer.track.muted || !layer.asset.hasAudio;
         if (video.muted !== muted) video.muted = muted;
-        const vol = Math.min(
-          1,
-          Math.max(0, layer.clip.volume * layer.track.volume),
+        const durSec = Math.max(
+          0.01,
+          ticksToSeconds(clipDurationTicks(layer.clip)),
         );
+        const localSec = Math.max(
+          0,
+          ticksToSeconds(playheadTicks - layer.clip.startTicks),
+        );
+        const vol =
+          Math.min(1, Math.max(0, layer.clip.volume * layer.track.volume)) *
+          fadeOpacityMultiplier(
+            normalizeClipEffects(layer.clip.effects),
+            localSec,
+            durSec,
+          );
         if (video.volume !== vol) video.volume = vol;
 
         const target = transitionAwareMediaTimeSec(layer.clip, playheadTicks);
+
+        // Pre-mounted ahead of its blend window: buffer a single prime seek,
+        // stay paused and invisible until the window opens (no early audio,
+        // no decoder race at the cut).
+        if (playing && !scrubbing && !reverse) {
+          if (isPreTransitionMount(proj, layer.clip, playheadTicks)) {
+            if (!video.seeking && Math.abs(video.currentTime - target) > 0.25) {
+              safeSeek(video, target);
+            }
+            try {
+              video.pause();
+            } catch {
+              /* ignore */
+            }
+            return;
+          }
+        }
 
         // Ramped clips are driven by their own video clock (see effect below) —
         // don't seek/rate-fight them from the wall-clock playhead.
@@ -950,7 +1082,7 @@ export function CompositeLayers({
           if (isOutgoingHoldClip(layer.clip, playheadTicks, proj)) {
             if (Math.abs(video.currentTime - target) > 0.08) {
               const now = performance.now();
-              if (now - lastSeekAtRef.current >= 40) {
+              if (now - lastSeekAtRef.current >= 120) {
                 lastSeekAtRef.current = now;
                 safeSeek(video, target);
               }
@@ -965,18 +1097,33 @@ export function CompositeLayers({
           // Incoming clip often mounts mid-transition with a cold currentTime —
           // one catch-up seek so it doesn't stay on the wrong frame under clip 1.
           // Never pile onto a pending seek: competing seeks abort each other
-          // and the decoder shows nothing (black). A guard entry older than
-          // SEEK_STUCK_MS means that seek will never resolve — re-issue.
-          if (transitioning && Math.abs(video.currentTime - target) > 0.12) {
+          // and the decoder shows nothing (black). After one catch-up, accept
+          // keyframe snap within TRANSITION_ACCEPT_SEC (endless reseek = judder).
+          if (transitioning) {
+            const drift = Math.abs(video.currentTime - target);
             const now = performance.now();
-            const started = seekStartRef.current.get(layer.clip.id);
-            if (started != null && now - started >= SEEK_STUCK_MS) {
-              seekStartRef.current.delete(layer.clip.id);
-            }
-            if (!video.seeking && now - lastSeekAtRef.current >= 16) {
-              lastSeekAtRef.current = now;
-              seekStartRef.current.set(layer.clip.id, now);
-              safeSeek(video, target);
+            const lastCatch = lastCatchupRef.current.get(layer.clip.id) ?? 0;
+            const recentlyCaught = now - lastCatch < TRANSITION_RESEEK_MS * 4;
+            const acceptAfterCatch = recentlyCaught && drift <= TRANSITION_ACCEPT_SEC;
+            if (drift > 0.12 && !acceptAfterCatch) {
+              const started = seekStartRef.current.get(layer.clip.id);
+              const stuck = started != null && now - started >= SEEK_STUCK_MS;
+              if (stuck) seekStartRef.current.delete(layer.clip.id);
+              if (!stuck && now - lastCatch < TRANSITION_RESEEK_MS) {
+                // Settling — don't play() while still seeking.
+                if (!video.seeking) ensurePlaying(video, layer.clip.id);
+                return;
+              }
+              const lastClipSeek = lastSeekAtByClipRef.current.get(layer.clip.id) ?? 0;
+              if (!video.seeking && now - lastClipSeek >= 16) {
+                lastSeekAtByClipRef.current.set(layer.clip.id, now);
+                lastSeekAtRef.current = now;
+                seekStartRef.current.set(layer.clip.id, now);
+                lastCatchupRef.current.set(layer.clip.id, now);
+                safeSeek(video, target);
+              }
+              // Wait for seeked before play — avoids freewheel judder.
+              return;
             }
           }
           ensurePlaying(video, layer.clip.id);
@@ -1006,12 +1153,14 @@ export function CompositeLayers({
         } else {
           seekStartRef.current.delete(layer.clip.id);
         }
-        // Sustainable cadence in reverse; normal cadence otherwise.
+        // Per-clip cadence so both transition sides can seek; reverse stays slower.
         const minGap = reverse ? REVERSE_SEEK_MIN_GAP_MS : transitioning ? 16 : 40;
-        if (now - lastSeekAtRef.current < minGap) return;
+        const lastClipSeek = lastSeekAtByClipRef.current.get(layer.clip.id) ?? 0;
+        if (now - lastClipSeek < minGap) return;
         if (Math.abs(video.currentTime - target) < (transitioning ? 0.02 : 0.04)) {
           return;
         }
+        lastSeekAtByClipRef.current.set(layer.clip.id, now);
         lastSeekAtRef.current = now;
         seekStartRef.current.set(layer.clip.id, now);
         safeSeek(video, target);
@@ -1102,10 +1251,15 @@ export function CompositeLayers({
   }, []);
 
   // New clip on stage — prime seek when paused; catch up once when mounting into a live transition.
+  // NOTE: this effect re-runs on every layers-identity change (each frame
+  // inside a transition), so the playing catch-up seek is restricted to
+  // newly-mounted clips — otherwise it fights sync()'s settle-guarded seeks.
+  const mountedIdsRef = useRef(new Set<string>());
   useEffect(() => {
     const ticks = useEditorUiStore.getState().playheadTicks;
     const playing = isPlayingRef.current && !isScrubbingRef.current;
     const { width: cw, height: ch } = project.canvas;
+    const seen = new Set<string>();
     layers.forEach((layer, stackIndex) => {
       const z = mediaZ(layer.track.order, stackIndex);
       if (layer.asset.kind === "image") {
@@ -1118,11 +1272,21 @@ export function CompositeLayers({
       if (layer.asset.kind !== "video") return;
       const video = videoRefs.current.get(layer.clip.id);
       if (!video) return;
+      seen.add(layer.clip.id);
+      const isNew = !mountedIdsRef.current.has(layer.clip.id);
       applyMediaStyle(video, project, layer.clip, layer.asset, cw, ch, ticks, z);
       const target = transitionAwareMediaTimeSec(layer.clip, ticks);
       if (playing) {
+        if (isPreTransitionMount(project, layer.clip, ticks)) {
+          try {
+            video.pause();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
         if (isOutgoingHoldClip(layer.clip, ticks, project)) {
-          if (Math.abs(video.currentTime - target) > 0.08) {
+          if (isNew && Math.abs(video.currentTime - target) > 0.08) {
             safeSeek(video, target);
           }
           try {
@@ -1133,17 +1297,25 @@ export function CompositeLayers({
           return;
         }
         if (
+          isNew &&
           !video.seeking &&
           inTransitionWindow(project, layer.clip, ticks) &&
           Math.abs(video.currentTime - target) > 0.12
         ) {
+          const now = performance.now();
+          lastCatchupRef.current.set(layer.clip.id, now);
+          seekStartRef.current.set(layer.clip.id, now);
+          lastSeekAtByClipRef.current.set(layer.clip.id, now);
           safeSeek(video, target);
+          // seeked listener will call ensurePlaying — don't play mid-seek.
+          return;
         }
         ensurePlaying(video, layer.clip.id);
         return;
       }
       safeSeek(video, target);
     });
+    mountedIdsRef.current = seen;
     syncRef.current(ticks);
   }, [layers, project]);
 

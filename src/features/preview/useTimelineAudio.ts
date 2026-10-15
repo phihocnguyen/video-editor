@@ -1,8 +1,10 @@
 import { useEffect, useRef } from "react";
 import {
   clipDurationTicks,
+  fadeOpacityMultiplier,
   hasActiveRamp,
   mediaSpeedAtTimelineTicks,
+  normalizeClipEffects,
   normalizeSpeedRamp,
   sourceOffsetForTimelineOffset,
   ticksToSeconds,
@@ -111,29 +113,33 @@ export function useTimelineAudio(options: {
         if (el.src !== item.url) {
           el.src = item.url;
         }
-        el.volume = Math.min(
-          1,
-          Math.max(
-            0,
-            item.clip.volume *
-              (tracksRef.current.find((t) => t.id === item.clip.trackId)?.volume ?? 1),
-          ),
-        );
-
-        // Map timeline → source honouring constant speed and speed ramps.
-        // Without this, a ramped/sped audio clip drifts from the playhead and
-        // re-seeks every sync (stutter). With it, the element glides at the
-        // right rate and seeks only on real discontinuities (e.g. scrub).
         const spanTicks = Math.max(
           0,
           item.clip.sourceOutTicks - item.clip.sourceInTicks,
         );
         const localTicks = Math.max(0, playheadTicks - item.clip.startTicks);
+        el.volume =
+          Math.min(
+            1,
+            Math.max(
+              0,
+              item.clip.volume *
+                (tracksRef.current.find((t) => t.id === item.clip.trackId)?.volume ?? 1),
+            ),
+          ) *
+          fadeOpacityMultiplier(
+            normalizeClipEffects(item.clip.effects),
+            ticksToSeconds(localTicks),
+            ticksToSeconds(Math.max(1, clipDurationTicks(item.clip))),
+          );
         const constSpeed =
           Number.isFinite(item.clip.speed) && item.clip.speed > 0
             ? item.clip.speed
             : 1;
         const ramp = normalizeSpeedRamp(item.clip.speedRamp ?? null);
+        // Map timeline → source honouring constant speed and speed ramps.
+        // Without this, a ramped/sped audio clip drifts from the playhead and
+        // re-seeks every sync (stutter).
         const srcOffTicks = ramp
           ? sourceOffsetForTimelineOffset(ramp, spanTicks, localTicks)
           : Math.min(spanTicks, localTicks * constSpeed);

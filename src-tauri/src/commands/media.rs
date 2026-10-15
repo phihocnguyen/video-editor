@@ -1,10 +1,11 @@
 use crate::media::probe::{probe_path, ProbeResult};
 use crate::render::ffmpeg::generate_thumbnail_file;
+use crate::storage;
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,11 +43,7 @@ pub fn generate_thumbnail(
     ((time * 1000.0) as i64).hash(&mut hasher);
     let key = format!("{:x}", hasher.finish());
 
-    let cache_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| e.to_string())?
-        .join("thumbs");
+    let cache_dir = storage::cache_dir(&app, "thumbs")?;
     let out = cache_dir.join(format!("{key}.jpg"));
     if out.is_file() {
         return Ok(ThumbnailResult {

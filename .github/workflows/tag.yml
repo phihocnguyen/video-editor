@@ -1,0 +1,90 @@
+# Manual-only versioning: bumps package.json, tauri.conf.json and Cargo.toml,
+# commits, and pushes a vX.Y.Z tag. Version is auto-bumped from the current
+# one (patch by default) — pass `version` explicitly to override.
+# Run AFTER deciding the release, BEFORE running Release.
+name: Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Auto-bump level"
+        required: false
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: "Explicit version without leading v (e.g. 0.2.0) — overrides bump"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Resolve version
+        id: resolve
+        run: |
+          node -e "
+            const fs = require('fs');
+            const semver = /^(\d+)\.(\d+)\.(\d+)(-[\w.]+)?$/;
+            const explicit = (process.argv[1] || '').trim();
+            let v = explicit;
+            if (!v) {
+              const cur = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
+              const m = semver.exec(cur);
+              if (!m) { console.error('Current version is not semver:', cur); process.exit(1); }
+              let [major, minor, patch] = [Number(m[1]), Number(m[2]), Number(m[3])];
+              const bump = process.argv[2] || 'patch';
+              if (bump === 'major') { major += 1; minor = 0; patch = 0; }
+              else if (bump === 'minor') { minor += 1; patch = 0; }
+              else { patch += 1; }
+              v = major + '.' + minor + '.' + patch;
+            }
+            if (!semver.test(v)) { console.error('Bad version:', v); process.exit(1); }
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'version=' + v + '\n');
+            console.log('Version:', v);
+          " "${{ inputs.version }}" "${{ inputs.bump }}"
+
+      - name: Bump version files
+        run: |
+          node -e "
+            const fs = require('fs');
+            const v = process.argv[1];
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = v;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            const confPath = 'src-tauri/tauri.conf.json';
+            const conf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
+            conf.version = v;
+            fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + '\n');
+            let cargo = fs.readFileSync('src-tauri/Cargo.toml', 'utf8');
+            cargo = cargo.replace(/^version = \".*\"/m, 'version = \"' + v + '\"');
+            fs.writeFileSync('src-tauri/Cargo.toml', cargo);
+            try {
+              let lock = fs.readFileSync('src-tauri/Cargo.lock', 'utf8');
+              lock = lock.replace(/(name = \"cutline\"\nversion = \")[^\"]+(\")/, '\$1' + v + '\$2');
+              fs.writeFileSync('src-tauri/Cargo.lock', lock);
+            } catch {}
+            console.log('Bumped to', v);
+          " "${{ steps.resolve.outputs.version }}"
+
+      - name: Commit and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+          git commit -m "chore: release v${{ steps.resolve.outputs.version }}" || echo "Nothing to commit"
+          git tag "v${{ steps.resolve.outputs.version }}" || echo "Tag exists"
+          git push origin HEAD
+          git push origin "v${{ steps.resolve.outputs.version }}"

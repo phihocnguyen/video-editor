@@ -51,6 +51,27 @@
   background: var(--bg-panel);
 }
 
+.propsEmpty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-5) var(--sp-4);
+  color: var(--text-muted);
+}
+
+.propsEmptyTitle {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 700;
+  color: var(--text);
+}
+
+.propsEmptyHint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
 .propsHeader {
   display: flex;
   align-items: center;

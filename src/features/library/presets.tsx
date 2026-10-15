@@ -126,7 +126,7 @@ export const PHOTO_PRESETS = [
   { id: "photo-6", label: "Ocean dusk", src: "/examples/photo-6.svg" },
 ];
 
-/** CapCut/canvas-style one-tap text looks (style + entrance/exit). */
+/** One-tap text looks (style + entrance/exit). */
 export interface TextEffectPreset {
   id: string;
   label: string;
@@ -144,6 +144,7 @@ export const TEXT_EFFECT_PRESETS: TextEffectPreset[] = [
       content: "Title text",
       color: "#FFE566",
       fontSize: 48,
+      fontWeight: 700,
       align: "center",
       textAnimation: { ...DEFAULT_TEXT_ANIMATION },
     },
@@ -156,6 +157,7 @@ export const TEXT_EFFECT_PRESETS: TextEffectPreset[] = [
       content: "Fade in",
       color: "#FFFFFF",
       fontSize: 44,
+      fontWeight: 600,
       align: "center",
       textAnimation: {
         in: "fade",
@@ -173,6 +175,7 @@ export const TEXT_EFFECT_PRESETS: TextEffectPreset[] = [
       content: "Slide up",
       color: "#EBF8FF",
       fontSize: 46,
+      fontWeight: 700,
       align: "center",
       textAnimation: {
         in: "slideUp",
@@ -190,6 +193,7 @@ export const TEXT_EFFECT_PRESETS: TextEffectPreset[] = [
       content: "Coming in",
       color: "#E6FFFA",
       fontSize: 42,
+      fontWeight: 700,
       align: "center",
       textAnimation: {
         in: "slideLeft",
@@ -207,6 +211,7 @@ export const TEXT_EFFECT_PRESETS: TextEffectPreset[] = [
       content: "POP!",
       color: "#FFFAF0",
       fontSize: 56,
+      fontWeight: 800,
       align: "center",
       textAnimation: {
         in: "scalePop",
@@ -224,6 +229,7 @@ export const TEXT_EFFECT_PRESETS: TextEffectPreset[] = [
       content: "NEON",
       color: "#B794F4",
       fontSize: 52,
+      fontWeight: 800,
       align: "center",
       textAnimation: {
         in: "scalePop",
@@ -241,6 +247,8 @@ export const TEXT_EFFECT_PRESETS: TextEffectPreset[] = [
       content: "The End",
       color: "#FEFCBF",
       fontSize: 44,
+      fontWeight: 600,
+      italic: true,
       align: "center",
       textAnimation: {
         in: "fade",
@@ -258,12 +266,172 @@ export const TEXT_EFFECT_PRESETS: TextEffectPreset[] = [
       content: "Lower third",
       color: "#FFFFFF",
       fontSize: 36,
+      fontWeight: 600,
       align: "center",
+      backgroundColor: "#000000",
+      backgroundPadding: 14,
+      backgroundRadius: 8,
       textAnimation: {
         in: "slideUp",
         out: "slideDown",
         inDurationSec: 0.35,
         outDurationSec: 0.35,
+      },
+    },
+  },
+  {
+    id: "highlight",
+    label: "Highlight",
+    swatch: "linear-gradient(145deg, #f6e05e 0%, #b7791f 100%)",
+    text: {
+      content: "Key point",
+      color: "#1A202C",
+      fontSize: 40,
+      fontWeight: 800,
+      align: "center",
+      backgroundColor: "#FFE566",
+      backgroundPadding: 16,
+      backgroundRadius: 12,
+      textAnimation: {
+        in: "scalePop",
+        out: "fade",
+        inDurationSec: 0.35,
+        outDurationSec: 0.4,
+      },
+    },
+  },
+  {
+    id: "marker",
+    label: "Marker",
+    swatch: "linear-gradient(145deg, #fc8181 0%, #9b2c2c 100%)",
+    text: {
+      content: "Important",
+      color: "#FFFFFF",
+      fontSize: 38,
+      fontWeight: 700,
+      align: "center",
+      backgroundColor: "#E53E3E",
+      backgroundPadding: 14,
+      backgroundRadius: 6,
+      textAnimation: {
+        in: "slideLeft",
+        out: "fade",
+        inDurationSec: 0.4,
+        outDurationSec: 0.35,
+      },
+    },
+  },
+  {
+    id: "soft-pill",
+    label: "Soft Pill",
+    swatch: "linear-gradient(145deg, #90cdf4 0%, #2b6cb0 100%)",
+    text: {
+      content: "Note",
+      color: "#1A365D",
+      fontSize: 36,
+      fontWeight: 600,
+      align: "center",
+      backgroundColor: "#BEE3F8",
+      backgroundPadding: 18,
+      backgroundRadius: 24,
+      textAnimation: {
+        in: "fade",
+        out: "fade",
+        inDurationSec: 0.45,
+        outDurationSec: 0.45,
+      },
+    },
+  },
+  {
+    id: "typewriter",
+    label: "Typewriter",
+    swatch: "linear-gradient(145deg, #a0aec0 0%, #2d3748 100%)",
+    text: {
+      content: "Type this",
+      fontFamily: "JetBrains Mono Variable",
+      color: "#E2E8F0",
+      fontSize: 34,
+      fontWeight: 500,
+      align: "left",
+      textAnimation: {
+        in: "slideRight",
+        out: "fade",
+        inDurationSec: 0.5,
+        outDurationSec: 0.4,
+      },
+    },
+  },
+  {
+    id: "italic-quote",
+    label: "Quote",
+    swatch: "linear-gradient(145deg, #c3dafe 0%, #4c51bf 100%)",
+    text: {
+      content: "“A short quote.”",
+      color: "#EBF4FF",
+      fontSize: 40,
+      fontWeight: 500,
+      italic: true,
+      align: "center",
+      textAnimation: {
+        in: "fade",
+        out: "fade",
+        inDurationSec: 0.7,
+        outDurationSec: 0.7,
+      },
+    },
+  },
+  {
+    id: "bold-title",
+    label: "Bold Title",
+    swatch: "linear-gradient(145deg, #faf089 0%, #975a16 100%)",
+    text: {
+      content: "BIG TITLE",
+      color: "#FFFFFF",
+      fontSize: 64,
+      fontWeight: 900,
+      align: "center",
+      textAnimation: {
+        in: "scalePop",
+        out: "slideUp",
+        inDurationSec: 0.4,
+        outDurationSec: 0.45,
+      },
+    },
+  },
+  {
+    id: "underline",
+    label: "Underline",
+    swatch: "linear-gradient(145deg, #9ae6b4 0%, #276749 100%)",
+    text: {
+      content: "Emphasize",
+      color: "#F0FFF4",
+      fontSize: 42,
+      fontWeight: 700,
+      underline: true,
+      align: "center",
+      textAnimation: {
+        in: "slideUp",
+        out: "fade",
+        inDurationSec: 0.45,
+        outDurationSec: 0.4,
+      },
+    },
+  },
+  {
+    id: "drop-from-top",
+    label: "Drop In",
+    swatch: "linear-gradient(145deg, #fbb6ce 0%, #97266d 100%)",
+    text: {
+      content: "Drop in",
+      color: "#FFF5F7",
+      fontSize: 48,
+      fontWeight: 700,
+      align: "center",
+      textAnimation: {
+        in: "slideDown",
+        out: "slideUp",
+        inDurationSec: 0.5,
+        outDurationSec: 0.45,
       },
     },
   },

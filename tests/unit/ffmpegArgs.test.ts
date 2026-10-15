@@ -5,6 +5,7 @@ import {
   buildFfmpegArgs,
   buildRenderPlan,
   createEmptyProject,
+  updateClipEffects,
   type MediaAsset,
 } from "../../src/domain";
 import { clipSetpts } from "../../src/domain/ffmpegArgs";
@@ -126,8 +127,7 @@ describe("buildFfmpegArgs", () => {
     expect(filter).toContain("fontfile='public/fonts/Manrope-Bold.ttf'");
   });
 
-  it("honors an explicit custom fontfile when the file exists", () => {
-    let project = createEmptyProject();
+  it("honors an explicit custom fontfile when the file exists", () => {    let project = createEmptyProject();
     project = addTextClip(project, { text: { content: "Hi" } });
     const plan = buildRenderPlan(project, "source", "draft");
     plan.texts[0]!.fontPath = "C:/fonts/Custom.ttf";
@@ -238,6 +238,35 @@ describe("buildFfmpegArgs", () => {
     // Audio ramp is approximated with sliced atempo segments joined by concat.
     expect(filter).toContain("concat=n=");
     expect(filter).toContain("atempo=");
+  });
+
+  it("emits video fade and audio afade with matching durations", () => {
+    let project = createEmptyProject();
+    const asset: MediaAsset = {
+      id: "a1",
+      kind: "video",
+      path: "C:/media/clip.mp4",
+      name: "clip.mp4",
+      durationTicks: 10_000_000,
+      width: 1280,
+      height: 720,
+      frameRate: 30,
+      hasAudio: true,
+      missing: false,
+    };
+    project = { ...project, assets: [asset] };
+    project = addMediaClip(project, "a1", { startTicks: 0 });
+    const id = project.clips[0]!.id;
+    project = updateClipEffects(project, id, { fadeInSec: 1, fadeOutSec: 2 });
+    const plan = buildRenderPlan(project, "source", "draft");
+    const built = buildFfmpegArgs(plan, "C:/out/export.mp4", {
+      fileExists: () => true,
+    });
+    const filter = built.args[built.args.indexOf("-filter_complex") + 1];
+    expect(filter).toContain("fade=t=in:st=0.000:d=1.000:alpha=1");
+    expect(filter).toContain("fade=t=out:st=8.000:d=2.000:alpha=1");
+    expect(filter).toContain("afade=t=in:st=0.000:d=1.000");
+    expect(filter).toContain("afade=t=out:st=8.000:d=2.000");
   });
 });
 

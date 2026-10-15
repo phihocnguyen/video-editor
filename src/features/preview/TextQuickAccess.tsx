@@ -1,8 +1,8 @@
 import {
   useEffect,
-  useMemo,
   useRef,
   useState,
+  type ReactNode,
   type RefObject,
 } from "react";
 import {
@@ -14,7 +14,6 @@ import {
   withListStyle,
   type TextStyle,
 } from "../../domain";
-import { TEXT_EFFECT_PRESETS } from "../library/presets";
 import {
   copySelectedClips,
   duplicateSelectedClips,
@@ -27,22 +26,29 @@ import { useProjectStore } from "../../stores/projectStore";
 
 interface TextQuickAccessProps {
   stageRef: RefObject<HTMLDivElement | null>;
+  wrapRef: RefObject<HTMLDivElement | null>;
 }
+
+type BarPos = { left: number; top: number; below: boolean };
 
 function applyText(clipId: string, next: TextStyle) {
   commitProjectChange((p) => updateClipText(p, clipId, next));
 }
 
-export function TextQuickAccess({ stageRef }: TextQuickAccessProps) {
+const PAD = 10;
+
+export function TextQuickAccess({ stageRef, wrapRef }: TextQuickAccessProps) {
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const textQuickUi = useEditorUiStore((s) => s.textQuickUi);
   const setTextQuickUi = useEditorUiStore((s) => s.setTextQuickUi);
   const patchTextQuickUi = useEditorUiStore((s) => s.patchTextQuickUi);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
+  const setActivePanel = useEditorUiStore((s) => s.setActivePanel);
+  const activePanel = useEditorUiStore((s) => s.activePanel);
   const project = useProjectStore((s) => s.project);
-  const [search, setSearch] = useState("");
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const [pos, setPos] = useState<BarPos | null>(null);
+  const [colorOpen, setColorOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
   const clipId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
@@ -51,7 +57,6 @@ export function TextQuickAccess({ stageRef }: TextQuickAccessProps) {
     : null;
   const text = clip?.text ? normalizeTextStyle(clip.text) : null;
 
-  // Ensure quick UI is open for a single selected text clip
   useEffect(() => {
     if (!clipId || !clip) {
       if (textQuickUi) setTextQuickUi(null);
@@ -67,7 +72,7 @@ export function TextQuickAccess({ stageRef }: TextQuickAccessProps) {
     }
   }, [clipId, clip, textQuickUi, setTextQuickUi]);
 
-  // Track selected text box position relative to stage
+  // Keep bar above the text; clamp inside wrap so stage overflow never clips it
   useEffect(() => {
     if (!clipId || !clip) {
       setPos(null);
@@ -77,99 +82,102 @@ export function TextQuickAccess({ stageRef }: TextQuickAccessProps) {
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const stage = stageRef.current;
+      const wrap = wrapRef.current;
       const el = stage?.querySelector<HTMLElement>(
         `[data-text-clip-id="${clipId}"]`,
       );
-      if (!stage || !el) {
+      if (!stage || !wrap || !el) {
         setPos(null);
         return;
       }
-      const sr = stage.getBoundingClientRect();
+      const wr = wrap.getBoundingClientRect();
       const er = el.getBoundingClientRect();
-      const left = er.left + er.width / 2 - sr.left;
-      const top = er.top - sr.top - 12;
+      const bar = rootRef.current;
+      const barW = bar?.offsetWidth || 300;
+      const barH = bar?.offsetHeight || 44;
+
+      let left = er.left + er.width / 2 - wr.left;
+      const half = barW / 2;
+      left = Math.min(Math.max(left, PAD + half), Math.max(PAD + half, wr.width - PAD - half));
+
+      // Prefer above the text; flip below if there isn't room
+      let below = false;
+      let top = er.top - wr.top - 8;
+      if (top < PAD + barH) {
+        below = true;
+        top = er.bottom - wr.top + 8;
+        top = Math.min(top, Math.max(PAD, wr.height - PAD - barH));
+      }
+
       setPos((prev) =>
-        prev && Math.abs(prev.left - left) < 0.5 && Math.abs(prev.top - top) < 0.5
+        prev &&
+        Math.abs(prev.left - left) < 0.5 &&
+        Math.abs(prev.top - top) < 0.5 &&
+        prev.below === below
           ? prev
-          : { left, top },
+          : { left, top, below },
       );
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [clipId, clip, stageRef]);
+  }, [clipId, clip, stageRef, wrapRef]);
 
-  // Close more menu on outside click
   useEffect(() => {
-    if (!textQuickUi?.moreOpen && !textQuickUi?.stylesOpen) return;
+    if (!textQuickUi?.moreOpen && !colorOpen) return;
     const onDown = (e: PointerEvent) => {
       const root = rootRef.current;
       if (root && !root.contains(e.target as Node)) {
-        patchTextQuickUi({ moreOpen: false, stylesOpen: false });
+        patchTextQuickUi({ moreOpen: false });
+        setColorOpen(false);
       }
     };
     window.addEventListener("pointerdown", onDown, true);
     return () => window.removeEventListener("pointerdown", onDown, true);
-  }, [textQuickUi?.moreOpen, textQuickUi?.stylesOpen, patchTextQuickUi]);
+  }, [textQuickUi?.moreOpen, colorOpen, patchTextQuickUi]);
 
-  const presets = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return TEXT_EFFECT_PRESETS;
-    return TEXT_EFFECT_PRESETS.filter(
-      (p) =>
-        p.label.toLowerCase().includes(q) || p.id.toLowerCase().includes(q),
-    );
-  }, [search]);
+  useEffect(() => {
+    if (textQuickUi?.mode !== "edit") setColorOpen(false);
+  }, [textQuickUi?.mode]);
 
   if (!clipId || !clip || !text || !textQuickUi || !pos) return null;
 
   const editing = textQuickUi.mode === "edit";
-
-  const pillBtn = (active?: boolean) =>
-    cn(
-      "inline-flex h-8 items-center justify-center gap-1.5 rounded-full px-2.5 text-[13px] font-semibold text-neutral-900 transition-colors hover:bg-black/6",
-      active && "bg-blue-500/10 text-blue-600 ring-1 ring-inset ring-blue-500",
-    );
-
-  const iconBtn = (active?: boolean) =>
-    cn(
-      "inline-flex size-8 items-center justify-center rounded-full text-neutral-900 transition-colors hover:bg-black/6",
-      active && "bg-blue-500/12 text-blue-600",
-    );
+  const colorValue =
+    text.color.startsWith("#") && text.color.length >= 7
+      ? text.color.slice(0, 7)
+      : "#ffffff";
 
   return (
     <div
       ref={rootRef}
-      className="pointer-events-none absolute z-40 -translate-x-1/2 -translate-y-full"
-      style={{ left: pos.left, top: Math.max(8, pos.top) }}
+      data-text-quick-access
+      className={cn(
+        "pointer-events-none absolute z-50 -translate-x-1/2",
+        pos.below ? "translate-y-0" : "-translate-y-full",
+      )}
+      style={{ left: pos.left, top: pos.top }}
     >
       <div className="pointer-events-auto relative flex flex-col items-center">
         {!editing ? (
-          <div className="flex items-center gap-0.5 rounded-full bg-white p-1 text-neutral-900 shadow-[0_8px_28px_rgba(0,0,0,0.28),0_0_0_1px_rgba(0,0,0,0.06)]">
-            <button
-              type="button"
-              className={pillBtn()}
+          <ToolbarShell>
+            <ToolButton
+              label="Edit"
+              icon={<PencilIcon />}
               onClick={() =>
-                patchTextQuickUi({ mode: "edit", stylesOpen: false, moreOpen: false })
+                patchTextQuickUi({ mode: "edit", moreOpen: false })
               }
-            >
-              <PencilIcon /> Edit
-            </button>
-            <button
-              type="button"
-              className={pillBtn(textQuickUi.stylesOpen)}
-              onClick={() =>
-                patchTextQuickUi({
-                  stylesOpen: !textQuickUi.stylesOpen,
-                  moreOpen: false,
-                })
-              }
-            >
-              <StylesIcon /> Styles
-            </button>
-            <span className="mx-1 h-5 w-px bg-black/10" />
-            <button
-              type="button"
-              className={iconBtn()}
+            />
+            <ToolButton
+              label="Styles"
+              icon={<StylesIcon />}
+              active={activePanel === "text"}
+              onClick={() => {
+                patchTextQuickUi({ moreOpen: false, stylesOpen: false });
+                setActivePanel("text");
+              }}
+            />
+            <ToolbarDivider />
+            <ToolIconButton
               title="Bring forward"
               onClick={() => {
                 try {
@@ -180,10 +188,8 @@ export function TextQuickAccess({ stageRef }: TextQuickAccessProps) {
               }}
             >
               <LayerUpIcon />
-            </button>
-            <button
-              type="button"
-              className={iconBtn()}
+            </ToolIconButton>
+            <ToolIconButton
               title="Send backward"
               onClick={() => {
                 try {
@@ -194,19 +200,13 @@ export function TextQuickAccess({ stageRef }: TextQuickAccessProps) {
               }}
             >
               <LayerDownIcon />
-            </button>
-            <button
-              type="button"
-              className={iconBtn()}
-              title="Duplicate"
-              onClick={() => duplicateSelectedClips()}
-            >
+            </ToolIconButton>
+            <ToolIconButton title="Duplicate" onClick={() => duplicateSelectedClips()}>
               <DupIcon />
-            </button>
-            <button
-              type="button"
-              className={cn(iconBtn(), "hover:bg-red-500/12 hover:text-red-600")}
+            </ToolIconButton>
+            <ToolIconButton
               title="Delete"
+              danger
               onClick={() => {
                 commitProjectChange((p) => deleteClips(p, [clipId]));
                 setSelectedClipIds([]);
@@ -214,26 +214,27 @@ export function TextQuickAccess({ stageRef }: TextQuickAccessProps) {
               }}
             >
               <TrashIcon />
-            </button>
+            </ToolIconButton>
             <div className="relative">
-              <button
-                type="button"
-                className={iconBtn(textQuickUi.moreOpen)}
+              <ToolIconButton
                 title="More"
+                active={textQuickUi.moreOpen}
                 onClick={() =>
-                  patchTextQuickUi({
-                    moreOpen: !textQuickUi.moreOpen,
-                    stylesOpen: false,
-                  })
+                  patchTextQuickUi({ moreOpen: !textQuickUi.moreOpen })
                 }
               >
                 <MoreIcon />
-              </button>
+              </ToolIconButton>
               {textQuickUi.moreOpen ? (
-                <div className="absolute top-[calc(100%+8px)] right-0 z-50 min-w-[220px] rounded-xl bg-white p-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.28),0_0_0_1px_rgba(0,0,0,0.06)]">
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between gap-4 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium hover:bg-black/6"
+                <div
+                  className={cn(
+                    "absolute right-0 z-50 w-52 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-xl",
+                    pos.below ? "bottom-[calc(100%+8px)]" : "top-[calc(100%+8px)]",
+                  )}
+                >
+                  <MoreItem
+                    icon={<FlipHIcon />}
+                    label="Flip horizontal"
                     onClick={() => {
                       commitProjectChange((p) =>
                         updateClipTransform(p, clipId, {
@@ -243,14 +244,10 @@ export function TextQuickAccess({ stageRef }: TextQuickAccessProps) {
                       );
                       patchTextQuickUi({ moreOpen: false });
                     }}
-                  >
-                    <span className="inline-flex items-center gap-2.5">
-                      <FlipHIcon /> Flip horizontal
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between gap-4 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium hover:bg-black/6"
+                  />
+                  <MoreItem
+                    icon={<FlipVIcon />}
+                    label="Flip vertical"
                     onClick={() => {
                       commitProjectChange((p) =>
                         updateClipTransform(p, clipId, {
@@ -260,65 +257,111 @@ export function TextQuickAccess({ stageRef }: TextQuickAccessProps) {
                       );
                       patchTextQuickUi({ moreOpen: false });
                     }}
-                  >
-                    <span className="inline-flex items-center gap-2.5">
-                      <FlipVIcon /> Flip vertical
-                    </span>
-                  </button>
-                  <div className="mx-2 my-1 h-px bg-black/8" />
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between gap-4 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium hover:bg-black/6"
+                  />
+                  <div className="mx-2 my-1.5 h-px bg-border" />
+                  <MoreItem
+                    icon={<CopyIcon />}
+                    label="Copy"
+                    shortcut="Ctrl+C"
                     onClick={() => {
                       copySelectedClips();
                       patchTextQuickUi({ moreOpen: false });
                     }}
-                  >
-                    <span className="inline-flex items-center gap-2.5">
-                      <CopyIcon /> Copy Element
-                    </span>
-                    <span className="text-xs font-medium text-neutral-400">CTRL + C</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between gap-4 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium hover:bg-black/6"
+                  />
+                  <MoreItem
+                    icon={<PasteIcon />}
+                    label="Paste"
+                    shortcut="Ctrl+V"
                     onClick={() => {
                       pasteClipboardClips();
                       patchTextQuickUi({ moreOpen: false });
                     }}
-                  >
-                    <span className="inline-flex items-center gap-2.5">
-                      <PasteIcon /> Paste Element
-                    </span>
-                    <span className="text-xs font-medium text-neutral-400">CTRL + V</span>
-                  </button>
+                  />
                 </div>
               ) : null}
             </div>
-          </div>
+          </ToolbarShell>
         ) : (
-          <div className="flex items-center gap-0.5 rounded-full bg-white p-1 text-neutral-900 shadow-[0_8px_28px_rgba(0,0,0,0.28),0_0_0_1px_rgba(0,0,0,0.06)]">
-            <label
-              className="relative mx-1 size-7 shrink-0 overflow-hidden rounded-full border-2 border-white shadow-[0_0_0_1px_rgba(0,0,0,0.15)]"
-              title="Text color"
-              style={{ background: text.color }}
-            >
-              <input
-                type="color"
-                className="absolute inset-[-4px] size-[calc(100%+8px)] cursor-pointer border-0 p-0"
-                value={
-                  text.color.startsWith("#") && text.color.length >= 7
-                    ? text.color.slice(0, 7)
-                    : "#ffffff"
-                }
-                onChange={(e) => applyText(clipId, { ...text, color: e.target.value })}
-              />
-            </label>
-            <span className="mx-1 h-5 w-px bg-black/10" />
-            <button
-              type="button"
-              className={iconBtn(text.fontWeight >= 600)}
+          <ToolbarShell>
+            <div className="relative">
+              <button
+                type="button"
+                title={`Text color (${text.color})`}
+                aria-label="Text color"
+                aria-expanded={colorOpen}
+                className={cn(
+                  "relative mx-0.5 grid size-8 shrink-0 place-items-center overflow-hidden rounded-full text-[13px] font-extrabold shadow-sm",
+                  isLightColor(colorValue)
+                    ? "border border-border"
+                    : "border-2 border-white/55 ring-1 ring-black/40",
+                )}
+                style={{
+                  background: text.color,
+                  color: isLightColor(colorValue) ? "#111111" : "#FFFFFF",
+                }}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => setColorOpen((v) => !v)}
+              >
+                A
+              </button>
+              {colorOpen ? (
+                <div
+                  className={cn(
+                    "absolute left-0 z-50 w-52 rounded-xl border border-border bg-popover p-3 text-popover-foreground shadow-xl",
+                    pos.below ? "bottom-[calc(100%+8px)]" : "top-[calc(100%+8px)]",
+                  )}
+                  onMouseDown={(e) => e.preventDefault()}
+                >
+                  <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Color
+                  </div>
+                  <div className="mb-3 grid grid-cols-6 gap-1.5">
+                    {TEXT_COLOR_SWATCHES.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        title={c}
+                        className={cn(
+                          "size-6 rounded-md transition-transform hover:scale-110",
+                          isLightColor(c)
+                            ? "border border-border/80"
+                            : "border border-white/40",
+                          colorValue.toLowerCase() === c.toLowerCase() &&
+                            "ring-2 ring-primary ring-offset-1 ring-offset-popover",
+                        )}
+                        style={{ background: c }}
+                        onClick={() => {
+                          applyText(clipId, { ...text, color: c });
+                          setColorOpen(false);
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <label className="flex items-center gap-2 rounded-lg border border-border bg-background px-2 py-1.5">
+                    <input
+                      type="color"
+                      className="size-7 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0"
+                      value={colorValue}
+                      onChange={(e) =>
+                        applyText(clipId, { ...text, color: e.target.value })
+                      }
+                    />
+                    <input
+                      className="min-w-0 flex-1 bg-transparent text-[12px] font-medium text-foreground outline-none"
+                      value={text.color}
+                      onChange={(e) =>
+                        applyText(clipId, { ...text, color: e.target.value })
+                      }
+                      spellCheck={false}
+                    />
+                  </label>
+                </div>
+              ) : null}
+            </div>
+            <ToolbarDivider />
+            <ToolIconButton
               title="Bold"
+              active={text.fontWeight >= 600}
               onClick={() =>
                 applyText(clipId, {
                   ...text,
@@ -326,30 +369,27 @@ export function TextQuickAccess({ stageRef }: TextQuickAccessProps) {
                 })
               }
             >
-              <span className="font-extrabold">B</span>
-            </button>
-            <button
-              type="button"
-              className={iconBtn(text.italic)}
+              <span className="text-[13px] font-extrabold">B</span>
+            </ToolIconButton>
+            <ToolIconButton
               title="Italic"
+              active={text.italic}
               onClick={() => applyText(clipId, { ...text, italic: !text.italic })}
             >
-              <span className="italic font-semibold">I</span>
-            </button>
-            <button
-              type="button"
-              className={iconBtn(text.underline)}
+              <span className="text-[13px] font-semibold italic">I</span>
+            </ToolIconButton>
+            <ToolIconButton
               title="Underline"
+              active={text.underline}
               onClick={() =>
                 applyText(clipId, { ...text, underline: !text.underline })
               }
             >
-              <span className="font-semibold underline">U</span>
-            </button>
-            <button
-              type="button"
-              className={iconBtn(text.strikethrough)}
+              <span className="text-[13px] font-semibold underline">U</span>
+            </ToolIconButton>
+            <ToolIconButton
               title="Strikethrough"
+              active={text.strikethrough}
               onClick={() =>
                 applyText(clipId, {
                   ...text,
@@ -357,89 +397,182 @@ export function TextQuickAccess({ stageRef }: TextQuickAccessProps) {
                 })
               }
             >
-              <span className="font-semibold line-through">S</span>
-            </button>
-            <span className="mx-1 h-5 w-px bg-black/10" />
-            <button
-              type="button"
-              className={iconBtn(text.listStyle === "bullet")}
+              <span className="text-[13px] font-semibold line-through">S</span>
+            </ToolIconButton>
+            <ToolbarDivider />
+            <ToolIconButton
               title="Bulleted list"
+              active={text.listStyle === "bullet"}
               onClick={() => applyText(clipId, withListStyle(text, "bullet"))}
             >
               <BulletIcon />
-            </button>
-            <button
-              type="button"
-              className={iconBtn(text.listStyle === "number")}
+            </ToolIconButton>
+            <ToolIconButton
               title="Numbered list"
+              active={text.listStyle === "number"}
               onClick={() => applyText(clipId, withListStyle(text, "number"))}
             >
               <NumberIcon />
-            </button>
-            <span className="mx-1 h-5 w-px bg-black/10" />
+            </ToolIconButton>
+            <ToolbarDivider />
             <button
               type="button"
-              className={pillBtn()}
-              onClick={() =>
-                patchTextQuickUi({ mode: "select", stylesOpen: false, moreOpen: false })
-              }
+              className="inline-flex h-8 items-center rounded-lg bg-primary px-3.5 text-[13px] font-bold text-primary-foreground transition-colors hover:bg-primary/90"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setColorOpen(false);
+                patchTextQuickUi({ mode: "select", moreOpen: false });
+              }}
             >
               Done
             </button>
-          </div>
+          </ToolbarShell>
         )}
-
-        {textQuickUi.stylesOpen && !editing ? (
-          <div className="absolute top-[calc(100%+10px)] left-0 z-50 w-[min(280px,70vw)] max-h-[360px] overflow-auto rounded-[14px] bg-white p-3 text-neutral-900 shadow-[0_12px_36px_rgba(0,0,0,0.28),0_0_0_1px_rgba(0,0,0,0.06)]">
-            <div className="mb-2.5 flex items-center justify-between text-sm font-bold">
-              <span>Text Styles</span>
-              <button
-                type="button"
-                className="grid size-7 place-items-center rounded-lg text-base hover:bg-black/6"
-                aria-label="Close styles"
-                onClick={() => patchTextQuickUi({ stylesOpen: false })}
-              >
-                ×
-              </button>
-            </div>
-            <input
-              className="mb-3 w-full rounded-lg border border-black/10 bg-neutral-100 px-2.5 py-2 text-[13px] outline-none focus:border-blue-400"
-              placeholder="Search …"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            <div className="grid grid-cols-2 gap-2">
-              {presets.map((preset) => (
-                <button
-                  key={preset.id}
-                  type="button"
-                  className="flex flex-col gap-1.5 overflow-hidden rounded-[10px] border border-black/8 bg-neutral-50 text-left hover:border-blue-500"
-                  onClick={() => {
-                    const merged = normalizeTextStyle({
-                      ...text,
-                      ...preset.text,
-                      content: text.content.trim() ? text.content : preset.text.content,
-                    });
-                    applyText(clipId, merged);
-                    setStatusMessage(`Applied ${preset.label}`);
-                  }}
-                >
-                  <span
-                    className="grid h-14 place-items-center text-[15px] font-bold tracking-tight text-white"
-                    style={{ background: preset.swatch }}
-                  >
-                    Aa
-                  </span>
-                  <span className="px-2 pb-2 text-xs font-semibold text-neutral-700">
-                    {preset.label}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
       </div>
     </div>
+  );
+}
+
+const TEXT_COLOR_SWATCHES = [
+  "#FFFFFF",
+  "#FFE566",
+  "#FF6B6B",
+  "#4ECDC4",
+  "#5B8DEF",
+  "#B794F4",
+  "#111111",
+  "#F8FAFC",
+  "#22C55E",
+  "#F97316",
+  "#EC4899",
+  "#94A3B8",
+];
+
+/** Relative luminance → pick dark glyph on light fills. */
+function isLightColor(hex: string): boolean {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return false;
+  const n = parseInt(m[1]!, 16);
+  const r = (n >> 16) & 0xff;
+  const g = (n >> 8) & 0xff;
+  const b = n & 0xff;
+  // sRGB relative luminance (WCAG)
+  const lin = (c: number) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b) > 0.55;
+}
+
+/** Floating pill bar — Canvas-style: elevated surface, tight radius, one accent. */
+function ToolbarShell({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-1 rounded-xl border border-border bg-popover/95 p-1.5 text-popover-foreground shadow-xl backdrop-blur-md">
+      {children}
+    </div>
+  );
+}
+
+function ToolbarDivider() {
+  return <span className="mx-1 h-5 w-px shrink-0 bg-border" aria-hidden />;
+}
+
+function ToolButton({
+  label,
+  icon,
+  active,
+  onClick,
+}: {
+  label: string;
+  icon: ReactNode;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-semibold transition-colors",
+        active
+          ? "bg-primary/15 text-primary"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground",
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+function ToolIconButton({
+  title,
+  active,
+  danger,
+  onClick,
+  children,
+}: {
+  title: string;
+  active?: boolean;
+  danger?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      aria-pressed={active}
+      // Keep contentEditable focused while formatting
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onClick}
+      className={cn(
+        "grid size-8 shrink-0 place-items-center rounded-lg font-semibold transition-colors",
+        danger
+          ? "text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+          : active
+            ? "shadow-sm"
+            : "hover:brightness-125",
+      )}
+      style={
+        danger
+          ? undefined
+          : active
+            ? { background: "#7DD3FC", color: "#0B1220" }
+            : { background: "rgba(255,255,255,0.14)", color: "#C8C8D0" }
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+function MoreItem({
+  icon,
+  label,
+  shortcut,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  shortcut?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="flex w-full items-center justify-between gap-4 rounded-lg px-2.5 py-2 text-left text-[13px] font-medium text-popover-foreground transition-colors hover:bg-accent"
+      onClick={onClick}
+    >
+      <span className="inline-flex items-center gap-2.5 text-muted-foreground [&_svg]:text-foreground">
+        {icon}
+        <span className="text-popover-foreground">{label}</span>
+      </span>
+      {shortcut ? (
+        <span className="text-[11px] font-medium text-muted-foreground">{shortcut}</span>
+      ) : null}
+    </button>
   );
 }
 
@@ -485,7 +618,6 @@ function DupIcon() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
       <rect x="8" y="8" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.8" />
       <path d="M4 14V6a2 2 0 0 1 2-2h8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <path d="M14 4v4h4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
 }
@@ -499,9 +631,9 @@ function TrashIcon() {
 function MoreIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-      <circle cx="5" cy="12" r="1.6" />
-      <circle cx="12" cy="12" r="1.6" />
-      <circle cx="19" cy="12" r="1.6" />
+      <circle cx="5" cy="12" r="1.5" />
+      <circle cx="12" cy="12" r="1.5" />
+      <circle cx="19" cy="12" r="1.5" />
     </svg>
   );
 }
@@ -538,9 +670,9 @@ function PasteIcon() {
 function BulletIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <circle cx="6" cy="7" r="1.5" fill="currentColor" />
-      <circle cx="6" cy="12" r="1.5" fill="currentColor" />
-      <circle cx="6" cy="17" r="1.5" fill="currentColor" />
+      <circle cx="6" cy="7" r="1.4" fill="currentColor" />
+      <circle cx="6" cy="12" r="1.4" fill="currentColor" />
+      <circle cx="6" cy="17" r="1.4" fill="currentColor" />
       <path d="M10 7h10M10 12h10M10 17h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );

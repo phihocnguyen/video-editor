@@ -5,24 +5,16 @@ import {
   type RenderQualityPreset,
   type RenderResolutionPreset,
 } from "../../domain";
+import { localExportHealth, localStartExport } from "../../lib/localExport";
 import {
-  localDownloadUrl,
-  localExportHealth,
-  localGetExportStatus,
-  localStartExport,
-} from "../../lib/localExport";
-import {
-  cancelExport,
   ffmpegStatus,
-  getExportStatus,
   isTauriRuntime,
   pickExportOutputPath,
   startExport,
-  type ExportJobStatus,
-  type ToolchainStatus,
 } from "../../lib/tauri";
 import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
+import { useExportStore } from "../../stores/exportStore";
 import { useProjectStore } from "../../stores/projectStore";
 import styles from "./ExportPanel.module.css";
 
@@ -38,15 +30,12 @@ export function ExportPanel() {
   const project = useProjectStore((s) => s.project);
   const canvas = project.canvas;
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
+  const job = useExportStore((s) => s.job);
+  const setJob = useExportStore((s) => s.setJob);
   const [preset, setPreset] = useState<RenderResolutionPreset>("1080");
   const [quality, setQuality] = useState<RenderQualityPreset>("standard");
-  const [job, setJob] = useState<(ExportJobStatus & { downloadUrl?: string | null }) | null>(
-    null,
-  );
   const [busy, setBusy] = useState(false);
-  const [helperOnline, setHelperOnline] = useState(false);
-  const [ffmpegFound, setFfmpegFound] = useState(false);
-  const [toolchain, setToolchain] = useState<ToolchainStatus | null>(null);
+  const [exportReady, setExportReady] = useState(isTauriRuntime());
   const plan = useMemo(
     () => buildRenderPlan(project, preset, quality),
     [preset, project, quality],
@@ -60,28 +49,18 @@ export function ExportPanel() {
   useEffect(() => {
     let cancelled = false;
     const ping = () => {
-      // Desktop: ask the backend which FFmpeg binary is active (bundled
-      // sidecar preferred). Browser: poll the local export helper.
       if (isTauriRuntime()) {
         void ffmpegStatus()
           .then((status) => {
-            if (cancelled) return;
-            setToolchain(status);
-            setFfmpegFound(status.ffmpegOk);
+            if (!cancelled) setExportReady(status.ffmpegOk);
           })
           .catch(() => {
-            if (!cancelled) {
-              setToolchain(null);
-              setFfmpegFound(false);
-            }
+            if (!cancelled) setExportReady(false);
           });
         return;
       }
       void localExportHealth().then((health) => {
-        if (!cancelled) {
-          setHelperOnline(health.ok);
-          setFfmpegFound(health.ffmpegFound);
-        }
+        if (!cancelled) setExportReady(health.ok && health.ffmpegFound);
       });
     };
     ping();
@@ -92,36 +71,12 @@ export function ExportPanel() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!job || (job.state !== "running" && job.state !== "queued")) return;
-    const timer = window.setInterval(() => {
-      void (async () => {
-        try {
-          if (isTauriRuntime()) {
-            const status = await getExportStatus();
-            if (status) setJob(status);
-            return;
-          }
-          const status = await localGetExportStatus(job.id);
-          setJob(status);
-          if (status.state === "succeeded" && status.downloadUrl) {
-            localDownloadUrl(status.downloadUrl);
-            setStatusMessage(`Export ready · ${status.outputPath ?? "download"}`);
-          }
-        } catch {
-          /* ignore poll errors */
-        }
-      })();
-    }, 500);
-    return () => window.clearInterval(timer);
-  }, [job, setStatusMessage]);
-
   async function handleExport() {
     if (blocked) {
       setStatusMessage(
         hasBlob
-          ? "Re-import media while export helper is running (pnpm dev)"
-          : "Fix missing media / add clips before export",
+          ? "Re-import media before exporting"
+          : "Add clips or fix missing media before export",
       );
       return;
     }
@@ -129,10 +84,8 @@ export function ExportPanel() {
     setBusy(true);
     try {
       if (isTauriRuntime()) {
-        if (!ffmpegFound) {
-          setStatusMessage(
-            "FFmpeg missing — add the sidecar binaries (src-tauri/binaries) or install FFmpeg",
-          );
+        if (!exportReady) {
+          setStatusMessage("Export is unavailable. Please reinstall the app.");
           return;
         }
         const outputPath = await pickExportOutputPath(project.name || "cutline-export");
@@ -142,42 +95,21 @@ export function ExportPanel() {
         }
         const started = await startExport(plan, outputPath);
         setJob(started);
-        setStatusMessage("Export started");
+        setStatusMessage("Exporting…");
         return;
       }
 
-      const health = await localExportHealth();
-      if (!health.ok) {
-        setStatusMessage("Export helper offline — run `pnpm dev` (Vite + export server)");
-        return;
-      }
-      if (!health.ffmpegFound) {
-        setStatusMessage(
-          "FFmpeg missing — place tools/ffmpeg/bin/ffmpeg.exe or set FFMPEG_PATH, then restart pnpm dev",
-        );
+      if (!exportReady) {
+        setStatusMessage("Export is unavailable right now. Please try again.");
         return;
       }
       const started = await localStartExport(project, preset, quality);
       setJob(started);
-      setStatusMessage("Export started (local FFmpeg helper)");
+      setStatusMessage("Exporting…");
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : String(error));
+      setStatusMessage(error instanceof Error ? error.message : "Export failed");
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function handleCancel() {
-    if (!isTauriRuntime()) {
-      setStatusMessage("Cancel is limited in browser helper — wait for job to finish");
-      return;
-    }
-    try {
-      const status = await cancelExport();
-      setJob(status);
-      setStatusMessage("Export cancelled");
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -185,44 +117,15 @@ export function ExportPanel() {
     !busy &&
     !blocked &&
     job?.state !== "running" &&
-    (isTauriRuntime() || (helperOnline && ffmpegFound));
-
-  const toolchainLabel = toolchain
-    ? toolchain.ffmpegOk
-      ? toolchain.bundled
-        ? "Bundled FFmpeg"
-        : "System FFmpeg"
-      : "FFmpeg missing"
-    : "Checking FFmpeg…";
+    job?.state !== "queued" &&
+    exportReady;
 
   return (
     <div className={styles.panel}>
       <h2>Export</h2>
       <p className={styles.lead}>
-        {isTauriRuntime()
-          ? `Desktop export · ${toolchainLabel}.`
-          : helperOnline
-            ? "Browser export via local helper + FFmpeg (same as Export button)."
-            : "Start `pnpm dev` so the export helper is online, then import media and export."}
+        Choose canvas size, resolution, and quality, then export an MP4.
       </p>
-
-      {isTauriRuntime() ? (
-        <p className={ffmpegFound ? styles.ok : styles.warn} title={toolchain?.ffmpeg ?? ""}>
-          {toolchainLabel}
-          {toolchain && !toolchain.ffmpegOk
-            ? " — add the sidecar binaries (src-tauri/binaries) or install FFmpeg"
-            : ""}
-        </p>
-      ) : (
-        <p className={helperOnline && ffmpegFound ? styles.ok : styles.warn}>
-          Helper: {helperOnline ? "online" : "offline"}
-          {helperOnline
-            ? ffmpegFound
-              ? " · FFmpeg ok"
-              : " · FFmpeg missing (tools/ffmpeg/bin)"
-            : " — run pnpm dev"}
-        </p>
-      )}
 
       <div className={styles.canvasBlock}>
         <h3 className={styles.blockTitle}>Canvas</h3>
@@ -364,24 +267,10 @@ export function ExportPanel() {
         ) : null}
         {hasBlob ? (
           <p className={styles.warn}>
-            Some clips still use blob URLs. Re-import media while the helper is online.
+            Some clips need to be re-imported before export.
           </p>
         ) : null}
       </div>
-
-      {job ? (
-        <div className={styles.job}>
-          <div className={styles.progressTrack}>
-            <div
-              className={styles.progressFill}
-              style={{ width: `${Math.round(job.progress * 100)}%` }}
-            />
-          </div>
-          <p>
-            {job.message} ({job.state})
-          </p>
-        </div>
-      ) : null}
 
       <div className={styles.actions}>
         <button
@@ -390,13 +279,10 @@ export function ExportPanel() {
           disabled={!canExport}
           onClick={() => void handleExport()}
         >
-          Export MP4
+          {job?.state === "running" || job?.state === "queued"
+            ? "Exporting…"
+            : "Export MP4"}
         </button>
-        {job?.state === "running" && isTauriRuntime() ? (
-          <button type="button" className={styles.cancelBtn} onClick={() => void handleCancel()}>
-            Cancel
-          </button>
-        ) : null}
       </div>
     </div>
   );

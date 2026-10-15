@@ -6,11 +6,13 @@
 }
 
 .stageWrap {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: var(--sp-5) var(--sp-6) var(--sp-2);
   min-height: 0;
+  overflow: visible;
   background:
     radial-gradient(ellipse at center, #16161c 0%, var(--bg-canvas) 70%);
 }

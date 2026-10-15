@@ -34,6 +34,7 @@ import { PreviewPanel } from "../preview/PreviewPanel";
 import { InspectorPanel } from "../inspector/InspectorPanel";
 import { PropertiesPanel } from "../inspector/PropertiesPanel";
 import { ExportPanel } from "../export/ExportPanel";
+import { ExportProgressModal } from "../export/ExportProgressModal";
 import { PhotosPanel } from "../library/PhotosPanel";
 import { ShapePanel } from "../library/ShapePanel";
 import {
@@ -138,7 +139,6 @@ export function EditorShell() {
   const markClean = useProjectStore((s) => s.markClean);
   const activePanel = useEditorUiStore((s) => s.activePanel);
   const setActivePanel = useEditorUiStore((s) => s.setActivePanel);
-  const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const timelineHeightPx = useEditorUiStore((s) => s.timelineHeightPx);
   const tool = useEditorUiStore((s) => s.tool);
   const setTool = useEditorUiStore((s) => s.setTool);
@@ -623,13 +623,7 @@ export function EditorShell() {
         </div>
       </header>
 
-      <div
-        className={
-          selectedClipIds.length > 0
-            ? `${styles.body} ${styles.bodyPropsOpen}`
-            : styles.body
-        }
-      >
+      <div className={styles.body}>
         <nav className={styles.rail} aria-label="Library">
           {RAIL_ITEMS.map((item) => {
             const Icon = item.Icon;
@@ -664,11 +658,10 @@ export function EditorShell() {
           <PreviewPanel />
         </section>
 
-        {selectedClipIds.length > 0 ? (
-          <aside className={styles.props} aria-label="Properties">
-            <PropertiesPanel />
-          </aside>
-        ) : null}
+        {/* Always mounted as its own column so preview/transport never resize or get covered */}
+        <aside className={styles.props} aria-label="Properties">
+          <PropertiesPanel />
+        </aside>
       </div>
 
       <button
@@ -704,6 +697,7 @@ export function EditorShell() {
       </section>
 
       <StatusBar />
+      <ExportProgressModal />
     </div>
   );
 }

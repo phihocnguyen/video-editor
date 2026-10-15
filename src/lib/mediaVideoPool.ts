@@ -31,6 +31,27 @@ export function warmMediaUrl(url: string): void {
   idleByUrl.set(url, idle);
 }
 
+/**
+ * Hard-reset an element: cancels any in-flight seek and drops the decoder.
+ * A seek issued on a detached (warmed, never mounted) element can wedge
+ * `seeking=true` forever — handing that element out poisons the next
+ * transition that adopts it (the even/odd replay stutter).
+ */
+function resetVideo(video: HTMLVideoElement) {
+  try {
+    video.pause();
+  } catch {
+    /* ignore */
+  }
+  try {
+    video.removeAttribute("src");
+    video.load();
+  } catch {
+    /* ignore */
+  }
+  clearVideoLayoutStyles(video);
+}
+
 /** Borrow (or create) a video for a timeline preview clip. */
 export function acquireMediaVideo(url: string, clipId: string): HTMLVideoElement {
   const existing = inUseByClip.get(clipId);
@@ -39,7 +60,15 @@ export function acquireMediaVideo(url: string, clipId: string): HTMLVideoElement
     releaseMediaVideo(clipId);
   }
   const idle = idleByUrl.get(url) ?? [];
-  const video = idle.pop() ?? createVideo(url);
+  let video = idle.pop();
+  if (video && video.seeking) {
+    // Never hand out a mid-seek element — see resetVideo.
+    resetVideo(video);
+  }
+  if (video && !video.getAttribute("src")) {
+    video.src = url;
+  }
+  if (!video) video = createVideo(url);
   idleByUrl.set(url, idle);
   inUseByClip.set(clipId, { url, video });
   return video;
@@ -63,10 +92,17 @@ export function releaseMediaVideo(clipId: string): void {
   const entry = inUseByClip.get(clipId);
   if (!entry) return;
   inUseByClip.delete(clipId);
-  try {
-    entry.video.pause();
-  } catch {
-    /* ignore */
+  // A mid-seek release wedges `seeking=true` (seek on a detached element may
+  // never resolve) — reset instead of pooling warm, or the next borrower
+  // inherits a frozen decoder.
+  if (entry.video.seeking) {
+    resetVideo(entry.video);
+  } else {
+    try {
+      entry.video.pause();
+    } catch {
+      /* ignore */
+    }
   }
   if (entry.video.parentElement) {
     entry.video.parentElement.removeChild(entry.video);

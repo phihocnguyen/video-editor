@@ -16,7 +16,7 @@ import { releaseMediaBinThumbs } from "../../lib/mediaFilmstrip";
 import { isRampClockActive } from "../../lib/rampClock";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
-import { CompositeLayers, type PreviewLayer } from "./CompositeLayers";
+import { CompositeLayers, isPreTransitionMount, preTransitionWindowStart, type PreviewLayer } from "./CompositeLayers";
 import { MediaOverlayLayer, type MediaOverlayItem } from "./MediaOverlayLayer";
 import { TextOverlayLayer } from "./TextOverlayLayer";
 import { TextQuickAccess } from "./TextQuickAccess";
@@ -30,6 +30,7 @@ function visibleLayerKey(
   assets: MediaAsset[],
   project: ProjectDocument,
   playheadTicks: number,
+  preRollTicks = 0,
 ): string {
   const ids: string[] = [];
   const videoTracks = tracks
@@ -38,7 +39,15 @@ function visibleLayerKey(
   for (const track of videoTracks) {
     for (const clip of clips) {
       if (clip.trackId !== track.id || clip.kind !== "media" || !clip.assetId) continue;
-      if (!clipVisibleWithTransition(clip, playheadTicks, project)) continue;
+      if (!clipVisibleWithTransition(clip, playheadTicks, project)) {
+        // Pre-mounted ahead of a blend window (decoder warm-up while playing).
+        if (!preRollTicks) continue;
+        const windowStart = preTransitionWindowStart(project, clip);
+        if (windowStart == null) continue;
+        if (playheadTicks < windowStart - preRollTicks || playheadTicks >= windowStart) {
+          continue;
+        }
+      }
       const asset = assets.find((a) => a.id === clip.assetId);
       if (!asset || asset.missing) continue;
       if (asset.kind !== "video" && asset.kind !== "image") continue;
@@ -48,8 +57,7 @@ function visibleLayerKey(
   return ids.join("|");
 }
 
-function activeTextKey(clips: Clip[], tracks: Track[], playheadTicks: number): string {
-  const hidden = new Set(
+function activeTextKey(clips: Clip[], tracks: Track[], playheadTicks: number): string {  const hidden = new Set(
     tracks.filter((t) => t.kind === "video" && !t.visible).map((t) => t.id),
   );
   return clips
@@ -76,6 +84,7 @@ export function PreviewPanel() {
   const setPlaying = useEditorUiStore((s) => s.setPlaying);
   const setPlayheadTicks = useEditorUiStore((s) => s.setPlayheadTicks);
   const stageRef = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
 
@@ -90,7 +99,9 @@ export function PreviewPanel() {
 
   const bumpListPlayhead = (ticks: number, force: boolean) => {
     const { tracks: tr, clips: cl, assets: as } = projectRef.current;
-    const vis = visibleLayerKey(tr, cl, as, projectRef.current, ticks);
+    const ui = useEditorUiStore.getState();
+    const preRoll = ui.isPlaying && !ui.isScrubbing ? 1_000_000 : 0;
+    const vis = visibleLayerKey(tr, cl, as, projectRef.current, ticks, preRoll);
     const text = activeTextKey(cl, tr, ticks);
     if (force || vis !== lastVisKeyRef.current || text !== lastTextKeyRef.current) {
       lastVisKeyRef.current = vis;
@@ -118,13 +129,26 @@ export function PreviewPanel() {
     const videoTracks = tracks
       .filter((t) => t.kind === "video" && t.visible)
       .sort((a, b) => a.order - b.order);
+    // Pre-mount the incoming side of a blend ~1s before its window opens
+    // (forward play only) so the decoder is already buffered when the
+    // transition starts — replaying after a scrub otherwise hitches on a
+    // cold mount. Pre-mounted layers stay invisible + paused (see
+    // CompositeLayers) until the window opens.
+    const preRoll = isPlaying && !isScrubbing ? 1_000_000 : 0;
     const out: PreviewLayer[] = [];
     for (const track of videoTracks) {
       const trackClips = clips
         .filter((c) => c.trackId === track.id && c.kind === "media" && c.assetId)
         .sort((a, b) => a.startTicks - b.startTicks);
       for (const clip of trackClips) {
-        if (!clipVisibleWithTransition(clip, listPlayhead, project)) continue;
+        if (!clipVisibleWithTransition(clip, listPlayhead, project)) {
+          if (!preRoll) continue;
+          const windowStart = preTransitionWindowStart(project, clip);
+          if (windowStart == null) continue;
+          if (listPlayhead < windowStart - preRoll || listPlayhead >= windowStart) {
+            continue;
+          }
+        }
         const asset = assets.find((a) => a.id === clip.assetId);
         if (!asset || asset.missing) continue;
         if (asset.kind !== "video" && asset.kind !== "image") continue;
@@ -138,17 +162,20 @@ export function PreviewPanel() {
       }
     }
     return out;
-  }, [assets, clips, listPlayhead, project, tracks]);
+  }, [assets, clips, isPlaying, isScrubbing, listPlayhead, project, tracks]);
 
   const mediaOverlayItems = useMemo((): MediaOverlayItem[] => {
     return layers
       .filter((l) => l.asset.kind === "video" || l.asset.kind === "image")
+      // Pre-mounted blend sides are invisible — keep their hit-box out so
+      // clicks during the pre-roll second still hit the outgoing clip.
+      .filter((l) => !isPreTransitionMount(project, l.clip, listPlayhead))
       .map((l) => ({
         clip: l.clip,
         asset: l.asset,
         trackOrder: l.track.order,
       }));
-  }, [layers]);
+  }, [layers, listPlayhead, project]);
 
   const activeTexts = useMemo(() => {
     const tracksById = new Map(tracks.map((t) => [t.id, t]));
@@ -266,7 +293,7 @@ export function PreviewPanel() {
 
   return (
     <div className={styles.panel}>
-      <div className={styles.stageWrap}>
+      <div ref={wrapRef} className={styles.stageWrap}>
         <div
           ref={stageRef}
           className={styles.stage}
@@ -299,8 +326,9 @@ export function PreviewPanel() {
             stageRef={stageRef}
             playheadTicks={listPlayhead}
           />
-          <TextQuickAccess stageRef={stageRef} />
         </div>
+        {/* Outside .stage so overflow:hidden doesn't clip the floating bar */}
+        <TextQuickAccess stageRef={stageRef} wrapRef={wrapRef} />
       </div>
 
       <TransportBar />

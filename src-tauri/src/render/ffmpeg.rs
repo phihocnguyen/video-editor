@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderClipPlan {
+    /// Wire-format id (debugging / future selective re-render).
+    #[allow(dead_code)]
     pub clip_id: String,
     pub track_id: String,
     #[serde(default)]
@@ -64,6 +66,8 @@ pub struct RenderClipTransform {
     pub scale_y: f64,
     #[serde(default)]
     pub rotation: f64,
+    /// Present on the plan; compositing uses clip-level `RenderClipPlan.opacity`.
+    #[allow(dead_code)]
     #[serde(default = "default_one")]
     pub opacity: f64,
     #[serde(default = "default_blend_normal")]
@@ -205,6 +209,7 @@ fn default_font_weight() -> f64 {
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectKeyframePoint {
+    #[allow(dead_code)]
     #[serde(default)]
     pub id: String,
     #[serde(default)]
@@ -234,6 +239,7 @@ pub struct EffectKeyframes {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderTextPlan {
+    #[allow(dead_code)]
     pub clip_id: String,
     pub content: String,
     pub font_family: String,
@@ -308,6 +314,7 @@ fn default_bg_color() -> String {
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeedPoint {
+    #[allow(dead_code)]
     #[serde(default)]
     pub id: String,
     #[serde(default)]
@@ -943,7 +950,8 @@ fn build_filter_complex(
     fps: f64,
 ) -> Result<String, String> {
     let mut parts: Vec<String> = Vec::new();
-    // lavfi color is YUV — rgba + overlay format=rgb keeps dissolve alpha.
+    // Base must be rgba so clip fades (alpha) can composite. Overlay uses
+    // format=auto — format=rgb disables alpha blending and kills fade in/out.
     parts.push("[0:v]format=rgba[base]".into());
 
     // Phase 1: prepare each visual stream (placement, retime, effects,
@@ -1119,7 +1127,7 @@ fn build_filter_complex(
                     ));
                 } else {
                     parts.push(format!(
-                        "{current}{}overlay=x=0:y=0:format=rgb:eof_action=pass:enable='between(t\\,{:.3}\\,{:.3})'{next}",
+                        "{current}{}overlay=x=0:y=0:format=auto:eof_action=pass:enable='between(t\\,{:.3}\\,{:.3})'{next}",
                         p.vlabel, p.overlay_start, p.overlay_end
                     ));
                 }
@@ -1225,6 +1233,18 @@ fn append_audio_chain(
     vol: f64,
     label: &str,
 ) {
+    // Stream-local pre-roll mirrors the video input construction (constant-
+    // speed video inputs fetch `overlap` of early source), so audio fades
+    // start after it — same `delay` convention as the video fade chain.
+    let overlap = clip.transition_overlap_sec.max(0.0);
+    let ramped = clip_ramp_profile(clip).is_some();
+    let pre_roll = if clip.kind == "video" && !ramped {
+        overlap
+    } else {
+        0.0
+    };
+    let clip_dur = (clip.timeline_end_sec - clip.timeline_start_sec).max(0.01);
+    let fade = audio_fade_chain(&clip.effects, clip_dur, pre_roll);
     let tail = format!(
         "volume={vol},adelay={start_ms}|{start_ms},apad,atrim=0:{plan_duration_sec:.3}"
     );
@@ -1251,15 +1271,37 @@ fn append_audio_chain(
             slice_labels.push_str(&format!("[ras{input_index}_{i}]"));
         }
         parts.push(format!(
-            "{slice_labels}concat=n={n}:v=0:a=1,{tail}{label}"
+            "{slice_labels}concat=n={n}:v=0:a=1,{fade}{tail}{label}"
         ));
         return;
     }
     let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
     let atempo = atempo_chain(speed);
     parts.push(format!(
-        "[{input_index}:a]asetpts=PTS-STARTPTS,{atempo}{tail}{label}"
+        "[{input_index}:a]asetpts=PTS-STARTPTS,{atempo}{fade}{tail}{label}"
     ));
+}
+
+/// `afade` pair matching the video fade semantics (same durations, same
+/// pre-roll delay). Empty when both fades are ~0.
+fn audio_fade_chain(effects: &RenderClipEffects, clip_duration_sec: f64, pre_roll_sec: f64) -> String {
+    let dur = clip_duration_sec.max(0.01);
+    let pre = pre_roll_sec.max(0.0);
+    let mut parts: Vec<String> = Vec::new();
+    let fade_in = effects.fade_in_sec.min(dur);
+    if fade_in > 0.001 {
+        parts.push(format!("afade=t=in:st={pre:.3}:d={fade_in:.3}"));
+    }
+    let fade_out = effects.fade_out_sec.min(dur);
+    if fade_out > 0.001 {
+        let st = pre + (dur - fade_out).max(0.0);
+        parts.push(format!("afade=t=out:st={st:.3}:d={fade_out:.3}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("{},", parts.join(","))
+    }
 }
 
 /// Build one or more `atempo` filters (each must be in 0.5..=2.0).
@@ -1547,9 +1589,14 @@ fn drawtext_core(text: &RenderTextPlan) -> (String, f64, f64) {
     let end = text.timeline_end_sec.max(start + 0.01);
     let dur = (end - start).max(0.01);
     let escaped = escape_drawtext(&text.content);
-    let fontfile = resolve_drawtext_font(text.font_path.as_deref())
-        .map(|p| format!(":fontfile={}", quote_filter_path(&p)))
-        .unwrap_or_default();
+    let fontfile = resolve_drawtext_font(
+        text.font_path.as_deref(),
+        &text.font_family,
+        text.font_weight,
+        None,
+    )
+    .map(|p| format!(":fontfile={}", quote_filter_path(&p)))
+    .unwrap_or_default();
     let base_size = text.font_size.max(8.0).round();
     let color = normalize_color(&text.color);
     let base_alpha = text.opacity.clamp(0.0, 1.0);
@@ -1725,23 +1772,29 @@ fn drawtext_alpha_expr(
     terms.join("*")
 }
 
-fn resolve_drawtext_font(font_path: Option<&str>) -> Option<String> {
+fn resolve_drawtext_font(
+    font_path: Option<&str>,
+    family: &str,
+    weight: f64,
+    resource_dir: Option<&Path>,
+) -> Option<String> {
     if let Some(path) = font_path {
         if Path::new(path).is_file() {
             return Some(path.to_string());
         }
     }
-    const FALLBACKS: &[&str] = &[
-        "C:/Windows/Fonts/arial.ttf",
-        "C:/Windows/Fonts/segoeui.ttf",
-        "C:/Windows/Fonts/calibri.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ];
-    FALLBACKS
-        .iter()
-        .find(|p| Path::new(p).is_file())
-        .map(|p| (*p).to_string())
+    // 1) Bundled app fonts (Manrope / JetBrains) — same faces as preview.
+    if let Some(file) = bundled_font_file(family, weight) {
+        if let Some(resolved) = resolve_bundled_font_path(file, resource_dir) {
+            return Some(resolved);
+        }
+    }
+    // 2) System fonts matched by family + weight (Windows / macOS / Linux).
+    if let Some(resolved) = resolve_system_font(family, weight) {
+        return Some(resolved);
+    }
+    // 3) Last-resort readable face (still honor bold when possible).
+    resolve_system_font("Arial", weight)
 }
 
 fn escape_drawtext(input: &str) -> String {
@@ -1790,23 +1843,144 @@ fn bundled_font_file(family: &str, weight: f64) -> Option<&'static str> {
     }
 }
 
+/// Map UI font-family names → concrete system TTF paths (regular / bold).
+fn system_font_candidates(family: &str, weight: f64) -> Vec<&'static str> {
+    let f = family.to_lowercase();
+    let bold = weight >= 650.0;
+    // Order matters: first existing file wins.
+    if f.contains("arial black") {
+        return vec![
+            "C:/Windows/Fonts/ariblk.ttf",
+            "C:/Windows/Fonts/Arial Black.ttf",
+        ];
+    }
+    if f.contains("arial") {
+        return if bold {
+            vec![
+                "C:/Windows/Fonts/arialbd.ttf",
+                "C:/Windows/Fonts/Arial Bold.ttf",
+                "C:/Windows/Fonts/arial.ttf",
+                "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+            ]
+        } else {
+            vec![
+                "C:/Windows/Fonts/arial.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+            ]
+        };
+    }
+    if f.contains("segoe") {
+        return if bold {
+            vec![
+                "C:/Windows/Fonts/segoeuib.ttf",
+                "C:/Windows/Fonts/segoeui.ttf",
+            ]
+        } else {
+            vec!["C:/Windows/Fonts/segoeui.ttf"]
+        };
+    }
+    if f.contains("verdana") {
+        return if bold {
+            vec![
+                "C:/Windows/Fonts/verdanab.ttf",
+                "C:/Windows/Fonts/verdana.ttf",
+            ]
+        } else {
+            vec!["C:/Windows/Fonts/verdana.ttf"]
+        };
+    }
+    if f.contains("georgia") {
+        return if bold {
+            vec![
+                "C:/Windows/Fonts/georgiab.ttf",
+                "C:/Windows/Fonts/georgia.ttf",
+            ]
+        } else {
+            vec!["C:/Windows/Fonts/georgia.ttf"]
+        };
+    }
+    if f.contains("impact") {
+        return vec!["C:/Windows/Fonts/impact.ttf"];
+    }
+    if f.contains("times") {
+        return if bold {
+            vec![
+                "C:/Windows/Fonts/timesbd.ttf",
+                "C:/Windows/Fonts/times.ttf",
+            ]
+        } else {
+            vec!["C:/Windows/Fonts/times.ttf"]
+        };
+    }
+    if f.contains("calibri") {
+        return if bold {
+            vec![
+                "C:/Windows/Fonts/calibrib.ttf",
+                "C:/Windows/Fonts/calibri.ttf",
+            ]
+        } else {
+            vec!["C:/Windows/Fonts/calibri.ttf"]
+        };
+    }
+    Vec::new()
+}
+
+fn resolve_system_font(family: &str, weight: f64) -> Option<String> {
+    system_font_candidates(family, weight)
+        .into_iter()
+        .find(|p| Path::new(p).is_file())
+        .map(|p| p.to_string())
+}
+
 /// Resolve a bundled font to a real filesystem path for `drawtext`.
-/// Installed app → `<resource_dir>/fonts/<file>`;
-/// `tauri dev` → `<cwd>/../public/fonts/<file>` (CWD is `src-tauri`).
+///
+/// Prefer `$RESOURCE/fonts/<file>` (mapped in tauri.conf). Also accept the
+/// legacy `_up_/public/fonts/` layout and repo paths for `tauri dev`.
 fn resolve_bundled_font_path(file: &str, resource_dir: Option<&Path>) -> Option<String> {
-    let mut candidates: Vec<PathBuf> = Vec::with_capacity(2);
+    let mut candidates: Vec<PathBuf> = Vec::with_capacity(8);
     if let Some(dir) = resource_dir {
         candidates.push(dir.join("fonts").join(file));
+        candidates.push(dir.join("_up_").join("public").join("fonts").join(file));
+        candidates.push(dir.join("public").join("fonts").join(file));
+        candidates.push(dir.join(file));
+        // Deep search: find `<file>` anywhere under the resource dir (max depth 4).
+        if let Some(hit) = find_file_named(dir, file, 4) {
+            candidates.push(hit);
+        }
     }
     candidates.push(PathBuf::from("../public/fonts").join(file));
+    candidates.push(PathBuf::from("public/fonts").join(file));
     candidates
         .into_iter()
         .find(|p| p.is_file())
         .map(|p| p.to_string_lossy().to_string())
 }
 
-/// Point builtin-family texts without a usable `font_path` at the bundled
-/// TTF so export renders the exact preview face (no Arial fallback).
+fn find_file_named(root: &Path, name: &str, max_depth: usize) -> Option<PathBuf> {
+    fn walk(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
+        if depth == 0 {
+            return None;
+        }
+        let entries = std::fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && entry.file_name().to_string_lossy() == name {
+                return Some(path);
+            }
+            if path.is_dir() {
+                if let Some(hit) = walk(&path, name, depth - 1) {
+                    return Some(hit);
+                }
+            }
+        }
+        None
+    }
+    walk(root, name, max_depth)
+}
+
+/// Resolve every text clip to a concrete `font_path` (bundled or system) so
+/// drawtext never silently falls back to a different face than preview.
 pub fn resolve_plan_fonts(plan: &mut RenderPlan, resource_dir: Option<&Path>) {
     for text in &mut plan.texts {
         if let Some(p) = text.font_path.as_deref() {
@@ -1814,10 +1988,10 @@ pub fn resolve_plan_fonts(plan: &mut RenderPlan, resource_dir: Option<&Path>) {
                 continue;
             }
         }
-        if let Some(file) = bundled_font_file(&text.font_family, text.font_weight) {
-            if let Some(resolved) = resolve_bundled_font_path(file, resource_dir) {
-                text.font_path = Some(resolved);
-            }
+        if let Some(resolved) =
+            resolve_drawtext_font(None, &text.font_family, text.font_weight, resource_dir)
+        {
+            text.font_path = Some(resolved);
         }
     }
 }

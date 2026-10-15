@@ -144,18 +144,25 @@ export function TextOverlayLayer({
   useEffect(() => {
     if (textQuickUi?.mode !== "edit") return;
     const id = textQuickUi.clipId;
-    const el = editEls.current.get(id);
-    if (!el) return;
-    const project = useProjectStore.getState().project;
-    const content = project.clips.find((c) => c.id === id)?.text?.content ?? "";
-    if (el.innerText !== content) el.innerText = content;
-    el.focus();
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    range.collapse(false);
-    const sel = window.getSelection();
-    sel?.removeAllRanges();
-    sel?.addRange(range);
+    let tries = 0;
+    const focusEdit = () => {
+      const el = editEls.current.get(id);
+      if (!el) {
+        if (tries++ < 8) requestAnimationFrame(focusEdit);
+        return;
+      }
+      const project = useProjectStore.getState().project;
+      const content = project.clips.find((c) => c.id === id)?.text?.content ?? "";
+      if (el.innerText !== content) el.innerText = content;
+      el.focus();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    };
+    focusEdit();
   }, [textQuickUi?.mode, textQuickUi?.clipId]);
 
   function previewFontPx(clip: Clip, stage: HTMLDivElement | null): number {
@@ -394,12 +401,17 @@ export function TextOverlayLayer({
                 }}
                 onBlur={(e) => {
                   commitEditContent(clip.id, e.currentTarget.innerText);
-                  exitEdit();
+                  // Keep edit mode when focus moves to the floating format bar
+                  // (Bold / color picker). Exit only via Done, Escape, or deselect.
+                  const next = e.relatedTarget as Node | null;
+                  const bar = document.querySelector("[data-text-quick-access]");
+                  if (next && bar?.contains(next)) return;
                 }}
                 onKeyDown={(e: ReactKeyboardEvent<HTMLDivElement>) => {
                   if (e.key === "Escape") {
                     e.preventDefault();
-                    e.currentTarget.blur();
+                    commitEditContent(clip.id, e.currentTarget.innerText);
+                    exitEdit();
                   }
                 }}
               />

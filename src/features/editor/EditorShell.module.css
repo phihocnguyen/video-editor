@@ -317,15 +317,11 @@
 .body {
   position: relative;
   display: grid;
-  grid-template-columns: var(--rail-w) var(--side-w) minmax(0, 1fr);
+  /* Props column always reserved — selection must not resize preview. */
+  grid-template-columns: var(--rail-w) var(--side-w) minmax(0, 1fr) minmax(240px, var(--props-w));
   min-height: 0;
   min-width: 0;
   overflow: hidden;
-}
-
-/* Properties as a real column so preview + transport never sit under it. */
-.bodyPropsOpen {
-  grid-template-columns: var(--rail-w) var(--side-w) minmax(0, 1fr) minmax(240px, var(--props-w));
 }
 
 .rail {

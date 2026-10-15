@@ -421,7 +421,16 @@ export function PropertiesPanel() {
     setSizeOpen(false);
   }, [clip?.id]);
 
-  if (!clip) return null;
+  if (!clip) {
+    return (
+      <div className={styles.propsPanel}>
+        <div className={styles.propsEmpty}>
+          <p className={styles.propsEmptyTitle}>Properties</p>
+          <p className={styles.propsEmptyHint}>Select a clip to edit its properties.</p>
+        </div>
+      </div>
+    );
+  }
 
   const selected = clip;
   const asset =
@@ -937,7 +946,6 @@ export function PropertiesPanel() {
                       applyText({
                         ...text,
                         backgroundColor: text.backgroundColor ? null : "#FFFFFF",
-                        color: text.backgroundColor ? text.color : "#111111",
                       })
                     }
                   >

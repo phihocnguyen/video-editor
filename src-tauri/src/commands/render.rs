@@ -54,7 +54,7 @@ pub fn start_export(
             id: job_id.clone(),
             state: JobState::Running,
             progress: 0.0,
-            message: "Starting FFmpeg…".into(),
+            message: "Preparing export…".into(),
             output_path: Some(output_path.clone()),
             temp_path: Some(built.temp_output.to_string_lossy().to_string()),
             child_id: None,
@@ -114,31 +114,29 @@ pub fn start_export(
                         return;
                     }
                 }
-                let probe_note = match validate_output_with_ffprobe(&final_path) {
-                    Ok(_) => " · ffprobe ok".to_string(),
-                    Err(err) => format!(" · ffprobe warn: {err}"),
-                };
+                // Validate quietly — don't surface toolchain details to the UI.
+                let _ = validate_output_with_ffprobe(&final_path);
                 if let Ok(mut guard) = jobs_thread.inner.lock() {
                     if let Some(job) = guard.as_mut() {
                         if job.state != JobState::Cancelled {
                             job.state = JobState::Succeeded;
                             job.progress = 1.0;
-                            job.message = format!("Export complete{probe_note}");
+                            job.message = "Your video was exported successfully.".into();
                             job.temp_path = None;
                         }
                     }
                 }
             }
-            Ok(code) => {
+            Ok(_code) => {
                 let _ = fs::remove_file(&temp);
                 set_job_failed(
                     &jobs_thread,
-                    &format!("FFmpeg exited with status {code}"),
+                    "Export failed. Please try again.",
                 );
             }
-            Err(err) => {
+            Err(_err) => {
                 let _ = fs::remove_file(&temp);
-                set_job_failed(&jobs_thread, &format!("FFmpeg wait failed: {err}"));
+                set_job_failed(&jobs_thread, "Export failed. Please try again.");
             }
         }
     });
@@ -147,7 +145,7 @@ pub fn start_export(
         id: job_id,
         state: JobState::Running,
         progress: 0.0,
-        message: "Starting FFmpeg…".into(),
+        message: "Preparing export…".into(),
         output_path: Some(output_path),
     })
 }

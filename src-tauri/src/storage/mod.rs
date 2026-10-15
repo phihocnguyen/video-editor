@@ -41,12 +41,13 @@ pub fn project_media_dir(app: &tauri::AppHandle, project_id: &str) -> Result<Pat
     Ok(dir)
 }
 
-pub fn cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+/// App cache subdirectory (e.g. `"thumbs"`, `"media"`).
+pub fn cache_dir(app: &tauri::AppHandle, leaf: &str) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_cache_dir()
         .map_err(|e| format!("Failed to resolve app cache dir: {e}"))?
-        .join("media");
+        .join(leaf);
     ensure_dir(&dir)?;
     Ok(dir)
 }

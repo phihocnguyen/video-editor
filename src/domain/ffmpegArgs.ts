@@ -238,7 +238,7 @@ function buildFilterComplex(
       parts.push(
         ffmpegBlend
           ? `${current}${trackLabel}blend=all_mode=${ffmpegBlend}:all_opacity=1:shortest=0${next}`
-          : `${current}${trackLabel}overlay=x=0:y=0:format=rgb:eof_action=pass${next}`,
+          : `${current}${trackLabel}overlay=x=0:y=0:format=auto:eof_action=pass${next}`,
       );
       current = next;
       continue;
@@ -576,11 +576,22 @@ function appendAudioChain(
   volume: number,
   outLabel: string,
 ): void {
+  // Stream-local pre-roll mirrors the video input construction: constant-
+  // speed video inputs fetch `overlap` of early source, so the audio fades
+  // must start after it (same `delay` convention as the video fade chain).
+  const overlap = Math.max(0, clip.transitionOverlapSec);
+  const preRoll =
+    clip.kind === "video" && !clip.speedRamp ? overlap : 0;
+  const clipDur = Math.max(
+    0.01,
+    clip.timelineEndSec - clip.timelineStartSec,
+  );
+  const fade = audioFadeChain(clip.effects, clipDur, preRoll);
   const tail = `volume=${volume},adelay=${startMs}|${startMs},apad,atrim=0:${outputDurationSec.toFixed(3)}`;
 
   if (!clip.speedRamp) {
     const speed = clip.speed > 0 ? clip.speed : 1;
-    parts.push(`[${inputIndex}:a]asetpts=PTS-STARTPTS,${atempoChain(speed)}${tail}${outLabel}`);
+    parts.push(`[${inputIndex}:a]asetpts=PTS-STARTPTS,${atempoChain(speed)}${fade}${tail}${outLabel}`);
     return;
   }
 
@@ -604,7 +615,32 @@ function appendAudioChain(
     { length: n },
     (_, i) => `[ras${inputIndex}_${i}]`,
   ).join("");
-  parts.push(`${sliceLabels}concat=n=${n}:v=0:a=1,${tail}${outLabel}`);
+  parts.push(`${sliceLabels}concat=n=${n}:v=0:a=1,${fade}${tail}${outLabel}`);
+}
+
+/**
+ * `afade` pair matching the video fade semantics (same durations, same
+ * pre-roll delay). Empty when both fades are ~0. Ramped clips carry no
+ * pre-roll, so their caller passes `preRoll = 0`.
+ */
+function audioFadeChain(
+  effects: RenderClipPlan["effects"],
+  clipDurationSec: number,
+  preRollSec: number,
+): string {
+  const dur = Math.max(0.01, clipDurationSec);
+  const pre = Math.max(0, preRollSec);
+  const parts: string[] = [];
+  const fadeIn = Math.min(effects.fadeInSec, dur);
+  if (fadeIn > 0.001) {
+    parts.push(`afade=t=in:st=${pre.toFixed(3)}:d=${fadeIn.toFixed(3)}`);
+  }
+  const fadeOut = Math.min(effects.fadeOutSec, dur);
+  if (fadeOut > 0.001) {
+    const st = pre + Math.max(0, dur - fadeOut);
+    parts.push(`afade=t=out:st=${st.toFixed(3)}:d=${fadeOut.toFixed(3)}`);
+  }
+  return parts.length > 0 ? `${parts.join(",")},` : "";
 }
 
 /** FFmpeg drawtext needs a real TTF/OTF path; UI fonts like Manrope often have none. */
@@ -748,6 +784,56 @@ export function drawtextAlphaExpr(
   }
   return terms.join("*");
 }
+/** System TTF candidates for a UI font family + weight (mirrors Rust). */
+function systemFontCandidates(family: string, weight: number): string[] {
+  const f = family.toLowerCase();
+  const bold = weight >= 650;
+  if (f.includes("arial black")) {
+    return ["C:/Windows/Fonts/ariblk.ttf", "C:/Windows/Fonts/Arial Black.ttf"];
+  }
+  if (f.includes("arial")) {
+    return bold
+      ? [
+          "C:/Windows/Fonts/arialbd.ttf",
+          "C:/Windows/Fonts/Arial Bold.ttf",
+          "C:/Windows/Fonts/arial.ttf",
+          "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+          "/System/Library/Fonts/Supplemental/Arial.ttf",
+        ]
+      : [
+          "C:/Windows/Fonts/arial.ttf",
+          "/System/Library/Fonts/Supplemental/Arial.ttf",
+        ];
+  }
+  if (f.includes("segoe")) {
+    return bold
+      ? ["C:/Windows/Fonts/segoeuib.ttf", "C:/Windows/Fonts/segoeui.ttf"]
+      : ["C:/Windows/Fonts/segoeui.ttf"];
+  }
+  if (f.includes("verdana")) {
+    return bold
+      ? ["C:/Windows/Fonts/verdanab.ttf", "C:/Windows/Fonts/verdana.ttf"]
+      : ["C:/Windows/Fonts/verdana.ttf"];
+  }
+  if (f.includes("georgia")) {
+    return bold
+      ? ["C:/Windows/Fonts/georgiab.ttf", "C:/Windows/Fonts/georgia.ttf"]
+      : ["C:/Windows/Fonts/georgia.ttf"];
+  }
+  if (f.includes("impact")) return ["C:/Windows/Fonts/impact.ttf"];
+  if (f.includes("times")) {
+    return bold
+      ? ["C:/Windows/Fonts/timesbd.ttf", "C:/Windows/Fonts/times.ttf"]
+      : ["C:/Windows/Fonts/times.ttf"];
+  }
+  if (f.includes("calibri")) {
+    return bold
+      ? ["C:/Windows/Fonts/calibrib.ttf", "C:/Windows/Fonts/calibri.ttf"]
+      : ["C:/Windows/Fonts/calibri.ttf"];
+  }
+  return [];
+}
+
 function resolveDrawtextFont(
   fontPath: string | null,
   fileExists: (path: string) => boolean,
@@ -755,23 +841,28 @@ function resolveDrawtextFont(
   fontWeight?: number,
 ): string | null {
   if (fontPath && fileExists(fontPath)) return fontPath;
-  // Bundled OFL faces in public/fonts/ — same files the desktop app ships
-  // as Tauri resources, so CLI/helper exports never fall back for them.
-  if (fontFamily) {
-    const bundled = bundledFontFileForFamily(fontFamily, fontWeight ?? 700);
+  const weight = fontWeight ?? 700;
+  const family = fontFamily ?? "";
+
+  // Bundled OFL faces — same files preview uses for Manrope / JetBrains.
+  if (family) {
+    const bundled = bundledFontFileForFamily(family, weight);
     if (bundled) {
-      const candidate = `public/fonts/${bundled}`;
+      for (const candidate of [
+        `public/fonts/${bundled}`,
+        `../public/fonts/${bundled}`,
+        bundled,
+      ]) {
+        if (fileExists(candidate)) return candidate;
+      }
+    }
+    for (const candidate of systemFontCandidates(family, weight)) {
       if (fileExists(candidate)) return candidate;
     }
   }
-  const fallbacks = [
-    "C:/Windows/Fonts/arial.ttf",
-    "C:/Windows/Fonts/segoeui.ttf",
-    "C:/Windows/Fonts/calibri.ttf",
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-  ];
-  for (const candidate of fallbacks) {
+
+  // Last resort: Arial at the requested weight.
+  for (const candidate of systemFontCandidates("Arial", weight)) {
     if (fileExists(candidate)) return candidate;
   }
   return null;

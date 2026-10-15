@@ -49,7 +49,9 @@
   "bundle": {
     "active": true,
     "targets": "nsis",
-    "resources": ["../public/fonts/*.ttf"],
+    "resources": {
+      "../public/fonts/*.ttf": "fonts/"
+    },
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
     "icon": [
       "icons/32x32.png",
