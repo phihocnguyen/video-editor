@@ -49,7 +49,6 @@ export function pasteClipboardClips(atTicks?: number): boolean {
       return result.project;
     });
     useEditorUiStore.getState().setSelectedClipIds(newIds);
-    useEditorUiStore.getState().setActivePanel("clip");
     useEditorUiStore
       .getState()
       .setStatusMessage(

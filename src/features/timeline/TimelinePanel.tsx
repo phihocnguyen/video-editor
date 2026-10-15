@@ -370,18 +370,6 @@ export function TimelinePanel() {
       const clip = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
       if (!clip) return;
 
-      // Open Clip / Text side panel so effects & props are visible.
-      if (clip.kind === "text") {
-        useEditorUiStore.getState().setActivePanel("text");
-      } else {
-        const asset = useProjectStore
-          .getState()
-          .project.assets.find((a) => a.id === clip.assetId);
-        if (asset?.kind !== "audio") {
-          useEditorUiStore.getState().setActivePanel("clip");
-        }
-      }
-
       const pointerTicks = ticksFromClientX(event.clientX);
       const grabOffsetTicks = pointerTicks - clip.startTicks;
       const before = useProjectStore.getState().project;
@@ -798,7 +786,6 @@ export function TimelinePanel() {
                             }),
                           );
                           setSelectedClipIds([clip.id]);
-                          useEditorUiStore.getState().setActivePanel("clip");
                           setStatusMessage(
                             nextType === "none"
                               ? "Transition cleared"
@@ -1286,8 +1273,7 @@ export function TimelinePanel() {
             type="button"
             role="menuitem"
             onClick={() => {
-              useEditorUiStore.getState().setActivePanel("clip");
-              setStatusMessage("Clip properties");
+              setStatusMessage("Properties open on the right");
               setClipMenu(null);
             }}
           >

@@ -325,8 +325,10 @@ export function mediaPlacementFilters(
   const centerY = geom.centerY * outScaleY;
 
   const parts: string[] = [];
-  // Fit source into the (scaled) box, then rotate if needed.
+  // Fit source into the (scaled) box, then flip / rotate if needed.
   parts.push(`scale=${boxW}:${boxH}:force_original_aspect_ratio=decrease`);
+  if (geom.scaleX < 0) parts.push("hflip");
+  if (geom.scaleY < 0) parts.push("vflip");
   if (Math.abs(geom.rotation) > 0.01) {
     // Rotate onto a transparent canvas big enough to avoid clipping, then the
     // final pad below recentres it on the frame.

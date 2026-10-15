@@ -49,7 +49,6 @@ export function TextOverlayLayer({
 }: TextOverlayLayerProps) {
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
-  const setActivePanel = useEditorUiStore((s) => s.setActivePanel);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const setPlaying = useEditorUiStore((s) => s.setPlaying);
 
@@ -83,7 +82,6 @@ export function TextOverlayLayer({
 
     setPlaying(false);
     setSelectedClipIds([clip.id]);
-    setActivePanel("text");
 
     const before = useProjectStore.getState().project;
     useHistoryStore.getState().pushHistory(before);

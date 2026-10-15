@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   buildRenderPlan,
+  updateCanvas,
   type RenderQualityPreset,
   type RenderResolutionPreset,
 } from "../../domain";
@@ -18,12 +19,22 @@ import {
   startExport,
   type ExportJobStatus,
 } from "../../lib/tauri";
+import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import styles from "./ExportPanel.module.css";
 
+const CANVAS_PRESETS: { label: string; width: number; height: number; fps: number }[] = [
+  { label: "16:9 · 1920×1080", width: 1920, height: 1080, fps: 30 },
+  { label: "9:16 · 1080×1920", width: 1080, height: 1920, fps: 30 },
+  { label: "1:1 · 1080×1080", width: 1080, height: 1080, fps: 30 },
+  { label: "4:5 · 1080×1350", width: 1080, height: 1350, fps: 30 },
+  { label: "21:9 · 2560×1080", width: 2560, height: 1080, fps: 30 },
+];
+
 export function ExportPanel() {
   const project = useProjectStore((s) => s.project);
+  const canvas = project.canvas;
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const [preset, setPreset] = useState<RenderResolutionPreset>("1080");
   const [quality, setQuality] = useState<RenderQualityPreset>("standard");
@@ -171,6 +182,100 @@ export function ExportPanel() {
             : " — run pnpm dev"}
         </p>
       ) : null}
+
+      <div className={styles.canvasBlock}>
+        <h3 className={styles.blockTitle}>Canvas</h3>
+        <div className={styles.row}>
+          <label className={styles.field}>
+            <span>Width</span>
+            <input
+              type="number"
+              min={2}
+              max={7680}
+              value={canvas.width}
+              onChange={(e) =>
+                commitProjectChange((p) =>
+                  updateCanvas(p, { width: Number(e.target.value) || canvas.width }),
+                )
+              }
+            />
+          </label>
+          <label className={styles.field}>
+            <span>Height</span>
+            <input
+              type="number"
+              min={2}
+              max={7680}
+              value={canvas.height}
+              onChange={(e) =>
+                commitProjectChange((p) =>
+                  updateCanvas(p, { height: Number(e.target.value) || canvas.height }),
+                )
+              }
+            />
+          </label>
+        </div>
+        <div className={styles.chipRow}>
+          {CANVAS_PRESETS.map((presetItem) => {
+            const active =
+              canvas.width === presetItem.width && canvas.height === presetItem.height;
+            return (
+              <button
+                key={presetItem.label}
+                type="button"
+                className={active ? styles.chipActive : styles.chip}
+                onClick={() =>
+                  commitProjectChange((p) =>
+                    updateCanvas(p, {
+                      width: presetItem.width,
+                      height: presetItem.height,
+                      frameRate: presetItem.fps,
+                    }),
+                  )
+                }
+              >
+                {presetItem.label}
+              </button>
+            );
+          })}
+        </div>
+        <label className={styles.field}>
+          <span>Frame rate</span>
+          <input
+            type="number"
+            min={1}
+            max={240}
+            value={canvas.frameRate}
+            onChange={(e) =>
+              commitProjectChange((p) =>
+                updateCanvas(p, { frameRate: Number(e.target.value) || canvas.frameRate }),
+              )
+            }
+          />
+        </label>
+        <label className={styles.field}>
+          <span>Background</span>
+          <div className={styles.colorRow}>
+            <input
+              type="color"
+              value={canvas.backgroundColor}
+              onChange={(e) =>
+                commitProjectChange((p) =>
+                  updateCanvas(p, { backgroundColor: e.target.value }),
+                )
+              }
+            />
+            <input
+              value={canvas.backgroundColor}
+              onChange={(e) =>
+                commitProjectChange((p) =>
+                  updateCanvas(p, { backgroundColor: e.target.value }),
+                )
+              }
+            />
+          </div>
+        </label>
+      </div>
 
       <label className={styles.field}>
         <span>Resolution</span>

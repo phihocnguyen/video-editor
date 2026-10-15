@@ -5,9 +5,7 @@ export type EditorTool = "select" | "hand";
 
 export type EditorPanel =
   | "media"
-  | "clip"
   | "text"
-  | "canvas"
   | "audio"
   | "photos"
   | "subtitles"

@@ -30,17 +30,16 @@ import { MediaBinPanel } from "../media-bin/MediaBinPanel";
 import { TimelinePanel } from "../timeline/TimelinePanel";
 import { PreviewPanel } from "../preview/PreviewPanel";
 import { InspectorPanel } from "../inspector/InspectorPanel";
+import { PropertiesPanel } from "../inspector/PropertiesPanel";
 import { ExportPanel } from "../export/ExportPanel";
 import {
   AudioIcon,
-  CanvasIcon,
   ExportIcon,
   MediaIcon,
   PauseIcon,
   PhotosIcon,
   PlayIcon,
   RedoIcon,
-  SlidersIcon,
   SubtitlesIcon,
   TextIcon,
   UndoIcon,
@@ -49,8 +48,6 @@ import styles from "./EditorShell.module.css";
 
 const RAIL_ITEMS: { id: EditorPanel; label: string; Icon: typeof MediaIcon }[] = [
   { id: "media", label: "Media", Icon: MediaIcon },
-  { id: "clip", label: "Clip", Icon: SlidersIcon },
-  { id: "canvas", label: "Canvas", Icon: CanvasIcon },
   { id: "text", label: "Text", Icon: TextIcon },
   { id: "audio", label: "Audio", Icon: AudioIcon },
   { id: "photos", label: "Photos", Icon: PhotosIcon },
@@ -135,6 +132,7 @@ export function EditorShell() {
   const markClean = useProjectStore((s) => s.markClean);
   const activePanel = useEditorUiStore((s) => s.activePanel);
   const setActivePanel = useEditorUiStore((s) => s.setActivePanel);
+  const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const timelineHeightPx = useEditorUiStore((s) => s.timelineHeightPx);
   const tool = useEditorUiStore((s) => s.tool);
   const setTool = useEditorUiStore((s) => s.setTool);
@@ -568,7 +566,11 @@ export function EditorShell() {
         </div>
       </header>
 
-      <div className={styles.body}>
+      <div
+        className={
+          selectedClipIds.length > 0 ? styles.bodyWithProps : styles.body
+        }
+      >
         <nav className={styles.rail} aria-label="Library">
           {RAIL_ITEMS.map((item) => {
             const Icon = item.Icon;
@@ -591,9 +593,7 @@ export function EditorShell() {
 
         <aside className={styles.side}>
           {activePanel === "media" && <MediaBinPanel />}
-          {activePanel === "clip" && <InspectorPanel mode="clip" />}
           {activePanel === "text" && <InspectorPanel mode="text" />}
-          {activePanel === "canvas" && <InspectorPanel mode="canvas" />}
           {activePanel === "audio" && <MediaBinPanel filter="audio" />}
           {activePanel === "photos" && <MediaBinPanel filter="image" />}
           {activePanel === "subtitles" && <InspectorPanel mode="subtitles" />}
@@ -603,6 +603,12 @@ export function EditorShell() {
         <section className={styles.main}>
           <PreviewPanel />
         </section>
+
+        {selectedClipIds.length > 0 ? (
+          <aside className={styles.props} aria-label="Properties">
+            <PropertiesPanel />
+          </aside>
+        ) : null}
       </div>
 
       <button

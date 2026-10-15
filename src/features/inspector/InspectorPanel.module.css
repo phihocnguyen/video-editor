@@ -1,3 +1,4 @@
+/* Left library panels */
 .panel {
   display: flex;
   flex-direction: column;
@@ -19,32 +20,217 @@
   gap: var(--sp-2);
 }
 
-.secondary {
-  height: 30px;
-  padding: 0 12px;
+.primary {
+  height: 32px;
+  padding: 0 14px;
   border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border: 1px solid transparent;
+  font-weight: 700;
+}
+
+.primary:hover {
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: var(--fs-base);
+  line-height: 1.5;
+}
+
+/* Right properties column */
+.propsPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  height: 100%;
+  overflow: auto;
+  background: var(--bg-panel);
+}
+
+.propsHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-3) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-panel);
+}
+
+.propsClose {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.propsClose:hover {
+  background: var(--bg-hover);
   color: var(--text);
+}
+
+.propsTitleBlock {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.propsTitle {
+  font-size: var(--fs-md);
+  font-weight: 700;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.secondary:hover {
-  background: var(--bg-hover);
-  border-color: var(--border-strong);
+.propsKind {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
 }
 
 .section {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
-  padding-bottom: var(--sp-3);
+  padding: var(--sp-3);
   border-bottom: 1px solid var(--border);
 }
 
-.section:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
+.sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  min-height: 22px;
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: var(--fs-base);
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+
+.alignRow {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+}
+
+.alignBtn {
+  display: grid;
+  place-items: center;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+}
+
+.alignBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.layerRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.compactField {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.compactField input {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  padding: 0;
+  text-align: right;
+}
+
+.compactField input:focus {
+  outline: none;
+}
+
+.unit {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.flipGroup {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.chevronBtn {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  line-height: 1;
+}
+
+.chevronBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.fillChip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+
+.fillDot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  flex-shrink: 0;
 }
 
 .label {
@@ -76,29 +262,26 @@
   text-overflow: ellipsis;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
 }
 
-.iconRow {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: var(--sp-2);
-}
-
-.iconBtn {
-  height: 32px;
+.secondary {
+  height: 30px;
+  padding: 0 12px;
   border-radius: var(--radius);
-  background: var(--bg-elevated);
   border: 1px solid var(--border);
-  color: var(--text-muted);
+  background: var(--bg-elevated);
+  color: var(--text);
+  white-space: nowrap;
 }
 
-.iconBtn:hover {
+.secondary:hover {
   background: var(--bg-hover);
-  color: var(--text);
+  border-color: var(--border-strong);
 }
 
 .textarea,
@@ -124,27 +307,6 @@
   cursor: pointer;
 }
 
-.primary {
-  height: 32px;
-  padding: 0 14px;
-  border-radius: var(--radius);
-  background: var(--accent);
-  color: var(--accent-contrast);
-  border: 1px solid transparent;
-  font-weight: 700;
-}
-
-.primary:hover {
-  background: var(--accent-strong);
-  color: #fff;
-}
-
-.hint {
-  color: var(--text-muted);
-  font-size: var(--fs-base);
-  line-height: 1.5;
-}
-
 .checkRow {
   display: flex;
   align-items: center;
@@ -157,32 +319,6 @@
 .checkRow input {
   width: auto;
   accent-color: var(--accent);
-}
-
-.clipTitle {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: var(--sp-1);
-  padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-}
-
-.clipTitle strong {
-  font-size: var(--fs-md);
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.clipTitle span {
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 
 .stack {
@@ -226,7 +362,6 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-2);
-  margin-top: var(--sp-3);
 }
 
 .chipRow {

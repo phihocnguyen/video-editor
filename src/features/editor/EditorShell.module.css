@@ -314,12 +314,17 @@
 
 /* -------------------------------------------------------------------- body */
 
-.body {
+.body,
+.bodyWithProps {
   display: grid;
   grid-template-columns: var(--rail-w) var(--side-w) minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+}
+
+.bodyWithProps {
+  grid-template-columns: var(--rail-w) var(--side-w) minmax(0, 1fr) var(--props-w);
 }
 
 .rail {
@@ -375,6 +380,14 @@
   min-width: 0;
   min-height: 0;
   background: var(--bg-canvas);
+}
+
+.props {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
 }
 
 .timeline {

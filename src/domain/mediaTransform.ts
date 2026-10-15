@@ -46,7 +46,7 @@ export function mediaCenter(
   };
 }
 
-/** Scale applied on top of the contain-fit box (clamped to a sane range). */
+/** Scale applied on top of the contain-fit box (clamped; sign preserved for flip). */
 export function mediaScale(transform: ClipTransform): { x: number; y: number } {
   return {
     x: clampScale(transform.scaleX),
@@ -55,8 +55,9 @@ export function mediaScale(transform: ClipTransform): { x: number; y: number } {
 }
 
 function clampScale(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) return 1;
-  return Math.min(20, Math.max(0.02, value));
+  if (!Number.isFinite(value) || value === 0) return 1;
+  const sign = value < 0 ? -1 : 1;
+  return sign * Math.min(20, Math.max(0.02, Math.abs(value)));
 }
 
 export interface MediaGeometry {
@@ -89,8 +90,8 @@ export function mediaGeometry(
     centerY: center.y,
     fitWidth: fit.width,
     fitHeight: fit.height,
-    boxWidth: fit.width * scale.x,
-    boxHeight: fit.height * scale.y,
+    boxWidth: fit.width * Math.abs(scale.x),
+    boxHeight: fit.height * Math.abs(scale.y),
     scaleX: scale.x,
     scaleY: scale.y,
     rotation: Number.isFinite(transform.rotation) ? transform.rotation : 0,

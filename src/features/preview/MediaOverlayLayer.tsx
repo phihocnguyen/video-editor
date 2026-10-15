@@ -62,7 +62,6 @@ export function MediaOverlayLayer({
 }: MediaOverlayLayerProps) {
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
-  const setActivePanel = useEditorUiStore((s) => s.setActivePanel);
   const setPlaying = useEditorUiStore((s) => s.setPlaying);
 
   const dragRef = useRef<{
@@ -92,7 +91,6 @@ export function MediaOverlayLayer({
 
     setPlaying(false);
     setSelectedClipIds([clip.id]);
-    setActivePanel("clip");
 
     const before = useProjectStore.getState().project;
     useHistoryStore.getState().pushHistory(before);
@@ -158,11 +156,15 @@ export function MediaOverlayLayer({
         return;
       }
 
-      // resize — proportional scale from the layer centre.
+      // resize — proportional scale from the layer centre (preserve flip sign).
       const dist = Math.max(8, Math.hypot(p.x - drag.startX, p.y - drag.startY));
       const ratio = dist / drag.startDist;
-      const sx = Math.min(20, Math.max(0.02, drag.startScaleX * ratio));
-      const sy = Math.min(20, Math.max(0.02, drag.startScaleY * ratio));
+      const sxSign = drag.startScaleX < 0 ? -1 : 1;
+      const sySign = drag.startScaleY < 0 ? -1 : 1;
+      const sx =
+        sxSign * Math.min(20, Math.max(0.02, Math.abs(drag.startScaleX) * ratio));
+      const sy =
+        sySign * Math.min(20, Math.max(0.02, Math.abs(drag.startScaleY) * ratio));
       useProjectStore.getState().setProject(
         updateClipTransform(project, drag.clipId, {
           ...current.transform,
