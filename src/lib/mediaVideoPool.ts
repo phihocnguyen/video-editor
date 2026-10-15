@@ -10,18 +10,8 @@ function createVideo(url: string): HTMLVideoElement {
   video.preload = "auto";
   video.src = url;
   video.load();
-  const kick = () => {
-    try {
-      if (Number.isFinite(video.duration) && video.duration > 0) {
-        video.currentTime = Math.min(0.04, video.duration * 0.01);
-      } else {
-        video.currentTime = 0.001;
-      }
-    } catch {
-      /* ignore */
-    }
-  };
-  video.addEventListener("loadedmetadata", kick, { once: true });
+  // No warm seek — a 0.001s kick showed up as a Play glitch and fought the
+  // first play() on some decoders. preload=auto is enough to decode ahead.
   return video;
 }
 
@@ -83,4 +73,28 @@ export function isMediaVideoReady(url: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Kick every mounted preview video immediately on the Play click — do not wait
+ * for React effects. Closing the gap where thumbs reclaim the decoder before
+ * `isPlaying` subscribers run.
+ */
+export function resumeInUseMediaVideos(playbackRate = 1): void {
+  const rate = Number.isFinite(playbackRate)
+    ? Math.min(16, Math.max(0.0625, Math.abs(playbackRate) || 1))
+    : 1;
+  for (const { video } of inUseByClip.values()) {
+    if (!Number.isFinite(video.playbackRate) || video.playbackRate < 0.01) {
+      video.playbackRate = rate;
+    }
+    if (video.ended) {
+      try {
+        video.currentTime = Math.max(0, video.currentTime - 0.05);
+      } catch {
+        /* ignore */
+      }
+    }
+    void video.play().catch(() => undefined);
+  }
 }

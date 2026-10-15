@@ -2,17 +2,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   clipDurationTicks,
   clipVisibleWithTransition,
+  playheadInTransitionWindow,
   type Clip,
   type MediaAsset,
   type ProjectDocument,
   type Track,
 } from "../../domain";
 import {
-  beginPlaybackDecodeHold,
-  endPlaybackDecodeHold,
+  releasePlaybackDecodeHold,
   setPlaybackHoldStartHook,
 } from "../../lib/mediaDecodeGate";
-import { releaseFilmstripSeekers } from "../../lib/mediaFilmstrip";
+import { releaseMediaBinThumbs } from "../../lib/mediaFilmstrip";
 import { isRampClockActive } from "../../lib/rampClock";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
@@ -74,7 +74,6 @@ export function PreviewPanel() {
   const isScrubbing = useEditorUiStore((s) => s.isScrubbing);
   const setPlaying = useEditorUiStore((s) => s.setPlaying);
   const setPlayheadTicks = useEditorUiStore((s) => s.setPlayheadTicks);
-  const durationTicks = useEditorUiStore((s) => s.durationTicks);
   const stageRef = useRef<HTMLDivElement>(null);
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
@@ -180,50 +179,71 @@ export function PreviewPanel() {
   });
 
   useEffect(() => {
-    // Only release filmstrip seekers — not media-bin thumbs (those steal UHD decode).
-    setPlaybackHoldStartHook(() => releaseFilmstripSeekers());
+    // On Play hold start: soft-pause media-bin thumb videos (no src teardown).
+    setPlaybackHoldStartHook(() => releaseMediaBinThumbs());
     return () => setPlaybackHoldStartHook(null);
   }, []);
 
+  // Hold is acquired in `requestPlay()`. Any path that clears `isPlaying`
+  // (transport, end-of-timeline, scrub, overlay) must drop the hold — including
+  // direct `setPlaying(false)` call sites that skip `pausePlayback()`.
   useEffect(() => {
-    if (!isPlaying || isScrubbing) return;
-    releaseFilmstripSeekers();
-    beginPlaybackDecodeHold();
-    return () => endPlaybackDecodeHold();
-  }, [isPlaying, isScrubbing]);
+    return useEditorUiStore.subscribe((s, prev) => {
+      if (prev.isPlaying && !s.isPlaying) {
+        releasePlaybackDecodeHold();
+      }
+    });
+  }, []);
 
+  // Wall-clock playhead. Intentionally NOT dependent on `durationTicks` — a
+  // duration store update mid-Play used to cancel+restart this effect after one
+  // tiny step (exactly the "giật rồi dừng" symptom).
   useEffect(() => {
     if (!isPlaying || isScrubbing) return;
     let frame = 0;
-    let last = performance.now();
+    let last = 0; // set on first rAF so dt is not measured across the click gap
     const tick = (now: number) => {
-      const dt = (now - last) / 1000;
-      last = now;
-      // Ramped clips drive the playhead from the video element — don't double-advance.
-      if (isRampClockActive()) {
-        const cur = useEditorUiStore.getState().playheadTicks;
-        if (cur >= durationTicks) {
-          setPlayheadTicks(durationTicks);
-          setPlaying(false);
-          bumpListPlayhead(durationTicks, true);
-          return;
-        }
-        bumpListPlayhead(cur, false);
+      const ui = useEditorUiStore.getState();
+      if (!ui.isPlaying || ui.isScrubbing) return;
+
+      if (last === 0) {
+        last = now;
         frame = requestAnimationFrame(tick);
         return;
       }
-      const rate = useEditorUiStore.getState().playbackRate;
+
+      const dt = (now - last) / 1000;
+      last = now;
+      const duration = ui.durationTicks;
+
+      // During transitions, force layer remounts so clip 2 appears / clip 1 leaves.
+      const forceLayers = playheadInTransitionWindow(projectRef.current, ui.playheadTicks);
+
+      if (isRampClockActive()) {
+        const cur = ui.playheadTicks;
+        if (cur >= duration) {
+          setPlayheadTicks(duration);
+          setPlaying(false);
+          bumpListPlayhead(duration, true);
+          return;
+        }
+        bumpListPlayhead(cur, forceLayers);
+        frame = requestAnimationFrame(tick);
+        return;
+      }
+
+      const rate = ui.playbackRate;
       const delta = Math.round(dt * 1_000_000 * rate);
       if (delta === 0) {
         frame = requestAnimationFrame(tick);
         return;
       }
-      const cur = useEditorUiStore.getState().playheadTicks;
+      const cur = ui.playheadTicks;
       const next = cur + delta;
-      if (next >= durationTicks) {
-        setPlayheadTicks(durationTicks);
+      if (next >= duration) {
+        setPlayheadTicks(duration);
         setPlaying(false);
-        bumpListPlayhead(durationTicks, true);
+        bumpListPlayhead(duration, true);
         return;
       }
       if (next <= 0) {
@@ -233,12 +253,15 @@ export function PreviewPanel() {
         return;
       }
       setPlayheadTicks(next);
-      bumpListPlayhead(next, false);
+      bumpListPlayhead(
+        next,
+        forceLayers || playheadInTransitionWindow(projectRef.current, next),
+      );
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [durationTicks, isPlaying, isScrubbing, setPlayheadTicks, setPlaying]);
+  }, [isPlaying, isScrubbing, setPlayheadTicks, setPlaying]);
 
   return (
     <div className={styles.panel}>
@@ -272,7 +295,6 @@ export function PreviewPanel() {
             canvasWidth={canvas.width}
             canvasHeight={canvas.height}
             stageRef={stageRef}
-            playheadTicks={listPlayhead}
           />
         </div>
       </div>

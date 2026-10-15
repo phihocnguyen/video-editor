@@ -1,12 +1,9 @@
-import React from "react";
-import ReactDOM from "react-dom/client";
+import { createRoot } from "react-dom/client";
 import { App } from "./app/App";
 import "@fontsource-variable/manrope";
 import "@fontsource-variable/jetbrains-mono";
 import "./styles/global.css";
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+// No StrictMode: its play→cleanup→play double-invoke was pausing preview
+// videos on the first Play click (tiny glitch, needed 2–3 presses).
+createRoot(document.getElementById("root") as HTMLElement).render(<App />);

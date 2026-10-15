@@ -51,6 +51,15 @@ export function beginPlaybackDecodeHold(): void {
   if (wasIdle) onHoldStart?.();
 }
 
+/** Begin a hold only if preview is not already holding the decoder. */
+export function ensurePlaybackDecodeHold(): void {
+  if (playbackHold === 0) beginPlaybackDecodeHold();
+}
+
+export function isPlaybackDecodeHeld(): boolean {
+  return playbackHold > 0;
+}
+
 /**
  * Synchronously invalidate in-flight thumbs so a Play press wins the decoder
  * race without waiting for React to re-render `isPlaying`. Only bumps the epoch
@@ -65,6 +74,19 @@ export function preemptDecodersNow(): void {
 export function endPlaybackDecodeHold(): void {
   playbackHold = Math.max(0, playbackHold - 1);
   if (playbackHold > 0) return;
+  flushSlotWaiters();
+  if (Date.now() >= quietUntil) flushIdleWaiters();
+  else scheduleQuietFlush();
+}
+
+/**
+ * Drop every playback hold (transport stop). Prefer this over paired
+ * begin/end when ownership is shared across click handlers and React effects —
+ * mismatched end() calls were leaking holds or releasing mid-Play.
+ */
+export function releasePlaybackDecodeHold(): void {
+  if (playbackHold === 0) return;
+  playbackHold = 0;
   flushSlotWaiters();
   if (Date.now() >= quietUntil) flushIdleWaiters();
   else scheduleQuietFlush();

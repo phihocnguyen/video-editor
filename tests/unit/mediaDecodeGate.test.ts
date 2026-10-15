@@ -4,15 +4,17 @@ import {
   beginMediaQuietPeriod,
   currentDecodeEpoch,
   endPlaybackDecodeHold,
+  ensurePlaybackDecodeHold,
   isDecodeEpochStale,
+  isPlaybackDecodeHeld,
   preemptDecodersNow,
+  releasePlaybackDecodeHold,
   whenDecodeSlotFree,
 } from "../../src/lib/mediaDecodeGate";
 
 describe("mediaDecodeGate epoch", () => {
   beforeEach(() => {
-    // Drain any lingering hold from a previous test.
-    endPlaybackDecodeHold();
+    releasePlaybackDecodeHold();
   });
 
   it("bumps the epoch synchronously on playback hold", () => {
@@ -47,5 +49,25 @@ describe("mediaDecodeGate epoch", () => {
     endPlaybackDecodeHold();
     await pending;
     expect(done).toBe(true);
+  });
+
+  it("ensurePlaybackDecodeHold is idempotent", () => {
+    expect(isPlaybackDecodeHeld()).toBe(false);
+    ensurePlaybackDecodeHold();
+    expect(isPlaybackDecodeHeld()).toBe(true);
+    const epoch = currentDecodeEpoch();
+    ensurePlaybackDecodeHold();
+    expect(currentDecodeEpoch()).toBe(epoch);
+    expect(isPlaybackDecodeHeld()).toBe(true);
+    endPlaybackDecodeHold();
+    expect(isPlaybackDecodeHeld()).toBe(false);
+  });
+
+  it("releasePlaybackDecodeHold clears nested holds", () => {
+    beginPlaybackDecodeHold();
+    beginPlaybackDecodeHold();
+    expect(isPlaybackDecodeHeld()).toBe(true);
+    releasePlaybackDecodeHold();
+    expect(isPlaybackDecodeHeld()).toBe(false);
   });
 });

@@ -54,35 +54,29 @@ function inTransitionWindow(
   if (!next) return false;
   const tin = normalizeClipTransition(next.transitionIn);
   if (tin.type === "none") return false;
-  const end = clip.startTicks + clipDurationTicks(clip);
+  // Cut is the next clip's start (diamond), matching incomingTransitionProgress.
+  const cut = next.startTicks;
   const half = transitionHalfTicks(tin);
-  return playheadTicks >= end - half && playheadTicks <= end + half;
+  return playheadTicks >= cut - half && playheadTicks <= cut + half;
 }
 
 function transitionVisualMul(
   project: ProjectDocument,
   clip: Clip,
   playheadTicks: number,
-): { opacityMul: number; clipPath?: string; transform?: string; filter?: string } {
+): number {
   let opacityMul = 1;
-  let clipPath: string | undefined;
-  let transform: string | undefined;
-  let filter: string | undefined;
 
   const incoming = incomingTransitionProgress(clip, playheadTicks);
   if (incoming) {
-    const preview = transitionPreview(incoming.transition.type, incoming.progress);
-    opacityMul *= preview.opacity;
-    clipPath = preview.clipPath;
-    transform = preview.transform;
-    filter = preview.filter;
+    opacityMul *= transitionPreview(incoming.transition.type, incoming.progress).opacity;
   }
 
   const next = findNextClipOnTrack(project, clip.id);
   if (next) {
     const tin = normalizeClipTransition(next.transitionIn);
     if (tin.type !== "none") {
-      const cut = clip.startTicks + clipDurationTicks(clip);
+      const cut = next.startTicks;
       const half = transitionHalfTicks(tin);
       const windowStart = cut - half;
       const windowEnd = cut + half;
@@ -94,20 +88,24 @@ function transitionVisualMul(
     }
   }
 
-  return { opacityMul, clipPath, transform, filter };
+  return opacityMul;
+}
+
+/** Later clips on the same track stack above earlier ones during overlap. */
+function mediaZ(trackOrder: number, stackIndex: number): number {
+  return layerStackZ(trackOrder, "media") + stackIndex;
 }
 
 interface LayerStyle {
   zIndex: number;
   opacity: number;
   filter?: string;
-  clipPath?: string;
   /** Geometry box in percentages of the canvas. */
   leftPct: number;
   topPct: number;
   widthPct: number;
   heightPct: number;
-  /** CSS transform for the whole layer (centring + scale + rotation + transition). */
+  /** CSS transform for the whole layer (centring + scale + rotation). */
   transform: string;
 }
 
@@ -124,10 +122,8 @@ function layerVisualStyle(
   const durationSec = ticksToSeconds(clipDurationTicks(clip));
   const localSec = Math.max(0, ticksToSeconds(playheadTicks - clip.startTicks));
   const fadeMul = fadeOpacityMultiplier(effects, localSec, durationSec);
-  const { opacityMul, clipPath, transform: txTransform, filter: txFilter } =
-    transitionVisualMul(project, clip, playheadTicks);
-  const baseFilter = cssFilterFromEffects(effects);
-  const filter = [baseFilter, txFilter].filter(Boolean).join(" ") || undefined;
+  const opacityMul = transitionVisualMul(project, clip, playheadTicks);
+  const filter = cssFilterFromEffects(effects) || undefined;
 
   const geom = clipMediaGeometry(clip, canvasWidth, canvasHeight, asset);
   const parts = [
@@ -135,13 +131,11 @@ function layerVisualStyle(
     `rotate(${geom.rotation}deg)`,
     `scale(${geom.scaleX}, ${geom.scaleY})`,
   ];
-  if (txTransform) parts.push(txTransform);
 
   return {
     zIndex,
     opacity: clip.transform.opacity * fadeMul * opacityMul,
     filter,
-    clipPath,
     leftPct: (geom.centerX / Math.max(1, canvasWidth)) * 100,
     topPct: (geom.centerY / Math.max(1, canvasHeight)) * 100,
     widthPct: (geom.fitWidth / Math.max(1, canvasWidth)) * 100,
@@ -154,7 +148,6 @@ type StyleCache = {
   zIndex: number;
   opacity: number;
   filter: string;
-  clipPath: string;
   transform: string;
   left: string;
   top: string;
@@ -187,7 +180,6 @@ function applyMediaStyle(
   const target =
     el.parentElement?.hasAttribute("data-layer-host") ? el.parentElement : el;
   const filter = style.filter ?? "";
-  const clipPath = style.clipPath ?? "none";
   const left = `${style.leftPct}%`;
   const top = `${style.topPct}%`;
   const width = `${style.widthPct}%`;
@@ -199,7 +191,6 @@ function applyMediaStyle(
     prev.zIndex === style.zIndex &&
     prev.opacity === style.opacity &&
     prev.filter === filter &&
-    prev.clipPath === clipPath &&
     prev.transform === transform &&
     prev.left === left &&
     prev.top === top &&
@@ -212,7 +203,6 @@ function applyMediaStyle(
     zIndex: style.zIndex,
     opacity: style.opacity,
     filter,
-    clipPath,
     transform,
     left,
     top,
@@ -222,7 +212,6 @@ function applyMediaStyle(
   target.style.zIndex = String(style.zIndex);
   target.style.opacity = String(style.opacity);
   target.style.filter = filter;
-  target.style.clipPath = clipPath;
   target.style.left = left;
   target.style.top = top;
   target.style.width = width;
@@ -230,7 +219,7 @@ function applyMediaStyle(
   target.style.transform = transform;
 }
 
-/** True when opacity/clip-path is still changing this frame (fade / transition). */
+/** True when opacity is still changing this frame (fade / transition). */
 function needsPerFrameVisual(
   project: ProjectDocument,
   clip: Clip,
@@ -243,29 +232,24 @@ function needsPerFrameVisual(
   if (effects.fadeOutSec > 0.001 && local >= dur - effects.fadeOutSec - 0.08) {
     return true;
   }
-  if (inTransitionWindow(project, clip, playheadTicks)) return true;
-  const tin = normalizeClipTransition(clip.transitionIn);
-  if (
-    tin.type !== "none" &&
-    playheadTicks >= clip.startTicks &&
-    playheadTicks < clip.startTicks + tin.durationTicks
-  ) {
-    return true;
-  }
-  return false;
+  return inTransitionWindow(project, clip, playheadTicks);
 }
+
+/** Skip re-seek when the warm/pooled decoder is already near the target. */
+const SEEK_CLOSE_SEC = 0.08;
 
 function safeSeek(video: HTMLVideoElement, timeSec: number) {
   if (!Number.isFinite(timeSec) || timeSec < 0) return;
   try {
-    // Nudge off exact 0 — some decoders stall until the first seek after load.
-    const t = timeSec === 0 ? 0.001 : timeSec;
-    const close = Math.abs(video.currentTime - t) < 0.001;
-    // Already painted — skip.
-    if (close && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return;
-    // Stuck without a frame at nearly the same time — nudge to re-fire seeked.
-    if (close && video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-      video.currentTime = Math.max(0, t + 0.04);
+    const t = Math.max(0, timeSec);
+    const delta = Math.abs(video.currentTime - t);
+    // Already near the target with a painted frame — skip (avoids Play glitch).
+    if (delta < SEEK_CLOSE_SEC && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      return;
+    }
+    // Same timestamp but no frame yet — only then nudge to re-fire seeked.
+    if (delta < 0.001 && video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      video.currentTime = t + 0.04;
       return;
     }
     video.currentTime = t;
@@ -332,8 +316,26 @@ export function CompositeLayers({
     const ticks = useEditorUiStore.getState().playheadTicks;
     const target = transitionAwareMediaTimeSec(layer.clip, ticks);
     const { width: cw, height: ch } = projectRef.current.canvas;
-    applyMediaStyle(video, projectRef.current, layer.clip, layer.asset, cw, ch, ticks, 1);
-    safeSeek(video, target);
+    const stackIndex = Math.max(
+      0,
+      layersRef.current.findIndex((l) => l.clip.id === clipId),
+    );
+    applyMediaStyle(
+      video,
+      projectRef.current,
+      layer.clip,
+      layer.asset,
+      cw,
+      ch,
+      ticks,
+      mediaZ(layer.track.order, stackIndex),
+    );
+    const playing = isPlayingRef.current && !isScrubbingRef.current;
+    const transitioning = inTransitionWindow(projectRef.current, layer.clip, ticks);
+    // Seek when paused, or once when mounting into an active transition.
+    if (!playing || transitioning) {
+      safeSeek(video, target);
+    }
     if (video.readyState < HTMLMediaElement.HAVE_METADATA) {
       try {
         video.load();
@@ -352,8 +354,8 @@ export function CompositeLayers({
     }
     videoRefs.current.set(clipId, el);
     if (primedVideosRef.current.has(el)) {
-      // Re-attached pooled element — still kick play if transport is live.
-      ensurePlaying(el);
+      // Re-used pooled element: still prime for this clip (playhead/source may differ).
+      primeVideo(clipId, el);
       return;
     }
     primedVideosRef.current.add(el);
@@ -400,18 +402,23 @@ export function CompositeLayers({
   };
 
   // Start/stop decoder when transport changes.
-  // IMPORTANT: do NOT depend on `layers` — remounting this effect pauses every
-  // video mid-play and is a common cause of "timeline runs, frame frozen".
+  // IMPORTANT:
+  //  - do NOT depend on `layers` (remount mid-play freezes the frame)
+  //  - pause only in the effect *cleanup*, and only if transport actually
+  //    stopped. React Strict Mode runs play→cleanup→play; pausing in cleanup
+  //    while isPlaying is still true caused the "tiny jerk, need 2–3 clicks" bug.
   useEffect(() => {
     if (!isPlaying || isScrubbing) {
       setRampClockActive(false);
       rampArmedRef.current.clear();
+      // Pause here too — covers mount/stop paths that never installed a cleanup.
       for (const video of videoRefs.current.values()) {
         video.pause();
         wakePendingRef.current.delete(video);
       }
       return;
     }
+
     const ticks = useEditorUiStore.getState().playheadTicks;
     const proj = projectRef.current;
     const { width: cw, height: ch } = proj.canvas;
@@ -419,70 +426,49 @@ export function CompositeLayers({
       Number.isFinite(playbackRateRef.current) ? playbackRateRef.current : 1,
     );
 
-    // Snap the software playhead to wherever the decoder actually is (cheap)
-    // instead of seeking the video to the wall-clock playhead (freezes UHD).
-    let snapped = false;
-    for (const layer of layersRef.current) {
-      if (layer.asset.kind !== "video") continue;
-      const video = videoRefs.current.get(layer.clip.id);
-      if (!video || !Number.isFinite(video.currentTime)) continue;
-      const sourceIn = layer.clip.sourceInTicks / 1_000_000;
-      const spanTicks = Math.max(
-        1,
-        layer.clip.sourceOutTicks - layer.clip.sourceInTicks,
-      );
-      const sourceOffsetTicks = (video.currentTime - sourceIn) * 1_000_000;
-      let local: number;
-      if (layer.clip.speedRamp && hasActiveRamp(layer.clip.speedRamp)) {
-        local = timelineOffsetForSourceOffset(
-          layer.clip.speedRamp,
-          spanTicks,
-          sourceOffsetTicks,
-        );
-      } else {
-        const speed =
-          Number.isFinite(layer.clip.speed) && layer.clip.speed > 0
-            ? layer.clip.speed
-            : 1;
-        local = sourceOffsetTicks / speed;
-      }
-      const nextTicks = Math.round(layer.clip.startTicks + local);
-      if (Number.isFinite(nextTicks) && Math.abs(nextTicks - ticks) > 20_000) {
-        useEditorUiStore.getState().setPlayheadTicks(nextTicks);
-      }
-      snapped = true;
-      break;
-    }
-
-    const alignTicks = snapped
-      ? useEditorUiStore.getState().playheadTicks
-      : ticks;
-    layersRef.current.forEach((layer) => {
-      const z = layerStackZ(layer.track.order, "media");
+    // Do NOT snap the playhead to video.currentTime on Play — a stale decoder
+    // time jumps the timeline a fraction of a second and looks like a glitch.
+    layersRef.current.forEach((layer, stackIndex) => {
+      const z = mediaZ(layer.track.order, stackIndex);
       if (layer.asset.kind === "image") {
         const img = imageRefs.current.get(layer.clip.id);
         if (img) {
-          applyMediaStyle(img, proj, layer.clip, layer.asset, cw, ch, alignTicks, z);
+          applyMediaStyle(img, proj, layer.clip, layer.asset, cw, ch, ticks, z);
         }
         return;
       }
       if (layer.asset.kind !== "video") return;
       const video = videoRefs.current.get(layer.clip.id);
       if (!video) return;
-      applyMediaStyle(video, proj, layer.clip, layer.asset, cw, ch, alignTicks, z);
+      applyMediaStyle(video, proj, layer.clip, layer.asset, cw, ch, ticks, z);
       wakePendingRef.current.delete(video);
       rampArmedRef.current.delete(layer.clip.id);
 
       // Resume must NOT seek. UHD seeks often never finish, leaving a stuck
       // frame while the software playhead keeps advancing.
-      const speed = mediaSpeedAtTimelineTicks(layer.clip, alignTicks);
+      const speed = mediaSpeedAtTimelineTicks(layer.clip, ticks);
       video.playbackRate = Math.min(16, Math.max(0.0625, speed * (shuttle || 1)));
       lastRateByClipRef.current.set(layer.clip.id, video.playbackRate);
       ensurePlaying(video);
     });
+
+    return () => {
+      // Strict Mode re-runs this effect while still playing — do not pause then.
+      if (useEditorUiStore.getState().isPlaying && !useEditorUiStore.getState().isScrubbing) {
+        return;
+      }
+      setRampClockActive(false);
+      rampArmedRef.current.clear();
+      for (const video of videoRefs.current.values()) {
+        video.pause();
+        wakePendingRef.current.delete(video);
+      }
+    };
   }, [isPlaying, isScrubbing]);
 
-  // Watchdog: re-issue play() every frame while transport is live but element paused.
+  // Watchdog: re-issue play() while transport is live but the element is paused.
+  // Do NOT nudge currentTime here — a +0.001s seek looks like a tiny glitch and
+  // can abort the first play() on UHD.
   useEffect(() => {
     if (!isPlaying || isScrubbing) return;
     let raf = 0;
@@ -622,8 +608,16 @@ export function CompositeLayers({
         if (!live.has(id)) imageRefs.current.delete(id);
       }
 
-      liveLayers.forEach((layer) => {
-        const z = layerStackZ(layer.track.order, "media");
+      const layersOnTrack = new Map<string, number>();
+      for (const layer of liveLayers) {
+        layersOnTrack.set(
+          layer.track.id,
+          (layersOnTrack.get(layer.track.id) ?? 0) + 1,
+        );
+      }
+
+      liveLayers.forEach((layer, stackIndex) => {
+        const z = mediaZ(layer.track.order, stackIndex);
         if (layer.asset.kind === "image") {
           const img = imageRefs.current.get(layer.clip.id);
           if (img) {
@@ -636,10 +630,15 @@ export function CompositeLayers({
         if (!video) return;
 
         const ramped = hasActiveRamp(layer.clip.speedRamp);
+        const overlapping = (layersOnTrack.get(layer.track.id) ?? 0) > 1;
+        const transitioning = inTransitionWindow(proj, layer.clip, playheadTicks);
+        // Keep opacity live for the whole overlap — otherwise the incoming clip
+        // can freeze at opacity 0 after the transition window and never appear.
         const liveVisual =
           !playing ||
           scrubbing ||
           reverse ||
+          overlapping ||
           needsPerFrameVisual(proj, layer.clip, playheadTicks);
         if (liveVisual) {
           applyMediaStyle(video, proj, layer.clip, layer.asset, cw, ch, playheadTicks, z);
@@ -655,7 +654,6 @@ export function CompositeLayers({
         if (video.volume !== vol) video.volume = vol;
 
         const target = transitionAwareMediaTimeSec(layer.clip, playheadTicks);
-        const transitioning = inTransitionWindow(proj, layer.clip, playheadTicks);
 
         // Ramped clips are driven by their own video clock (see effect below) —
         // don't seek/rate-fight them from the wall-clock playhead.
@@ -680,8 +678,15 @@ export function CompositeLayers({
         }
 
         if (playing && !scrubbing && !reverse) {
-          // While playing: never seek for drift. Seeks on UHD hang and freeze the
-          // picture while the timeline clock keeps running. Rate + play() only.
+          // Incoming clip often mounts mid-transition with a cold currentTime —
+          // one catch-up seek so it doesn't stay on the wrong frame under clip 1.
+          if (transitioning && Math.abs(video.currentTime - target) > 0.12) {
+            const now = performance.now();
+            if (now - lastSeekAtRef.current >= 16) {
+              lastSeekAtRef.current = now;
+              safeSeek(video, target);
+            }
+          }
           ensurePlaying(video);
           return;
         }
@@ -716,13 +721,13 @@ export function CompositeLayers({
     });
   }, []);
 
-  // New clip on stage — prime seek when paused; never seek while playing (freezes UHD).
+  // New clip on stage — prime seek when paused; catch up once when mounting into a live transition.
   useEffect(() => {
     const ticks = useEditorUiStore.getState().playheadTicks;
     const playing = isPlayingRef.current && !isScrubbingRef.current;
     const { width: cw, height: ch } = project.canvas;
-    layers.forEach((layer) => {
-      const z = layerStackZ(layer.track.order, "media");
+    layers.forEach((layer, stackIndex) => {
+      const z = mediaZ(layer.track.order, stackIndex);
       if (layer.asset.kind === "image") {
         const img = imageRefs.current.get(layer.clip.id);
         if (img) {
@@ -734,11 +739,17 @@ export function CompositeLayers({
       const video = videoRefs.current.get(layer.clip.id);
       if (!video) return;
       applyMediaStyle(video, project, layer.clip, layer.asset, cw, ch, ticks, z);
+      const target = transitionAwareMediaTimeSec(layer.clip, ticks);
       if (playing) {
+        if (
+          inTransitionWindow(project, layer.clip, ticks) &&
+          Math.abs(video.currentTime - target) > 0.12
+        ) {
+          safeSeek(video, target);
+        }
         ensurePlaying(video);
         return;
       }
-      const target = transitionAwareMediaTimeSec(layer.clip, ticks);
       safeSeek(video, target);
     });
     syncRef.current(ticks);
@@ -760,10 +771,10 @@ export function CompositeLayers({
 
   return (
     <>
-      {layers.map((layer) => {
+      {layers.map((layer, stackIndex) => {
         const url = resolveMediaUrl(layer.asset.path, layer.asset.id);
         if (!url) return null;
-        const z = layerStackZ(layer.track.order, "media");
+        const z = mediaZ(layer.track.order, stackIndex);
         const style = layerVisualStyle(
           project,
           layer.clip,
@@ -782,7 +793,6 @@ export function CompositeLayers({
           transform: style.transform,
           opacity: style.opacity,
           filter: style.filter,
-          clipPath: style.clipPath,
         } as const;
         if (layer.asset.kind === "image") {
           return (
