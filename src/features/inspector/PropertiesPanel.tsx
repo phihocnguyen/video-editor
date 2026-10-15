@@ -38,6 +38,7 @@ import {
   updateClipTransform,
   updateClipTransition,
   updateClipVolume,
+  withListStyle,
   type BlendMode,
   type Clip,
   type EffectParamKey,
@@ -604,34 +605,40 @@ export function PropertiesPanel() {
                   <span className={styles.unit}>°</span>
                   <ChevronDownIcon size={12} />
                 </label>
-                {!isText ? (
-                  <div className={styles.flipGroup}>
-                    <button
-                      type="button"
-                      className={styles.alignBtn}
-                      title="Flip horizontal"
-                      onClick={() =>
-                        patchTransform({
-                          scaleX: -(geom?.scaleX ?? (selected.transform.scaleX || 1)),
-                        })
-                      }
-                    >
-                      <FlipHIcon />
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.alignBtn}
-                      title="Flip vertical"
-                      onClick={() =>
-                        patchTransform({
-                          scaleY: -(geom?.scaleY ?? (selected.transform.scaleY || 1)),
-                        })
-                      }
-                    >
-                      <FlipVIcon />
-                    </button>
-                  </div>
-                ) : null}
+                <div className={styles.flipGroup}>
+                  <button
+                    type="button"
+                    className={styles.alignBtn}
+                    title="Flip horizontal"
+                    onClick={() =>
+                      patchTransform({
+                        scaleX: -(
+                          (isText
+                            ? selected.transform.scaleX
+                            : geom?.scaleX ?? selected.transform.scaleX) || 1
+                        ),
+                      })
+                    }
+                  >
+                    <FlipHIcon />
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.alignBtn}
+                    title="Flip vertical"
+                    onClick={() =>
+                      patchTransform({
+                        scaleY: -(
+                          (isText
+                            ? selected.transform.scaleY
+                            : geom?.scaleY ?? selected.transform.scaleY) || 1
+                        ),
+                      })
+                    }
+                  >
+                    <FlipVIcon />
+                  </button>
+                </div>
               </div>
 
               <OpacityBar
@@ -841,6 +848,70 @@ export function PropertiesPanel() {
                       }
                     />
                   </label>
+                </div>
+                <div className={styles.formatToggles}>
+                  {(
+                    [
+                      {
+                        key: "bold",
+                        label: "B",
+                        title: "Bold",
+                        active: text.fontWeight >= 600,
+                        onClick: () =>
+                          applyText({
+                            ...text,
+                            fontWeight: text.fontWeight >= 600 ? 400 : 700,
+                          }),
+                      },
+                      {
+                        key: "italic",
+                        label: "I",
+                        title: "Italic",
+                        active: text.italic,
+                        onClick: () => applyText({ ...text, italic: !text.italic }),
+                      },
+                      {
+                        key: "underline",
+                        label: "U",
+                        title: "Underline",
+                        active: text.underline,
+                        onClick: () => applyText({ ...text, underline: !text.underline }),
+                      },
+                      {
+                        key: "strike",
+                        label: "S",
+                        title: "Strikethrough",
+                        active: text.strikethrough,
+                        onClick: () =>
+                          applyText({ ...text, strikethrough: !text.strikethrough }),
+                      },
+                      {
+                        key: "bullet",
+                        label: "•",
+                        title: "Bulleted list",
+                        active: text.listStyle === "bullet",
+                        onClick: () => applyText(withListStyle(text, "bullet")),
+                      },
+                      {
+                        key: "number",
+                        label: "1.",
+                        title: "Numbered list",
+                        active: text.listStyle === "number",
+                        onClick: () => applyText(withListStyle(text, "number")),
+                      },
+                    ] as const
+                  ).map((btn) => (
+                    <button
+                      key={btn.key}
+                      type="button"
+                      className={`${styles.formatToggle}${btn.active ? ` ${styles.formatToggleOn}` : ""}`}
+                      title={btn.title}
+                      aria-pressed={btn.active}
+                      onClick={btn.onClick}
+                    >
+                      {btn.label}
+                    </button>
+                  ))}
                 </div>
               </Section>
               <Section title="Fill">

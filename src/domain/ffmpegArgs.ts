@@ -264,6 +264,8 @@ function buildFilterComplex(
         : "";
     const next = `[txt${step.textIndex}]`;
     const textBlend = blendModeToFfmpeg(text.blendMode);
+    // italic / underline / strikethrough are preview+UI only in v1 (no drawbox/oblique face).
+    // listStyle prefixes are already baked into `text.content`.
     const drawtext =
       `drawtext=text='${escaped}'${fontfile}:fontsize=${baseSize}:fontcolor=${color}@1:x='${xExpr}':y='${yExpr}':alpha='${alphaExpr}'${box}:enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'`;
     if (textBlend) {

@@ -12,6 +12,13 @@ export type EditorPanel =
   | "subtitles"
   | "export";
 
+export type TextQuickUi = {
+  clipId: string;
+  mode: "select" | "edit";
+  stylesOpen: boolean;
+  moreOpen: boolean;
+};
+
 interface EditorUiState {
   activePanel: EditorPanel;
   tool: EditorTool;
@@ -35,6 +42,8 @@ interface EditorUiState {
    */
   playbackRate: number;
   selectedClipIds: string[];
+  /** Floating text quick-access toolbar state (null = hidden). */
+  textQuickUi: TextQuickUi | null;
   /** In-app clip clipboard (Ctrl+C / Ctrl+V). */
   clipClipboard: Clip[] | null;
   markInTicks: number | null;
@@ -55,6 +64,8 @@ interface EditorUiState {
   setSnapEnabled: (enabled: boolean) => void;
   setPlaybackRate: (rate: number) => void;
   setSelectedClipIds: (ids: string[]) => void;
+  setTextQuickUi: (ui: TextQuickUi | null) => void;
+  patchTextQuickUi: (patch: Partial<TextQuickUi>) => void;
   setClipClipboard: (clips: Clip[] | null) => void;
   setMarkInTicks: (ticks: number | null) => void;
   setMarkOutTicks: (ticks: number | null) => void;
@@ -104,6 +115,7 @@ export const useEditorUiStore = create<EditorUiState>((set) => ({
   snapEnabled: true,
   playbackRate: 1,
   selectedClipIds: [],
+  textQuickUi: null,
   clipClipboard: null,
   markInTicks: null,
   markOutTicks: null,
@@ -155,7 +167,24 @@ export const useEditorUiStore = create<EditorUiState>((set) => ({
     const clamped = Math.min(4, Math.max(-4, rate === 0 ? 1 : rate));
     set({ playbackRate: clamped });
   },
-  setSelectedClipIds: (selectedClipIds) => set({ selectedClipIds }),
+  setSelectedClipIds: (selectedClipIds) =>
+    set((s) => {
+      const keep =
+        s.textQuickUi &&
+        selectedClipIds.length === 1 &&
+        selectedClipIds[0] === s.textQuickUi.clipId;
+      return {
+        selectedClipIds,
+        textQuickUi: keep ? s.textQuickUi : null,
+      };
+    }),
+  setTextQuickUi: (textQuickUi) => set({ textQuickUi }),
+  patchTextQuickUi: (patch) =>
+    set((s) =>
+      s.textQuickUi
+        ? { textQuickUi: { ...s.textQuickUi, ...patch } }
+        : s,
+    ),
   setClipClipboard: (clipClipboard) => set({ clipClipboard }),
   setMarkInTicks: (markInTicks) => set({ markInTicks }),
   setMarkOutTicks: (markOutTicks) => set({ markOutTicks }),

@@ -19,6 +19,7 @@ import { useProjectStore } from "../../stores/projectStore";
 import { CompositeLayers, type PreviewLayer } from "./CompositeLayers";
 import { MediaOverlayLayer, type MediaOverlayItem } from "./MediaOverlayLayer";
 import { TextOverlayLayer } from "./TextOverlayLayer";
+import { TextQuickAccess } from "./TextQuickAccess";
 import { TransportBar } from "./TransportBar";
 import { useTimelineAudio } from "./useTimelineAudio";
 import styles from "./PreviewPanel.module.css";
@@ -298,6 +299,7 @@ export function PreviewPanel() {
             stageRef={stageRef}
             playheadTicks={listPlayhead}
           />
+          <TextQuickAccess stageRef={stageRef} />
         </div>
       </div>
 

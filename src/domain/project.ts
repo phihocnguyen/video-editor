@@ -97,6 +97,8 @@ export function normalizeTextAnimation(input?: Partial<TextAnimation> | null): T
   };
 }
 
+export type TextListStyle = "none" | "bullet" | "number";
+
 export interface TextStyle {
   content: string;
   fontFamily: string;
@@ -108,6 +110,11 @@ export interface TextStyle {
   fontWeight: number;
   color: string;
   align: "left" | "center" | "right";
+  italic: boolean;
+  underline: boolean;
+  strikethrough: boolean;
+  /** Line prefixes are stored in `content`; flag drives UI toggle state. */
+  listStyle: TextListStyle;
   /**
    * Instagram-style highlight behind glyphs. `null` / empty = no background.
    */
@@ -129,6 +136,10 @@ export function createDefaultTextStyle(content = "Title text"): TextStyle {
     fontWeight: 700,
     color: "#FFE566",
     align: "center",
+    italic: false,
+    underline: false,
+    strikethrough: false,
+    listStyle: "none",
     backgroundColor: null,
     backgroundPadding: 12,
     backgroundRadius: 10,
@@ -160,6 +171,13 @@ export function normalizeTextStyle(input?: Partial<TextStyle> | null): TextStyle
       src.align === "left" || src.align === "center" || src.align === "right"
         ? src.align
         : base.align,
+    italic: src.italic === true,
+    underline: src.underline === true,
+    strikethrough: src.strikethrough === true,
+    listStyle:
+      src.listStyle === "bullet" || src.listStyle === "number" || src.listStyle === "none"
+        ? src.listStyle
+        : base.listStyle,
     backgroundColor: bg,
     backgroundPadding:
       typeof src.backgroundPadding === "number" && Number.isFinite(src.backgroundPadding)

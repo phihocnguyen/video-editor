@@ -6,6 +6,7 @@ export * from "./effectPresets";
 export * from "./transitions";
 export * from "./speedRamp";
 export * from "./project";
+export * from "./textStyle";
 export * from "./clipLabels";
 export * from "./mediaTransform";
 export * from "./validate";

@@ -2,23 +2,24 @@ import {
   useEffect,
   useRef,
   type CSSProperties,
-  type MouseEvent as ReactMouseEvent,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
 import {
   blendModeToCss,
   clipDurationTicks,
-  deleteClips,
   layerStackZ,
   normalizeClipEffects,
+  normalizeTextStyle,
   textAnimVisual,
   ticksToSeconds,
   updateClipText,
   updateClipTransform,
   type Clip,
 } from "../../domain";
-import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
+import { useHistoryStore } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import styles from "./PreviewPanel.module.css";
@@ -49,6 +50,16 @@ function clientToCanvas(
   return { x, y };
 }
 
+function textDecorationCss(style: {
+  underline: boolean;
+  strikethrough: boolean;
+}): string | undefined {
+  const parts: string[] = [];
+  if (style.underline) parts.push("underline");
+  if (style.strikethrough) parts.push("line-through");
+  return parts.length ? parts.join(" ") : undefined;
+}
+
 export function TextOverlayLayer({
   items,
   canvasWidth,
@@ -58,7 +69,9 @@ export function TextOverlayLayer({
 }: TextOverlayLayerProps) {
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
-  const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
+  const textQuickUi = useEditorUiStore((s) => s.textQuickUi);
+  const setTextQuickUi = useEditorUiStore((s) => s.setTextQuickUi);
+  const patchTextQuickUi = useEditorUiStore((s) => s.patchTextQuickUi);
   const setPlaying = useEditorUiStore((s) => s.setPlaying);
 
   const dragRef = useRef<{
@@ -72,13 +85,10 @@ export function TextOverlayLayer({
     startDist: number;
   } | null>(null);
   const itemEls = useRef(new Map<string, HTMLDivElement>());
+  const editEls = useRef(new Map<string, HTMLDivElement>());
   const liveRef = useRef({ items, canvasWidth, canvasHeight });
   liveRef.current = { items, canvasWidth, canvasHeight };
 
-  // Drive text animation imperatively at display rate. Routing every frame
-  // through React (listPlayhead) capped text motion at ~10fps and felt
-  // choppy — same lesson as the ramp playhead hairline. React still owns
-  // mount/unmount/positioning; this loop only refreshes opacity/transform.
   useEffect(() => {
     let raf = 0;
     let lastPlayhead = -1;
@@ -91,7 +101,6 @@ export function TextOverlayLayer({
       const playhead = useEditorUiStore.getState().playheadTicks;
       const stage = stageRef.current;
       const stageW = stage?.clientWidth ?? live.canvasWidth;
-      // Static while paused: skip redundant DOM writes entirely.
       if (playhead === lastPlayhead && live.items === lastItems && stageW === lastStageW) {
         return;
       }
@@ -99,10 +108,15 @@ export function TextOverlayLayer({
       lastItems = live.items;
       lastStageW = stageW;
       const stageScale = stageW / Math.max(1, live.canvasWidth);
+      const editingId =
+        useEditorUiStore.getState().textQuickUi?.mode === "edit"
+          ? useEditorUiStore.getState().textQuickUi?.clipId
+          : null;
       for (const { clip } of live.items) {
         const el = itemEls.current.get(clip.id);
         const style = clip.text;
         if (!el || !style) continue;
+        if (editingId === clip.id) continue;
         const dur = Math.max(0.01, ticksToSeconds(clipDurationTicks(clip)));
         const local = Math.max(0, ticksToSeconds(playhead - clip.startTicks));
         const anim = textAnimVisual(
@@ -111,11 +125,14 @@ export function TextOverlayLayer({
           local,
           dur,
         );
+        const sx = clip.transform.scaleX || 1;
+        const sy = clip.transform.scaleY || 1;
         el.style.opacity = String(clip.transform.opacity * anim.opacity);
         el.style.mixBlendMode = blendModeToCss(clip.transform.blendMode);
         el.style.transform =
           `translate(-50%, -50%) translate(${(anim.offsetX * stageScale).toFixed(2)}px, ` +
-          `${(anim.offsetY * stageScale).toFixed(2)}px) scale(${anim.scale.toFixed(4)})`;
+          `${(anim.offsetY * stageScale).toFixed(2)}px) scale(${(anim.scale * Math.abs(sx)).toFixed(4)}, ${(anim.scale * Math.abs(sy)).toFixed(4)})` +
+          `${sx < 0 || sy < 0 ? ` scale(${sx < 0 ? -1 : 1}, ${sy < 0 ? -1 : 1})` : ""}`;
       }
     };
     raf = requestAnimationFrame(tick);
@@ -123,11 +140,29 @@ export function TextOverlayLayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Seed + focus contentEditable when entering edit mode (avoid React-controlled children)
+  useEffect(() => {
+    if (textQuickUi?.mode !== "edit") return;
+    const id = textQuickUi.clipId;
+    const el = editEls.current.get(id);
+    if (!el) return;
+    const project = useProjectStore.getState().project;
+    const content = project.clips.find((c) => c.id === id)?.text?.content ?? "";
+    if (el.innerText !== content) el.innerText = content;
+    el.focus();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }, [textQuickUi?.mode, textQuickUi?.clipId]);
+
   function previewFontPx(clip: Clip, stage: HTMLDivElement | null): number {
     const style = clip.text!;
     const stageW = stage?.clientWidth ?? canvasWidth;
     const scale = stageW / Math.max(1, canvasWidth);
-    return Math.max(10, style.fontSize * scale * clip.transform.scaleX);
+    return Math.max(10, style.fontSize * scale * Math.abs(clip.transform.scaleX || 1));
   }
 
   function beginGesture(
@@ -135,6 +170,7 @@ export function TextOverlayLayer({
     clip: Clip,
     mode: "move" | "resize",
   ) {
+    if (textQuickUi?.mode === "edit" && textQuickUi.clipId === clip.id) return;
     event.stopPropagation();
     event.preventDefault();
     const stage = stageRef.current;
@@ -142,6 +178,12 @@ export function TextOverlayLayer({
 
     setPlaying(false);
     setSelectedClipIds([clip.id]);
+    setTextQuickUi({
+      clipId: clip.id,
+      mode: "select",
+      stylesOpen: false,
+      moreOpen: false,
+    });
 
     const before = useProjectStore.getState().project;
     useHistoryStore.getState().pushHistory(before);
@@ -191,7 +233,10 @@ export function TextOverlayLayer({
         return;
       }
 
-      const dist = Math.max(8, Math.hypot(p.x - current.transform.x, p.y - current.transform.y));
+      const dist = Math.max(
+        8,
+        Math.hypot(p.x - current.transform.x, p.y - current.transform.y),
+      );
       const ratio = dist / drag.startDist;
       const nextFont = Math.round(Math.min(400, Math.max(12, drag.startFont * ratio)));
       useProjectStore.getState().setProject(
@@ -215,19 +260,30 @@ export function TextOverlayLayer({
     window.addEventListener("pointercancel", onUp);
   }
 
-  function handleDelete(event: ReactMouseEvent, clipId: string) {
-    event.stopPropagation();
-    event.preventDefault();
-    commitProjectChange((p) => deleteClips(p, [clipId]));
-    setSelectedClipIds([]);
-    setStatusMessage("Deleted text");
+  function commitEditContent(clipId: string, raw: string) {
+    const project = useProjectStore.getState().project;
+    const current = project.clips.find((c) => c.id === clipId);
+    if (!current?.text) return;
+    const content = raw.replace(/\u00a0/g, " ");
+    if (content === current.text.content) return;
+    useHistoryStore.getState().pushHistory(project);
+    useProjectStore.getState().setProject(
+      updateClipText(project, clipId, { ...current.text, content }),
+      { dirty: true },
+    );
+  }
+
+  function exitEdit() {
+    patchTextQuickUi({ mode: "select" });
   }
 
   return (
     <>
       {items.map(({ clip, trackOrder }) => {
-        const style = clip.text!;
+        const style = normalizeTextStyle(clip.text);
         const selected = selectedClipIds.includes(clip.id);
+        const editing =
+          selected && textQuickUi?.mode === "edit" && textQuickUi.clipId === clip.id;
         const fontPx = previewFontPx(clip, stageRef.current);
         const durationSec = Math.max(
           0.01,
@@ -245,10 +301,35 @@ export function TextOverlayLayer({
         );
         const stageW = stageRef.current?.clientWidth ?? canvasWidth;
         const stageScale = stageW / Math.max(1, canvasWidth);
+        const sx = clip.transform.scaleX || 1;
+        const sy = clip.transform.scaleY || 1;
+        const flipScale =
+          sx < 0 || sy < 0 ? ` scale(${sx < 0 ? -1 : 1}, ${sy < 0 ? -1 : 1})` : "";
+
+        const contentStyle: CSSProperties = {
+          fontFamily: `"${style.fontFamily}", "Manrope Variable", sans-serif`,
+          fontSize: `${fontPx}px`,
+          fontWeight: style.fontWeight,
+          fontStyle: style.italic ? "italic" : "normal",
+          textDecoration: textDecorationCss(style),
+          color: style.color,
+          textAlign: style.align,
+          ...(style.backgroundColor
+            ? {
+                display: "inline",
+                backgroundColor: style.backgroundColor,
+                padding: `${Math.max(2, style.backgroundPadding * stageScale)}px ${Math.max(4, style.backgroundPadding * 1.35 * stageScale)}px`,
+                borderRadius: `${Math.max(0, style.backgroundRadius * stageScale)}px`,
+                boxDecorationBreak: "clone" as const,
+                WebkitBoxDecorationBreak: "clone" as const,
+              }
+            : null),
+        };
 
         return (
           <div
             key={clip.id}
+            data-text-clip-id={clip.id}
             ref={(el) => {
               if (el) itemEls.current.set(clip.id, el);
               else itemEls.current.delete(clip.id);
@@ -261,57 +342,75 @@ export function TextOverlayLayer({
               mixBlendMode: blendModeToCss(
                 clip.transform.blendMode,
               ) as CSSProperties["mixBlendMode"],
-              transform: `translate(-50%, -50%) translate(${anim.offsetX * stageScale}px, ${anim.offsetY * stageScale}px) scale(${anim.scale})`,
+              transform: `translate(-50%, -50%) translate(${anim.offsetX * stageScale}px, ${anim.offsetY * stageScale}px) scale(${anim.scale * Math.abs(sx)}, ${anim.scale * Math.abs(sy)})${flipScale}`,
               zIndex: layerStackZ(trackOrder, "text"),
+              cursor: editing ? "text" : undefined,
             }}
             onPointerDown={(e) => {
               if (e.button !== 0) return;
+              if (editing) {
+                e.stopPropagation();
+                return;
+              }
               beginGesture(e, clip, "move");
             }}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              setSelectedClipIds([clip.id]);
+              setTextQuickUi({
+                clipId: clip.id,
+                mode: "edit",
+                stylesOpen: false,
+                moreOpen: false,
+              });
+            }}
           >
-            <div
-              className={styles.textContent}
-              style={{
-                fontFamily: `"${style.fontFamily}", "Manrope Variable", sans-serif`,
-                fontSize: `${fontPx}px`,
-                fontWeight: style.fontWeight,
-                color: style.color,
-                textAlign: style.align,
-                ...(style.backgroundColor
-                  ? {
-                      display: "inline",
-                      backgroundColor: style.backgroundColor,
-                      padding: `${Math.max(2, style.backgroundPadding * stageScale)}px ${Math.max(4, style.backgroundPadding * 1.35 * stageScale)}px`,
-                      borderRadius: `${Math.max(0, style.backgroundRadius * stageScale)}px`,
-                      boxDecorationBreak: "clone" as const,
-                      WebkitBoxDecorationBreak: "clone" as const,
-                    }
-                  : null),
-              }}
-            >
-              {style.content}
-            </div>
+            {editing ? (
+              <div
+                ref={(el) => {
+                  if (el) editEls.current.set(clip.id, el);
+                  else editEls.current.delete(clip.id);
+                }}
+                className={styles.textContent}
+                style={{ ...contentStyle, pointerEvents: "auto", outline: "none" }}
+                contentEditable
+                suppressContentEditableWarning
+                role="textbox"
+                aria-label="Edit text"
+                onPointerDown={(e) => e.stopPropagation()}
+                onInput={(e: FormEvent<HTMLDivElement>) => {
+                  // live preview without history spam
+                  const project = useProjectStore.getState().project;
+                  const current = project.clips.find((c) => c.id === clip.id);
+                  if (!current?.text) return;
+                  useProjectStore.getState().setProject(
+                    updateClipText(project, clip.id, {
+                      ...current.text,
+                      content: e.currentTarget.innerText.replace(/\u00a0/g, " "),
+                    }),
+                    { dirty: true },
+                  );
+                }}
+                onBlur={(e) => {
+                  commitEditContent(clip.id, e.currentTarget.innerText);
+                  exitEdit();
+                }}
+                onKeyDown={(e: ReactKeyboardEvent<HTMLDivElement>) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.currentTarget.blur();
+                  }
+                }}
+              />
+            ) : (
+              <div className={styles.textContent} style={contentStyle}>
+                {style.content}
+              </div>
+            )}
 
-            {selected ? (
-              <>
-                <button
-                  type="button"
-                  className={styles.textHandleDelete}
-                  title="Delete text"
-                  aria-label="Delete text"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => handleDelete(e, clip.id)}
-                >
-                  <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden>
-                    <path
-                      d="M2.5 2.5l7 7M9.5 2.5l-7 7"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                </button>
-                {(
+            {selected && !editing
+              ? (
                   [
                     ["cornerNW", "Resize from top-left"],
                     ["cornerNE", "Resize from top-right"],
@@ -330,9 +429,8 @@ export function TextOverlayLayer({
                       beginGesture(e, clip, "resize");
                     }}
                   />
-                ))}
-              </>
-            ) : null}
+                ))
+              : null}
           </div>
         );
       })}
