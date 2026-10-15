@@ -1,6 +1,6 @@
+use crate::toolchain::{ffprobe_program, silent_command};
 use serde::Serialize;
 use std::path::Path;
-use std::process::Command;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,7 +45,7 @@ pub fn probe_path(path: &str) -> Result<ProbeResult, String> {
         });
     }
 
-    let output = Command::new("ffprobe")
+    let output = silent_command(ffprobe_program())
         .args([
             "-v",
             "error",
@@ -90,7 +90,7 @@ pub fn probe_path(path: &str) -> Result<ProbeResult, String> {
             width: None,
             height: None,
             message: format!(
-                "ffprobe not available ({err}). Install FFmpeg and ensure ffprobe is on PATH."
+                "ffprobe not available ({err}). Ship the bundled FFmpeg sidecar or install FFmpeg."
             ),
             kind_hint,
         }),

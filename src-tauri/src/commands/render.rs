@@ -2,7 +2,7 @@ use crate::render::ffmpeg::{
     build_export_command, parse_progress_time, spawn_ffmpeg, validate_output_with_ffprobe,
     RenderPlan,
 };
-use crate::render::job::{new_job_id, ExportJobStatus, ExportJobStore, JobState, SharedJobs};
+use crate::render::job::{new_job_id, ExportJobStatus, JobState, SharedJobs};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -63,7 +63,7 @@ pub fn start_export(
     let final_path = output.clone();
 
     thread::spawn(move || {
-        let child = match spawn_ffmpeg(&program, &args) {
+        let mut child = match spawn_ffmpeg(&program, &args) {
             Ok(child) => child,
             Err(err) => {
                 set_job_failed(&jobs_thread, &err);
@@ -73,13 +73,12 @@ pub fn start_export(
 
         if let Ok(mut guard) = jobs_thread.inner.lock() {
             if let Some(job) = guard.as_mut() {
-                job.child_id = child.id();
+                job.child_id = Some(child.id());
                 job.message = "Encoding…".into();
             }
         }
 
         let stderr = child.stderr.take();
-        let mut child = child;
 
         if let Some(stderr) = stderr {
             let reader = BufReader::new(stderr);
@@ -164,7 +163,7 @@ pub fn cancel_export(jobs: State<'_, SharedJobs>) -> Result<ExportJobStatus, Str
     job.message = "Cancelling…".into();
     if let Some(pid) = job.child_id {
         // Best-effort terminate on Windows
-        let _ = std::process::Command::new("taskkill")
+        let _ = crate::toolchain::silent_command("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

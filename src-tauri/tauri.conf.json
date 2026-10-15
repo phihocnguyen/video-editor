@@ -20,12 +20,34 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "allow": [
+            "**",
+            "$HOME/**",
+            "$APPCACHE/**",
+            "$APPDATA/**",
+            "$APPLOCALDATA/**",
+            "$TEMP/**",
+            "$DOCUMENT/**",
+            "$DOWNLOAD/**",
+            "$DESKTOP/**",
+            "$VIDEO/**",
+            "$PICTURE/**",
+            "$AUDIO/**",
+            "$RESOURCE/**"
+          ],
+          "requireLiteralLeadingDot": false
+        }
+      }
     }
   },
   "bundle": {
     "active": true,
     "targets": "nsis",
+    "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -30,7 +30,10 @@ pnpm export:video -- path\to\project.cutline.json path\to\out.mp4
 
 1. Install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with **Desktop development with C++**.  
 2. Confirm `where.exe link`.  
-3. `pnpm tauri:dev` / `pnpm tauri:build`.
+3. **Bundle FFmpeg** (required — otherwise export/thumbnails break on user machines): drop `ffmpeg-x86_64-pc-windows-msvc.exe` + `ffprobe-x86_64-pc-windows-msvc.exe` into `src-tauri/binaries/` (see its README; prefer the essentials build for size).  
+4. `pnpm tauri:dev` / `pnpm tauri:build`.
+
+The Export panel shows which binary is active (`Bundled FFmpeg` vs `System FFmpeg` vs missing). Without sidecars it falls back to `tools/ffmpeg`, common install dirs, then `PATH`.
 
 ## FFmpeg / ffprobe
 

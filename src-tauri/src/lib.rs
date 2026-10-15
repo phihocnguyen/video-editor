@@ -3,6 +3,7 @@ mod media;
 mod project;
 mod render;
 mod storage;
+mod toolchain;
 
 use render::job::{ExportJobStore, SharedJobs};
 use std::sync::Arc;
@@ -29,6 +30,7 @@ pub fn run() {
             commands::render::start_export,
             commands::render::get_export_status,
             commands::render::cancel_export,
+            toolchain::ffmpeg_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutline");

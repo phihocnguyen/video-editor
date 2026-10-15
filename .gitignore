@@ -34,3 +34,6 @@ tools/ffmpeg/
 tools/ffmpeg.zip
 tools/ffmpeg-extract/
 *.cutline.bak
+
+# Bundled FFmpeg sidecars (large, machine-local — see src-tauri/binaries/README.md)
+src-tauri/binaries/*.exe

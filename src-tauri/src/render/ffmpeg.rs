@@ -1,6 +1,7 @@
+use crate::toolchain::{ffmpeg_program, ffprobe_program, silent_command};
 use serde::Deserialize;
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +29,10 @@ pub struct RenderClipPlan {
     pub transition_in: RenderClipTransition,
     #[serde(default)]
     pub transition_overlap_sec: f64,
+    /// Variable-speed curve (None = constant `speed`). Mirrors the TS
+    /// `SpeedRamp` ({ points: [{ id, atProgress, speed }] }).
+    #[serde(default)]
+    pub speed_ramp: Option<SpeedRamp>,
     #[serde(default)]
     pub transform: RenderClipTransform,
     #[serde(default = "default_canvas_dim")]
@@ -132,6 +137,23 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderTextAnimation {
+    #[serde(default)]
+    pub r#in: String,
+    #[serde(default)]
+    pub out: String,
+    #[serde(default = "default_half")]
+    pub in_duration_sec: f64,
+    #[serde(default = "default_half")]
+    pub out_duration_sec: f64,
+}
+
+fn default_half() -> f64 {
+    0.5
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderTextPlan {
@@ -148,6 +170,16 @@ pub struct RenderTextPlan {
     pub opacity: f64,
     pub timeline_start_sec: f64,
     pub timeline_end_sec: f64,
+    #[serde(default)]
+    pub fade_in_sec: f64,
+    #[serde(default)]
+    pub fade_out_sec: f64,
+    #[serde(default)]
+    pub text_animation: RenderTextAnimation,
+    /// Paint stacking: lower order paints above (same convention as preview
+    /// layerStackZ and the TS builder). Defaults to 0 for older plans.
+    #[serde(default)]
+    pub track_order: i32,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -176,6 +208,336 @@ fn default_abitrate() -> String {
 }
 fn default_bg_color() -> String {
     "#000000".into()
+}
+
+// ---------------- speed ramp (mirrors src/domain/speedRamp.ts) ----------------
+// A ramp maps source progress s ∈ [0,1] to playback speed v(s) via a monotone
+// cubic Hermite spline. Timeline duration = span · ∫₀¹ ds/v(s). Export
+// discretises u → T(u) = ∫₀ᵘ dτ/v(τ) into piecewise quadratics (32 for
+// video setpts, 24 for audio slices), exactly like the TS builder.
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeedPoint {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub at_progress: f64,
+    #[serde(default = "default_one")]
+    pub speed: f64,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeedRamp {
+    #[serde(default)]
+    pub points: Vec<SpeedPoint>,
+}
+
+fn clamp_ramp_speed(v: f64) -> f64 {
+    if !v.is_finite() {
+        1.0
+    } else {
+        v.clamp(0.1, 8.0)
+    }
+}
+
+#[derive(Clone)]
+struct HermiteSegment {
+    x0: f64,
+    x1: f64,
+    width: f64,
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+}
+
+fn mono_tangents(xs: &[f64], ys: &[f64]) -> Vec<f64> {
+    let n = xs.len();
+    let mut slopes = Vec::with_capacity(n - 1);
+    for i in 0..n - 1 {
+        slopes.push((ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]));
+    }
+    let mut m = vec![0.0; n];
+    m[0] = slopes[0];
+    m[n - 1] = slopes[n - 2];
+    for i in 1..n - 1 {
+        m[i] = (slopes[i - 1] + slopes[i]) / 2.0;
+    }
+    for i in 0..n - 1 {
+        let d = slopes[i];
+        if d == 0.0 {
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+            continue;
+        }
+        let a = m[i] / d;
+        let b = m[i + 1] / d;
+        let s = a * a + b * b;
+        if s > 9.0 {
+            let tau = 3.0 / s.sqrt();
+            m[i] = tau * a * d;
+            m[i + 1] = tau * b * d;
+        }
+    }
+    m
+}
+
+fn build_hermite(points: &[(f64, f64)]) -> Vec<HermiteSegment> {
+    let xs: Vec<f64> = points.iter().map(|p| p.0).collect();
+    let ys: Vec<f64> = points.iter().map(|p| p.1).collect();
+    let m = mono_tangents(&xs, &ys);
+    let mut segments = Vec::with_capacity(points.len().saturating_sub(1));
+    for i in 0..points.len() - 1 {
+        let x0 = xs[i];
+        let x1 = xs[i + 1];
+        let width = (x1 - x0).max(1e-9);
+        let h = width;
+        let y0 = ys[i];
+        let y1 = ys[i + 1];
+        segments.push(HermiteSegment {
+            x0,
+            x1,
+            width,
+            a: 2.0 * y0 - 2.0 * y1 + h * (m[i] + m[i + 1]),
+            b: -3.0 * y0 + 3.0 * y1 - h * (2.0 * m[i] + m[i + 1]),
+            c: h * m[i],
+            d: y0,
+        });
+    }
+    segments
+}
+
+fn eval_hermite(seg: &HermiteSegment, t: f64) -> f64 {
+    clamp_ramp_speed(((seg.a * t + seg.b) * t + seg.c) * t + seg.d)
+}
+
+const GL_X: [f64; 8] = [
+    -0.9602898564975363,
+    -0.7966664774136267,
+    -0.525532409916329,
+    -0.1834346424956498,
+    0.1834346424956498,
+    0.525532409916329,
+    0.7966664774136267,
+    0.9602898564975363,
+];
+const GL_W: [f64; 8] = [
+    0.1012285362903763,
+    0.2223810344533745,
+    0.3137066458778873,
+    0.362683783378362,
+    0.362683783378362,
+    0.3137066458778873,
+    0.2223810344533745,
+    0.1012285362903763,
+];
+
+fn integrate_hermite(seg: &HermiteSegment, t: f64) -> f64 {
+    if t <= 0.0 {
+        return 0.0;
+    }
+    let half = t / 2.0;
+    let mut sum = 0.0;
+    for i in 0..GL_X.len() {
+        let tau = half * (GL_X[i] + 1.0);
+        sum += GL_W[i] / eval_hermite(seg, tau);
+    }
+    half * sum
+}
+
+struct RampProfile {
+    user: Vec<HermiteSegment>,
+    cumulative: Vec<f64>,
+    lo: f64,
+    hi: f64,
+}
+
+impl RampProfile {
+    fn duration_factor(&self) -> f64 {
+        self.cumulative.last().copied().unwrap_or(1.0)
+    }
+
+    fn speed_at_progress(&self, progress: f64) -> f64 {
+        let p = progress.clamp(0.0, 1.0);
+        if p < self.lo || p > self.hi {
+            return 1.0;
+        }
+        let last = self.user.len() - 1;
+        for (i, seg) in self.user.iter().enumerate() {
+            if p <= seg.x1 || i == last {
+                let t = ((p - seg.x0) / seg.width).clamp(0.0, 1.0);
+                return eval_hermite(seg, t);
+            }
+        }
+        1.0
+    }
+}
+
+/// Normalize anchors (sort, clamp, de-dupe) and build the profile.
+/// Returns None for missing, degenerate, or all-flat (≈1×) ramps.
+fn ramp_profile(ramp: &SpeedRamp) -> Option<RampProfile> {
+    let mut pts: Vec<(f64, f64)> = ramp
+        .points
+        .iter()
+        .filter(|p| p.at_progress.is_finite() && p.speed.is_finite())
+        .map(|p| {
+            (
+                p.at_progress.clamp(0.0, 1.0),
+                clamp_ramp_speed(p.speed),
+            )
+        })
+        .collect();
+    pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+    let mut spaced: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
+    for p in pts {
+        if let Some(prev) = spaced.last() {
+            if p.0 - prev.0 < 0.005 {
+                continue;
+            }
+        }
+        spaced.push(p);
+    }
+    if spaced.len() < 2 {
+        return None;
+    }
+    if spaced.iter().all(|p| (p.1 - 1.0).abs() < 0.001) {
+        return None;
+    }
+    let lo = spaced[0].0;
+    let hi = spaced[spaced.len() - 1].0;
+    let user = build_hermite(&spaced);
+    let mut segments: Vec<HermiteSegment> = Vec::new();
+    if lo > 0.0 {
+        segments.push(HermiteSegment {
+            x0: 0.0,
+            x1: lo,
+            width: (lo - 0.0).max(1e-9),
+            a: 0.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+        });
+    }
+    segments.extend(user.clone());
+    if hi < 1.0 {
+        segments.push(HermiteSegment {
+            x0: hi,
+            x1: 1.0,
+            width: (1.0 - hi).max(1e-9),
+            a: 0.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+        });
+    }
+    let mut cumulative = vec![0.0];
+    for seg in &segments {
+        let prev = *cumulative.last().unwrap_or(&0.0);
+        cumulative.push(prev + seg.width * integrate_hermite(seg, 1.0));
+    }
+    Some(RampProfile {
+        user,
+        cumulative,
+        lo,
+        hi,
+    })
+}
+
+fn clip_ramp_profile(clip: &RenderClipPlan) -> Option<RampProfile> {
+    clip.speed_ramp.as_ref().and_then(ramp_profile)
+}
+
+struct RampExprSegment {
+    u_start: f64,
+    u_end: f64,
+    t_start: f64,
+    a: f64,
+    b: f64,
+}
+
+fn ramp_time_map_segments(
+    profile: &RampProfile,
+    source_span_sec: f64,
+    segment_count: usize,
+) -> Vec<RampExprSegment> {
+    let span = source_span_sec.max(1e-6);
+    let n = segment_count.clamp(2, 64);
+    let mut segments = Vec::with_capacity(n);
+    let mut t_start = 0.0;
+    for j in 0..n {
+        let s0 = j as f64 / n as f64;
+        let s1 = (j + 1) as f64 / n as f64;
+        let u_start = s0 * span;
+        let u_end = s1 * span;
+        let hu = (u_end - u_start).max(1e-9);
+        let w0 = 1.0 / profile.speed_at_progress(s0).max(1e-6);
+        let w1 = 1.0 / profile.speed_at_progress(s1).max(1e-6);
+        segments.push(RampExprSegment {
+            u_start,
+            u_end,
+            t_start,
+            a: w0,
+            b: (w1 - w0) / (2.0 * hu),
+        });
+        t_start += hu * ((w0 + w1) / 2.0);
+    }
+    let analytic = span * profile.duration_factor();
+    let scale = if t_start > 0.0 { analytic / t_start } else { 1.0 };
+    for seg in &mut segments {
+        seg.a *= scale;
+        seg.b *= scale;
+        seg.t_start *= scale;
+    }
+    segments
+}
+
+/// TS `formatNum`: finite, 6 decimals, trailing zeros trimmed.
+fn fmt_num(v: f64) -> String {
+    if !v.is_finite() {
+        return "0".into();
+    }
+    let s = format!("{v:.6}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() || s == "-0" {
+        "0".into()
+    } else {
+        s.into()
+    }
+}
+
+fn signed_mul(coef: f64, term: &str) -> String {
+    if !coef.is_finite() || coef == 0.0 {
+        return format!("+0*{term}");
+    }
+    if coef < 0.0 {
+        format!("-{}*{term}", fmt_num(-coef))
+    } else {
+        format!("+{}*{term}", fmt_num(coef))
+    }
+}
+
+/// `setpts` for a ramped clip: piecewise-quadratic forward map
+/// u (source seconds) → t (timeline seconds), same shape as the TS builder.
+fn ramp_setpts(profile: &RampProfile, source_span_sec: f64) -> String {
+    let segments = ramp_time_map_segments(profile, source_span_sec, 32);
+    if segments.is_empty() {
+        return "setpts=PTS-STARTPTS".into();
+    }
+    let u = "((PTS-STARTPTS)*TB)";
+    let mut expr = "0".to_string();
+    for seg in segments.iter().rev() {
+        let du = format!("({u}-{})", fmt_num(seg.u_start));
+        let e = format!(
+            "({}{}{})",
+            fmt_num(seg.t_start),
+            signed_mul(seg.a, &du),
+            signed_mul(seg.b, &format!("{du}*{du}"))
+        );
+        expr = format!("if(gte({u}\\,{})\\,{e}\\,{expr})", fmt_num(seg.u_start));
+    }
+    format!("setpts=({expr})/TB")
 }
 
 pub struct BuiltCommand {
@@ -276,7 +638,10 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
             ]);
         } else {
             let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
-            let early_source = overlap * speed;
+            // Ramped clips skip transition pre-roll so the setpts curve maps
+            // cleanly from sourceIn (u = 0) — same as the TS builder.
+            let ramped = clip_ramp_profile(clip).is_some();
+            let early_source = if ramped { 0.0 } else { overlap * speed };
             let ss = (clip.source_in_sec - early_source).max(0.0);
             let trimmed_early = clip.source_in_sec - ss;
             args.extend([
@@ -309,7 +674,7 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
         audio_only_offset += 1;
     }
 
-    let filter = build_filter_complex(&plan_view, &visuals, &audio_only_inputs, width, height)?;
+    let filter = build_filter_complex(&plan_view, &visuals, &audio_only_inputs, width, height, fps)?;
     args.extend(["-filter_complex".into(), filter, "-map".into(), "[outv]".into()]);
 
     if !audios.is_empty() {
@@ -330,6 +695,8 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
         "libx264".into(),
         "-b:v".into(),
         plan_view.video_bitrate.clone(),
+        "-r".into(),
+        format_fps(fps),
         "-pix_fmt".into(),
         "yuv420p".into(),
         "-movflags".into(),
@@ -338,10 +705,20 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
     ]);
 
     Ok(BuiltCommand {
-        program: "ffmpeg".into(),
+        program: ffmpeg_program().to_string_lossy().to_string(),
         args,
         temp_output,
     })
+}
+
+/// fps filter / `-r` value: integer when whole, else 3 decimals.
+fn format_fps(fps: f64) -> String {
+    let safe = if fps.is_finite() && fps > 0.0 { fps } else { 30.0 };
+    if (safe - safe.round()).abs() < 0.001 {
+        format!("{}", safe.round() as i64)
+    } else {
+        format!("{safe:.3}")
+    }
 }
 
 fn ffmpeg_color_literal(color: &str) -> String {
@@ -360,14 +737,19 @@ fn ffmpeg_color_literal(color: &str) -> String {
 }
 
 fn clamp_scale(value: f64) -> f64 {
-    if !value.is_finite() || value <= 0.0 {
+    if !value.is_finite() || value == 0.0 {
         1.0
     } else {
-        value.clamp(0.02, 20.0)
+        value.abs().clamp(0.02, 20.0)
     }
 }
 
 /// Scale/rotate/pad a media clip into the output frame honouring its transform.
+///
+/// Mirrors preview (`mediaGeometry` + CSS): contain-fit, then scale/flip/
+/// rotate, centred at transform.x/y. Always lands on an exact `width x height`
+/// canvas (pad), so no trailing resample softens the frame — `setsar=1` keeps
+/// geometry exact like the preview stage.
 fn media_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) -> String {
     let tr = &clip.transform;
     let cw = clip.canvas_width.max(1.0);
@@ -390,8 +772,15 @@ fn media_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) -> St
     let center_y = if legacy { height as f64 / 2.0 } else { tr.y * out_scale_y };
 
     let mut parts: Vec<String> = vec![format!(
-        "scale={box_w:.0}:{box_h:.0}:force_original_aspect_ratio=decrease"
+        "scale={box_w:.0}:{box_h:.0}:force_original_aspect_ratio=decrease:flags=lanczos"
     )];
+    // Negative scale = mirror (preview CSS scale(-1, …)); clamp_scale keeps magnitude.
+    if tr.scale_x < 0.0 {
+        parts.push("hflip".into());
+    }
+    if tr.scale_y < 0.0 {
+        parts.push("vflip".into());
+    }
     if tr.rotation.abs() > 0.01 {
         let rad = tr.rotation.abs() * std::f64::consts::PI / 180.0;
         let rw = (box_w * rad.cos() + box_h * rad.sin()).abs().round().max(box_w);
@@ -404,7 +793,7 @@ fn media_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) -> St
     let off_x = (center_x - box_w / 2.0).round().max(0.0);
     let off_y = (center_y - box_h / 2.0).round().max(0.0);
     parts.push(format!("pad={width}:{height}:{off_x:.0}:{off_y:.0}:black@0"));
-    parts.push(format!("scale={width}:{height}"));
+    parts.push("setsar=1".into());
     parts.join(",")
 }
 
@@ -414,11 +803,24 @@ fn build_filter_complex(
     audio_only: &[(usize, &RenderClipPlan)],
     width: u32,
     height: u32,
+    fps: f64,
 ) -> Result<String, String> {
     let mut parts: Vec<String> = Vec::new();
     // lavfi color is YUV — rgba + overlay format=rgb keeps dissolve alpha.
     parts.push("[0:v]format=rgba[base]".into());
-    let mut current = "[base]".to_string();
+
+    // Phase 1: prepare each visual stream (placement, retime, effects,
+    // transition fades, opacity). Order here follows `visuals` (track, start)
+    // so same-track transition pairing stays intact; painting happens in
+    // phase 2 in preview stacking order.
+    struct Prepared {
+        vlabel: String,
+        track_order: i32,
+        start: f64,
+        overlay_start: f64,
+        overlay_end: f64,
+    }
+    let mut prepared: Vec<Prepared> = Vec::with_capacity(visuals.len());
 
     for (index, clip) in visuals.iter().enumerate() {
         let input_index = index + 1;
@@ -428,10 +830,18 @@ fn build_filter_complex(
         let opacity = clip.opacity.clamp(0.0, 1.0);
         let overlap = clip.transition_overlap_sec.max(0.0);
         let overlay_start = (start - overlap).max(0.0);
-        let setpts = if (speed - 1.0).abs() < 0.001 {
-            "setpts=PTS-STARTPTS".to_string()
-        } else {
-            format!("setpts=(PTS-STARTPTS)/{speed}")
+        let setpts = match clip_ramp_profile(clip) {
+            Some(profile) => ramp_setpts(
+                &profile,
+                (clip.source_out_sec - clip.source_in_sec).max(0.01),
+            ),
+            None => {
+                if (speed - 1.0).abs() < 0.001 {
+                    "setpts=PTS-STARTPTS".to_string()
+                } else {
+                    format!("setpts=(PTS-STARTPTS)/{speed}")
+                }
+            }
         };
         let clip_dur = (end - start).max(0.01);
         let next_sibling = visuals.iter().enumerate().find_map(|(j, c)| {
@@ -494,39 +904,86 @@ fn build_filter_complex(
         parts.push(format!(
             "[{input_index}:v]{placement},{setpts},format=rgba{extra_part},colorchannelmixer=aa={opacity:.3}[v{index}]"
         ));
-        let overlay_end = end + hold;
-        let next = format!("[tmp{index}]");
-        parts.push(format!(
-            "{current}[v{index}]overlay=x=0:y=0:format=rgb:eof_action=pass:enable='between(t\\,{overlay_start:.3}\\,{overlay_end:.3})'{next}"
-        ));
-        current = next;
+        prepared.push(Prepared {
+            vlabel: format!("[v{index}]"),
+            track_order: clip.track_order,
+            start,
+            overlay_start,
+            overlay_end: end + hold,
+        });
     }
 
+    // Phase 2: paint in preview stacking order — lower `track_order` paints
+    // above (same as layerStackZ / the TS builder); same-track text sits above
+    // that track's media. Matches `buildFilterComplex` paint steps in
+    // src/domain/ffmpegArgs.ts.
+    #[derive(Clone, Copy)]
+    enum PaintStep {
+        Clip(usize),
+        Text(usize),
+    }
+    struct PaintKey {
+        track_order: i32,
+        kind_rank: u8, // media (0) before text (1) on the same track
+        start: f64,
+        step: PaintStep,
+    }
+    let mut steps: Vec<PaintKey> = Vec::with_capacity(prepared.len() + plan.texts.len());
+    for (i, p) in prepared.iter().enumerate() {
+        steps.push(PaintKey {
+            track_order: p.track_order,
+            kind_rank: 0,
+            start: p.start,
+            step: PaintStep::Clip(i),
+        });
+    }
     for (ti, text) in plan.texts.iter().enumerate() {
-        let start = text.timeline_start_sec.max(0.0);
-        let end = text.timeline_end_sec.max(start + 0.01);
-        let escaped = escape_drawtext(&text.content);
-        let fontfile = resolve_drawtext_font(text.font_path.as_deref())
-            .map(|p| format!(":fontfile={}", quote_filter_path(&p)))
-            .unwrap_or_default();
-        let base_size = text.font_size.max(8.0).round();
-        let color = normalize_color(&text.color);
-        let alpha = text.opacity.clamp(0.0, 1.0);
-        let x_expr = match text.align.as_str() {
-            "left" => format!("{}", text.x.max(0.0) as i64),
-            "right" => format!("{}-text_w", text.x.max(0.0) as i64),
-            _ => format!("{}-(text_w/2)", text.x.max(0.0) as i64),
-        };
-        let y_expr = format!("{}-(text_h/2)", text.y.max(0.0) as i64);
-        let next = format!("[txt{ti}]");
-        parts.push(format!(
-            "{current}drawtext=text='{escaped}'{fontfile}:fontsize={base_size}:fontcolor={color}@1:x='{x_expr}':y='{y_expr}':alpha={alpha:.3}:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
-        ));
-        current = next;
+        steps.push(PaintKey {
+            track_order: text.track_order,
+            kind_rank: 1,
+            start: text.timeline_start_sec.max(0.0),
+            step: PaintStep::Text(ti),
+        });
+    }
+    steps.sort_by(|a, b| {
+        b.track_order
+            .cmp(&a.track_order)
+            .then(a.kind_rank.cmp(&b.kind_rank))
+            .then(
+                a.start
+                    .partial_cmp(&b.start)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+    });
+
+    let mut current = "[base]".to_string();
+    let mut mix_count = 0usize;
+    for key in &steps {
+        match key.step {
+            PaintStep::Clip(i) => {
+                let p = &prepared[i];
+                let next = format!("[mix{mix_count}]");
+                mix_count += 1;
+                parts.push(format!(
+                    "{current}{}overlay=x=0:y=0:format=rgb:eof_action=pass:enable='between(t\\,{:.3}\\,{:.3})'{next}",
+                    p.vlabel, p.overlay_start, p.overlay_end
+                ));
+                current = next;
+            }
+            PaintStep::Text(ti) => {
+                let text = &plan.texts[ti];
+                let part = drawtext_filter(text, &current, format!("[txt{ti}]"));
+                parts.push(part);
+                current = format!("[txt{ti}]");
+            }
+        }
     }
 
     if current != "[outv]" {
-        parts.push(format!("{current}null[outv]"));
+        // Force constant frame rate = canvas fps so motion matches preview
+        // (sources may be VFR or a different fps; the lavfi base alone
+        // doesn't normalize them).
+        parts.push(format!("{current}fps={}[outv]", format_fps(fps)));
     }
 
     let mut audio_labels: Vec<String> = Vec::new();
@@ -539,13 +996,16 @@ fn build_filter_complex(
         let input_index = index + 1;
         let start_ms = (clip.timeline_start_sec.max(0.0) * 1000.0).round() as i64;
         let vol = clip.volume.clamp(0.0, 2.0);
-        let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
-        let atempo = atempo_chain(speed);
         let label = format!("[a{ai}]");
-        parts.push(format!(
-            "[{input_index}:a]asetpts=PTS-STARTPTS,{atempo}volume={vol},adelay={start_ms}|{start_ms},apad,atrim=0:{:.3}{label}",
-            plan.duration_sec
-        ));
+        append_audio_chain(
+            &mut parts,
+            input_index,
+            clip,
+            plan.duration_sec,
+            start_ms,
+            vol,
+            &label,
+        );
         audio_labels.push(label);
         ai += 1;
     }
@@ -556,13 +1016,16 @@ fn build_filter_complex(
         }
         let start_ms = (clip.timeline_start_sec.max(0.0) * 1000.0).round() as i64;
         let vol = clip.volume.clamp(0.0, 2.0);
-        let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
-        let atempo = atempo_chain(speed);
         let label = format!("[a{ai}]");
-        parts.push(format!(
-            "[{input_index}:a]asetpts=PTS-STARTPTS,{atempo}volume={vol},adelay={start_ms}|{start_ms},apad,atrim=0:{:.3}{label}",
-            plan.duration_sec
-        ));
+        append_audio_chain(
+            &mut parts,
+            *input_index,
+            clip,
+            plan.duration_sec,
+            start_ms,
+            vol,
+            &label,
+        );
         audio_labels.push(label);
         ai += 1;
     }
@@ -580,6 +1043,58 @@ fn build_filter_complex(
     }
 
     Ok(parts.join(";"))
+}
+
+/// Append a clip's audio chain: constant speed → one `atempo` chain;
+/// ramped → the source is split into short constant-speed slices, each
+/// retimed with a slice-local `atempo` and `concat`-ed (FFmpeg's `atempo`
+/// cannot take an expression). 24 slices keep per-slice drift small and the
+/// graph bounded. Mirrors the TS builder's `appendAudioChain`.
+#[allow(clippy::too_many_arguments)]
+fn append_audio_chain(
+    parts: &mut Vec<String>,
+    input_index: usize,
+    clip: &RenderClipPlan,
+    plan_duration_sec: f64,
+    start_ms: i64,
+    vol: f64,
+    label: &str,
+) {
+    let tail = format!(
+        "volume={vol},adelay={start_ms}|{start_ms},apad,atrim=0:{plan_duration_sec:.3}"
+    );
+    if let Some(profile) = clip_ramp_profile(clip) {
+        let span = (clip.source_out_sec - clip.source_in_sec).max(0.01);
+        let segments = ramp_time_map_segments(&profile, span, 24);
+        let n = segments.len();
+        let total = span * profile.duration_factor();
+        let slice_dur = span / n as f64;
+        let mut slice_labels = String::new();
+        for (i, seg) in segments.iter().enumerate() {
+            let out_end = if i + 1 < n {
+                segments[i + 1].t_start
+            } else {
+                total
+            };
+            let out_dur = (out_end - seg.t_start).max(0.02);
+            let speed = (slice_dur / out_dur).max(0.01);
+            let atempo = atempo_chain(speed);
+            parts.push(format!(
+                "[{input_index}:a]atrim={:.3}:{:.3},asetpts=PTS-STARTPTS,{atempo}asetpts=PTS-STARTPTS[ras{input_index}_{i}]",
+                seg.u_start, seg.u_end
+            ));
+            slice_labels.push_str(&format!("[ras{input_index}_{i}]"));
+        }
+        parts.push(format!(
+            "{slice_labels}concat=n={n}:v=0:a=1,{tail}{label}"
+        ));
+        return;
+    }
+    let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
+    let atempo = atempo_chain(speed);
+    parts.push(format!(
+        "[{input_index}:a]asetpts=PTS-STARTPTS,{atempo}{tail}{label}"
+    ));
 }
 
 /// Build one or more `atempo` filters (each must be in 0.5..=2.0).
@@ -674,6 +1189,159 @@ fn ffmpeg_video_effects_chain(
     parts.join(",")
 }
 
+fn drawtext_filter(text: &RenderTextPlan, current: &str, next: String) -> String {
+    let start = text.timeline_start_sec.max(0.0);
+    let end = text.timeline_end_sec.max(start + 0.01);
+    let dur = (end - start).max(0.01);
+    let escaped = escape_drawtext(&text.content);
+    let fontfile = resolve_drawtext_font(text.font_path.as_deref())
+        .map(|p| format!(":fontfile={}", quote_filter_path(&p)))
+        .unwrap_or_default();
+    let base_size = text.font_size.max(8.0).round();
+    let color = normalize_color(&text.color);
+    let base_alpha = text.opacity.clamp(0.0, 1.0);
+    let x_expr = drawtext_x_expr(&text.align, text.x, start, dur, &text.text_animation);
+    let y_expr = drawtext_y_expr(text.y, start, dur, &text.text_animation);
+    let alpha_expr = drawtext_alpha_expr(
+        base_alpha,
+        start,
+        end,
+        text.fade_in_sec,
+        text.fade_out_sec,
+        &text.text_animation,
+    );
+    format!(
+        "{current}drawtext=text='{escaped}'{fontfile}:fontsize={base_size}:fontcolor={color}@1:x='{x_expr}':y='{y_expr}':alpha='{alpha_expr}':enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
+    )
+}
+
+fn slide_axis_offset(
+    anim: &str,
+    axis: char,
+    start: f64,
+    dur: f64,
+    out_start: f64,
+    out_dur: f64,
+) -> Option<String> {
+    let wants = (axis == 'x' && (anim == "slideLeft" || anim == "slideRight"))
+        || (axis == 'y' && (anim == "slideUp" || anim == "slideDown"));
+    if !wants {
+        return None;
+    }
+    let sign = if anim == "slideLeft" || anim == "slideUp" {
+        1.0
+    } else {
+        -1.0
+    };
+    let mut terms: Vec<String> = Vec::new();
+    if dur > 0.001 {
+        terms.push(format!(
+            "{:.1}*(1-min(1\\,max(0\\,(t-{start:.3})/{dur:.3})))",
+            sign * 48.0
+        ));
+    }
+    if out_dur > 0.001 {
+        terms.push(format!(
+            "{:.1}*(min(1\\,max(0\\,(t-{out_start:.3})/{out_dur:.3})))",
+            sign * 48.0
+        ));
+    }
+    if terms.is_empty() {
+        None
+    } else {
+        Some(format!("({})", terms.join("+")))
+    }
+}
+
+fn drawtext_x_expr(
+    align: &str,
+    x: f64,
+    start: f64,
+    dur: f64,
+    anim: &RenderTextAnimation,
+) -> String {
+    let base = match align {
+        "left" => format!("{}", x.max(0.0) as i64),
+        "right" => format!("{}-text_w", x.max(0.0) as i64),
+        _ => format!("{}-(text_w/2)", x.max(0.0) as i64),
+    };
+    let in_dur = anim.in_duration_sec.min(dur);
+    let out_dur = anim.out_duration_sec.min(dur);
+    let out_start = start + (dur - out_dur).max(0.0);
+    let mut off: Vec<String> = Vec::new();
+    if let Some(e) = slide_axis_offset(&anim.r#in, 'x', start, in_dur, out_start, 0.0) {
+        off.push(e);
+    }
+    if let Some(e) = slide_axis_offset(&anim.out, 'x', start, 0.0, out_start, out_dur) {
+        off.push(e);
+    }
+    if off.is_empty() {
+        base
+    } else {
+        format!("({base}+{})", off.join("+"))
+    }
+}
+
+fn drawtext_y_expr(y: f64, start: f64, dur: f64, anim: &RenderTextAnimation) -> String {
+    let base = format!("{}-(text_h/2)", y.max(0.0) as i64);
+    let in_dur = anim.in_duration_sec.min(dur);
+    let out_dur = anim.out_duration_sec.min(dur);
+    let out_start = start + (dur - out_dur).max(0.0);
+    let mut off: Vec<String> = Vec::new();
+    if let Some(e) = slide_axis_offset(&anim.r#in, 'y', start, in_dur, out_start, 0.0) {
+        off.push(e);
+    }
+    if let Some(e) = slide_axis_offset(&anim.out, 'y', start, 0.0, out_start, out_dur) {
+        off.push(e);
+    }
+    if off.is_empty() {
+        base
+    } else {
+        format!("({base}+{})", off.join("+"))
+    }
+}
+
+fn drawtext_alpha_expr(
+    base_alpha: f64,
+    start: f64,
+    end: f64,
+    fade_in: f64,
+    fade_out: f64,
+    anim: &RenderTextAnimation,
+) -> String {
+    let dur = (end - start).max(0.01);
+    let mut terms: Vec<String> = vec![format!("{base_alpha:.3}")];
+    let fi = fade_in.min(dur);
+    if fi > 0.001 {
+        terms.push(format!("min(1\\,max(0\\,(t-{start:.3})/{fi:.3}))"));
+    }
+    let fo = fade_out.min(dur);
+    if fo > 0.001 {
+        terms.push(format!("min(1\\,max(0\\,({end:.3}-t)/{fo:.3}))"));
+    }
+    let in_dur = anim.in_duration_sec.min(dur);
+    if anim.r#in != "none" && in_dur > 0.001 {
+        if anim.r#in == "fade" || anim.r#in == "scalePop" {
+            terms.push(format!("min(1\\,max(0\\,(t-{start:.3})/{in_dur:.3}))"));
+        } else {
+            terms.push(format!(
+                "(0.15+0.85*min(1\\,max(0\\,(t-{start:.3})/{in_dur:.3})))"
+            ));
+        }
+    }
+    let out_dur = anim.out_duration_sec.min(dur);
+    if anim.out != "none" && out_dur > 0.001 {
+        if anim.out == "fade" || anim.out == "scalePop" {
+            terms.push(format!("min(1\\,max(0\\,({end:.3}-t)/{out_dur:.3}))"));
+        } else {
+            terms.push(format!(
+                "(0.15+0.85*min(1\\,max(0\\,({end:.3}-t)/{out_dur:.3})))"
+            ));
+        }
+    }
+    terms.join("*")
+}
+
 fn resolve_drawtext_font(font_path: Option<&str>) -> Option<String> {
     if let Some(path) = font_path {
         if Path::new(path).is_file() {
@@ -720,12 +1388,16 @@ fn normalize_color(color: &str) -> String {
 }
 
 pub fn spawn_ffmpeg(program: &str, args: &[String]) -> Result<std::process::Child, String> {
-    Command::new(program)
+    silent_command(program)
         .args(args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to start ffmpeg ({e}). Is FFmpeg on PATH?"))
+        .map_err(|e| {
+            format!(
+                "Failed to start ffmpeg ({e}). No working FFmpeg found — ship the bundled sidecar (see src-tauri/binaries/README.md) or install FFmpeg."
+            )
+        })
 }
 
 pub fn parse_progress_time(line: &str) -> Option<f64> {
@@ -745,7 +1417,7 @@ fn media_has_audio_stream(path: &str) -> bool {
     if !Path::new(path).is_file() {
         return false;
     }
-    let output = Command::new("ffprobe")
+    let output = silent_command(ffprobe_program())
         .args([
             "-v",
             "error",
@@ -770,7 +1442,7 @@ pub fn validate_output_with_ffprobe(path: &Path) -> Result<String, String> {
     if !path.is_file() {
         return Err("Output file missing after export".into());
     }
-    let output = Command::new("ffprobe")
+    let output = silent_command(ffprobe_program())
         .args([
             "-v",
             "error",
@@ -796,7 +1468,7 @@ pub fn generate_thumbnail_file(path: &Path, time_sec: f64, out: &Path) -> Result
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let status = Command::new("ffmpeg")
+    let status = silent_command(ffmpeg_program())
         .args([
             "-y",
             "-hide_banner",
