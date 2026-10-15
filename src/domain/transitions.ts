@@ -15,7 +15,19 @@ function durationTicksOf(clip: Clip): number {
 }
 
 /** Simple fade-family transitions between adjacent clips. */
-export type TransitionType = "none" | "dissolve" | "fade" | "fadeWhite";
+export type TransitionType =
+  | "none"
+  | "dissolve"
+  | "fade"
+  | "fadeWhite"
+  | "wipeLeft"
+  | "wipeRight"
+  | "wipeUp"
+  | "wipeDown"
+  | "slideLeft"
+  | "slideRight"
+  | "slideUp"
+  | "slideDown";
 
 export interface ClipTransition {
   type: TransitionType;
@@ -29,7 +41,7 @@ export const DEFAULT_CLIP_TRANSITION: ClipTransition = {
   durationTicks: 600_000,
 };
 
-export type TransitionGroup = "cut" | "fade";
+export type TransitionGroup = "cut" | "fade" | "wipe" | "slide";
 
 export interface TransitionDef {
   type: TransitionType;
@@ -44,7 +56,15 @@ export const TRANSITION_DEFS: TransitionDef[] = [
   { type: "none", label: "Cut", hint: "Hard cut", group: "cut", xfade: null },
   { type: "dissolve", label: "Dissolve", hint: "Crossfade", group: "fade", xfade: "fade" },
   { type: "fade", label: "Fade", hint: "Through black", group: "fade", xfade: "fadeblack" },
-  { type: "fadeWhite", label: "Fade trắng", hint: "Through white", group: "fade", xfade: "fadewhite" },
+  { type: "fadeWhite", label: "Fade White", hint: "Through white", group: "fade", xfade: "fadewhite" },
+  { type: "wipeLeft", label: "Wipe Left", hint: "Curtain ←", group: "wipe", xfade: "wipeleft" },
+  { type: "wipeRight", label: "Wipe Right", hint: "Curtain →", group: "wipe", xfade: "wiperight" },
+  { type: "wipeUp", label: "Wipe Up", hint: "Curtain ↑", group: "wipe", xfade: "wipeup" },
+  { type: "wipeDown", label: "Wipe Down", hint: "Curtain ↓", group: "wipe", xfade: "wipedown" },
+  { type: "slideLeft", label: "Slide Left", hint: "Push ←", group: "slide", xfade: "slideleft" },
+  { type: "slideRight", label: "Slide Right", hint: "Push →", group: "slide", xfade: "slideright" },
+  { type: "slideUp", label: "Slide Up", hint: "Push ↑", group: "slide", xfade: "slideup" },
+  { type: "slideDown", label: "Slide Down", hint: "Push ↓", group: "slide", xfade: "slidedown" },
 ];
 
 export const TRANSITION_OPTIONS: {
@@ -54,8 +74,10 @@ export const TRANSITION_OPTIONS: {
 }[] = TRANSITION_DEFS.map(({ type, label, hint }) => ({ type, label, hint }));
 
 export const TRANSITION_GROUPS: { id: TransitionGroup; label: string }[] = [
-  { id: "cut", label: "Cắt" },
-  { id: "fade", label: "Mờ" },
+  { id: "cut", label: "Cut" },
+  { id: "fade", label: "Fade" },
+  { id: "wipe", label: "Wipe" },
+  { id: "slide", label: "Slide" },
 ];
 
 export function transitionDef(type: TransitionType): TransitionDef {
@@ -151,6 +173,7 @@ export function easeTransition(progress: number): number {
 /**
  * Opacity multipliers for prev/current during incoming transition on `current`.
  * `progress` 0 = only prev, 1 = only current (dissolve).
+ * Wipe/slide keep both opaque — the visual split is done via clip-path / offset.
  */
 export function transitionOpacityPair(
   type: TransitionType,
@@ -169,11 +192,117 @@ export function transitionOpacityPair(
     }
     case "none":
       return { prev: 1, curr: 1 };
+    case "wipeLeft":
+    case "wipeRight":
+    case "wipeUp":
+    case "wipeDown":
+    case "slideLeft":
+    case "slideRight":
+    case "slideUp":
+    case "slideDown":
+      return { prev: 1, curr: 1 };
     default: {
       const a = easeTransition(p);
       return { prev: 1 - a, curr: a };
     }
   }
+}
+
+/** Per-side preview visual for wipe/slide transitions. */
+export interface TransitionSideVisual {
+  opacity: number;
+  /** CSS clip-path for the wipe reveal (undefined = no mask). */
+  clipPath?: string;
+  /** Canvas-relative offset in % (100 = full canvas width/height). */
+  offsetXPct: number;
+  offsetYPct: number;
+}
+
+export function isWipeTransition(type: TransitionType): boolean {
+  return (
+    type === "wipeLeft" ||
+    type === "wipeRight" ||
+    type === "wipeUp" ||
+    type === "wipeDown"
+  );
+}
+
+export function isSlideTransition(type: TransitionType): boolean {
+  return (
+    type === "slideLeft" ||
+    type === "slideRight" ||
+    type === "slideUp" ||
+    type === "slideDown"
+  );
+}
+
+function wipeClipPath(type: TransitionType, eased: number): string {
+  const hidden = Math.max(0, Math.min(100, (1 - eased) * 100));
+  switch (type) {
+    case "wipeLeft":
+      return `inset(0 0 0 ${hidden.toFixed(2)}%)`;
+    case "wipeRight":
+      return `inset(0 ${hidden.toFixed(2)}% 0 0)`;
+    case "wipeUp":
+      return `inset(${hidden.toFixed(2)}% 0 0 0)`;
+    case "wipeDown":
+      return `inset(0 0 ${hidden.toFixed(2)}% 0)`;
+    default:
+      return "none";
+  }
+}
+
+/**
+ * Preview visuals for both sides of a centered transition.
+ * progress 0 = only prev visible, 1 = only curr visible.
+ */
+export function transitionVisualPair(
+  type: TransitionType,
+  progress: number,
+): { prev: TransitionSideVisual; curr: TransitionSideVisual } {
+  const p = Math.min(1, Math.max(0, progress));
+  const e = easeTransition(p);
+  const pair = transitionOpacityPair(type, p);
+  if (isWipeTransition(type)) {
+    return {
+      prev: { opacity: pair.prev, offsetXPct: 0, offsetYPct: 0 },
+      curr: {
+        opacity: pair.curr,
+        clipPath: wipeClipPath(type, e),
+        offsetXPct: 0,
+        offsetYPct: 0,
+      },
+    };
+  }
+  if (isSlideTransition(type)) {
+    const shift = (1 - e) * 100;
+    switch (type) {
+      case "slideLeft":
+        return {
+          prev: { opacity: 1, offsetXPct: -e * 100, offsetYPct: 0 },
+          curr: { opacity: 1, offsetXPct: shift, offsetYPct: 0 },
+        };
+      case "slideRight":
+        return {
+          prev: { opacity: 1, offsetXPct: e * 100, offsetYPct: 0 },
+          curr: { opacity: 1, offsetXPct: -shift, offsetYPct: 0 },
+        };
+      case "slideUp":
+        return {
+          prev: { opacity: 1, offsetXPct: 0, offsetYPct: -e * 100 },
+          curr: { opacity: 1, offsetXPct: 0, offsetYPct: shift },
+        };
+      default:
+        return {
+          prev: { opacity: 1, offsetXPct: 0, offsetYPct: e * 100 },
+          curr: { opacity: 1, offsetXPct: 0, offsetYPct: -shift },
+        };
+    }
+  }
+  return {
+    prev: { opacity: pair.prev, offsetXPct: 0, offsetYPct: 0 },
+    curr: { opacity: pair.curr, offsetXPct: 0, offsetYPct: 0 },
+  };
 }
 
 /** Preview visual for the incoming clip — opacity only (fade family). */

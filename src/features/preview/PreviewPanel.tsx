@@ -295,6 +295,7 @@ export function PreviewPanel() {
             canvasWidth={canvas.width}
             canvasHeight={canvas.height}
             stageRef={stageRef}
+            playheadTicks={listPlayhead}
           />
         </div>
       </div>

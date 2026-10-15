@@ -41,7 +41,11 @@ export function requestPlay(): void {
 }
 
 export function pausePlayback(): void {
-  useEditorUiStore.getState().setPlaying(false);
+  const ui = useEditorUiStore.getState();
+  // Premiere stop behavior: halting clears the J/L shuttle so the next Play
+  // resumes at 1× instead of mysteriously continuing backward/fast.
+  if (ui.playbackRate !== 1) ui.setPlaybackRate(1);
+  ui.setPlaying(false);
   releasePlaybackDecodeHold();
 }
 

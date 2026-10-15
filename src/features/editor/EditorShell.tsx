@@ -32,6 +32,8 @@ import { PreviewPanel } from "../preview/PreviewPanel";
 import { InspectorPanel } from "../inspector/InspectorPanel";
 import { PropertiesPanel } from "../inspector/PropertiesPanel";
 import { ExportPanel } from "../export/ExportPanel";
+import { PhotosPanel } from "../library/PhotosPanel";
+import { ShapePanel } from "../library/ShapePanel";
 import {
   AudioIcon,
   ExportIcon,
@@ -40,6 +42,7 @@ import {
   PhotosIcon,
   PlayIcon,
   RedoIcon,
+  ShapeIcon,
   SubtitlesIcon,
   TextIcon,
   UndoIcon,
@@ -51,6 +54,7 @@ const RAIL_ITEMS: { id: EditorPanel; label: string; Icon: typeof MediaIcon }[] =
   { id: "text", label: "Text", Icon: TextIcon },
   { id: "audio", label: "Audio", Icon: AudioIcon },
   { id: "photos", label: "Photos", Icon: PhotosIcon },
+  { id: "shape", label: "Shape", Icon: ShapeIcon },
   { id: "subtitles", label: "Subs", Icon: SubtitlesIcon },
 ];
 
@@ -568,7 +572,9 @@ export function EditorShell() {
 
       <div
         className={
-          selectedClipIds.length > 0 ? styles.bodyWithProps : styles.body
+          selectedClipIds.length > 0
+            ? `${styles.body} ${styles.bodyPropsOpen}`
+            : styles.body
         }
       >
         <nav className={styles.rail} aria-label="Library">
@@ -595,7 +601,8 @@ export function EditorShell() {
           {activePanel === "media" && <MediaBinPanel />}
           {activePanel === "text" && <InspectorPanel mode="text" />}
           {activePanel === "audio" && <MediaBinPanel filter="audio" />}
-          {activePanel === "photos" && <MediaBinPanel filter="image" />}
+          {activePanel === "photos" && <PhotosPanel />}
+          {activePanel === "shape" && <ShapePanel />}
           {activePanel === "subtitles" && <InspectorPanel mode="subtitles" />}
           {activePanel === "export" && <ExportPanel />}
         </aside>

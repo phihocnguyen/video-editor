@@ -8,6 +8,7 @@ import {
   fadeOpacityMultiplier,
   ffmpegVideoEffectsChain,
   normalizeClipEffects,
+  strobeIsFlashFrame,
   updateClipEffects,
   type MediaAsset,
 } from "../../src/domain";
@@ -29,12 +30,44 @@ describe("clip effects", () => {
     expect(css).toContain("grayscale(1)");
   });
 
+  it("boosts contrast in CSS when sharpen is set", () => {
+    const css = cssFilterFromEffects(normalizeClipEffects({ sharpen: 1 }));
+    expect(css).toMatch(/contrast\(/);
+  });
+
+  it("normalizes vignette and sharpen ranges", () => {
+    expect(normalizeClipEffects({ vignette: 2, sharpen: 9 }).vignette).toBe(1);
+    expect(normalizeClipEffects({ vignette: 2, sharpen: 9 }).sharpen).toBe(2);
+    expect(normalizeClipEffects(undefined).vignette).toBe(0);
+  });
+
   it("computes fade opacity multipliers", () => {
     const fx = normalizeClipEffects({ fadeInSec: 1, fadeOutSec: 1 });
     expect(fadeOpacityMultiplier(fx, 0, 5)).toBeCloseTo(0);
     expect(fadeOpacityMultiplier(fx, 0.5, 5)).toBeCloseTo(0.5);
     expect(fadeOpacityMultiplier(fx, 2.5, 5)).toBeCloseTo(1);
     expect(fadeOpacityMultiplier(fx, 4.5, 5)).toBeCloseTo(0.5);
+  });
+
+  it("flashes one frame every N frames", () => {
+    const fx = normalizeClipEffects({ strobeFrames: 5 });
+    // 30fps: flash on frames 4, 9, 14… (0-based)
+    expect(strobeIsFlashFrame(fx, 0, 30)).toBe(false);
+    expect(strobeIsFlashFrame(fx, 4 / 30, 30)).toBe(true);
+    expect(strobeIsFlashFrame(fx, 5 / 30, 30)).toBe(false);
+    expect(strobeIsFlashFrame(normalizeClipEffects({ strobeFrames: 0 }), 0, 30)).toBe(
+      false,
+    );
+  });
+
+  it("emits frame-strobe drawbox in FFmpeg chain", () => {
+    const chain = ffmpegVideoEffectsChain(
+      normalizeClipEffects({ strobeFrames: 5, strobeColor: "#FF0000" }),
+      4,
+    );
+    expect(chain).toContain("drawbox=");
+    expect(chain).toContain("color=FF0000@1");
+    expect(chain).toContain("mod(n\\,5)");
   });
 
   it("emits FFmpeg eq/gblur/fade chain", () => {
@@ -55,6 +88,15 @@ describe("clip effects", () => {
     expect(chain).toContain("hue=s=0");
     expect(chain).toContain("fade=t=in:st=0.000:d=0.500:alpha=1");
     expect(chain).toContain("fade=t=out:st=3.500:d=0.500:alpha=1");
+  });
+
+  it("emits unsharp and vignette in FFmpeg chain", () => {
+    const chain = ffmpegVideoEffectsChain(
+      normalizeClipEffects({ sharpen: 1, vignette: 0.6 }),
+      4,
+    );
+    expect(chain).toContain("unsharp=");
+    expect(chain).toContain("vignette=");
   });
 
   it("includes effects in render plan and filter_complex", () => {

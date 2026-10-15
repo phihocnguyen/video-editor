@@ -62,6 +62,17 @@
   touch-action: none;
 }
 
+/* Invisible grab halo — easy to catch without changing the visual dot. */
+.anchor::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 26px;
+  height: 26px;
+  transform: translate(-50%, -50%);
+}
+
 .anchor:hover {
   background: var(--accent);
   transform: scale(1.15);
@@ -69,6 +80,24 @@
 
 .anchor:active {
   cursor: grabbing;
+}
+
+/* While the media wall blocks the drag (duration lock): amber border tells
+   why the point resists instead of looking stuck/broken. */
+.anchorBlocked {
+  border-color: #f5a623;
+  box-shadow: 0 0 0 3px rgba(245, 166, 35, 0.35);
+}
+
+/* Read-only anchors (ramp visible without selection): visible but transparent
+   to the pointer so clip slide/select keeps working underneath. */
+.anchorReadOnly {
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+.anchorReadOnly::after {
+  display: none;
 }
 
 .toolbar {

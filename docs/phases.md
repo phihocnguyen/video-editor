@@ -153,16 +153,26 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Preview crossfade / wipe during overlap window
 - [x] Export via early overlay + fade / wipe x-offset (TS + Rust)
 
-### Slice C — next
+### Slice C — CapCut-style effects
 
-- [ ] Flip H/V, vignette, sharpen
-- [ ] Effect presets (Warm / Cool / B&W)
-- [ ] Timeline badge when clip has non-default effects
+- [x] Flip H/V (via transform scaleX / scaleY negate in Properties)
+- [x] Vignette + sharpen (Adjustment + preview overlay + FFmpeg `vignette` / `unsharp`)
+- [x] Effect presets (None / Warm / Cool / Vivid / Soft / B&W / Film)
+- [x] Timeline FX badge when clip has non-default effects
+
+### Slice D — Effect keyframes (CapCut-style)
+
+- [x] Per-param `effectKeyframes` on clips (brightness / contrast / sat / blur / vignette / sharpen / grayscale)
+- [x] Properties ◇ toggle at playhead; steppers upsert when param is animated
+- [x] Preview resolves `effectsAtProgress` while scrubbing/playing
+- [x] Timeline diamond marks + FX badge when keyframed
+- [x] Export: `eq` exprs + stepped `enable=` windows for blur/vignette/sharpen
+- [ ] Opacity / transform keyframes (later)
+- [ ] Full curve graph editor (optional; speed-ramp style)
 
 ### Later slices (ordered)
 
-1. **Keyframes** — animate opacity/transform/effect params over time
-2. **Captions** — SRT import + burn-in (drawtext / ass)
+1. **Captions** — SRT import + burn-in (drawtext / ass)
 3. **Color grading** — curves / LUTs (beyond simple eq)
 4. **Proxy / GPU compositor** — smoother multi-track preview
 5. **Templates** — starter timelines

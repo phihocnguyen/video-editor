@@ -8,6 +8,7 @@ export type EditorPanel =
   | "text"
   | "audio"
   | "photos"
+  | "shape"
   | "subtitles"
   | "export";
 
@@ -21,6 +22,10 @@ interface EditorUiState {
   timelineHeightPx: number;
   /** Width of timeline track-label column (V/A controls). */
   trackLabelWidthPx: number;
+  /** Per-track lane height in px (Premiere-style expand). */
+  trackHeightsPx: Record<string, number>;
+  /** Focused track for height shortcuts (Ctrl+= / wheel). */
+  selectedTrackId: string | null;
   isPlaying: boolean;
   isScrubbing: boolean;
   snapEnabled: boolean;
@@ -42,6 +47,9 @@ interface EditorUiState {
   setTimelineZoom: (zoom: number) => void;
   setTimelineHeightPx: (height: number) => void;
   setTrackLabelWidthPx: (width: number) => void;
+  setTrackHeightPx: (trackId: string, heightPx: number) => void;
+  nudgeTrackHeight: (trackId: string, deltaPx: number) => void;
+  setSelectedTrackId: (trackId: string | null) => void;
   setPlaying: (playing: boolean) => void;
   setScrubbing: (scrubbing: boolean) => void;
   setSnapEnabled: (enabled: boolean) => void;
@@ -52,6 +60,10 @@ interface EditorUiState {
   setMarkOutTicks: (ticks: number | null) => void;
   setStatusMessage: (message: string) => void;
 }
+
+export const DEFAULT_TRACK_HEIGHT_PX = 50;
+export const MIN_TRACK_HEIGHT_PX = 32;
+export const MAX_TRACK_HEIGHT_PX = 220;
 
 /** Premiere-like shuttle steps for J / L. */
 export const PLAYBACK_RATE_STEPS = [
@@ -85,6 +97,8 @@ export const useEditorUiStore = create<EditorUiState>((set) => ({
   timelineZoom: 1,
   timelineHeightPx: 248,
   trackLabelWidthPx: 128,
+  trackHeightsPx: {},
+  selectedTrackId: null,
   isPlaying: false,
   isScrubbing: false,
   snapEnabled: true,
@@ -109,6 +123,30 @@ export const useEditorUiStore = create<EditorUiState>((set) => ({
     set({
       trackLabelWidthPx: Math.min(260, Math.max(88, Math.round(trackLabelWidthPx))),
     }),
+  setTrackHeightPx: (trackId, heightPx) =>
+    set((s) => ({
+      trackHeightsPx: {
+        ...s.trackHeightsPx,
+        [trackId]: Math.min(
+          MAX_TRACK_HEIGHT_PX,
+          Math.max(MIN_TRACK_HEIGHT_PX, Math.round(heightPx)),
+        ),
+      },
+    })),
+  nudgeTrackHeight: (trackId, deltaPx) =>
+    set((s) => {
+      const current = s.trackHeightsPx[trackId] ?? DEFAULT_TRACK_HEIGHT_PX;
+      return {
+        trackHeightsPx: {
+          ...s.trackHeightsPx,
+          [trackId]: Math.min(
+            MAX_TRACK_HEIGHT_PX,
+            Math.max(MIN_TRACK_HEIGHT_PX, Math.round(current + deltaPx)),
+          ),
+        },
+      };
+    }),
+  setSelectedTrackId: (selectedTrackId) => set({ selectedTrackId }),
   setPlaying: (isPlaying) => set({ isPlaying }),
   setScrubbing: (isScrubbing) => set({ isScrubbing }),
   setSnapEnabled: (snapEnabled) => set({ snapEnabled }),

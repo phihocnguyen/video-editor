@@ -2,8 +2,8 @@
  * Interactive overlay for media (video/image) layers on the preview stage.
  *
  * Renders a transparent, correctly-sized/rotated box over each visible media
- * layer so it can be selected, moved (drag), resized (corner handle) and rotated
- * (top handle) — matching the text-overlay interaction model.
+ * layer so it can be selected, moved (drag), resized (4 corner handles) and
+ * rotated (top handle) — CapCut-style selection chrome.
  *
  * Actual media pixels are rendered by `CompositeLayers`; this layer only handles
  * pointer interaction and the selection chrome.
@@ -236,26 +236,26 @@ export function MediaOverlayLayer({
                     />
                   </svg>
                 </button>
-                <button
-                  type="button"
-                  className={styles.mediaHandleResize}
-                  title="Resize"
-                  aria-label="Resize layer"
-                  onPointerDown={(e) => {
-                    if (e.button !== 0) return;
-                    beginGesture(e, clip, asset, "resize");
-                  }}
-                >
-                  <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden>
-                    <path
-                      d="M4 2h6v6M8 4H2v6"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.4"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
+                {(
+                  [
+                    ["cornerNW", "Resize from top-left"],
+                    ["cornerNE", "Resize from top-right"],
+                    ["cornerSW", "Resize from bottom-left"],
+                    ["cornerSE", "Resize from bottom-right"],
+                  ] as const
+                ).map(([cls, label]) => (
+                  <button
+                    key={cls}
+                    type="button"
+                    className={`${styles.cornerHandle} ${styles[cls]}`}
+                    title="Resize"
+                    aria-label={label}
+                    onPointerDown={(e) => {
+                      if (e.button !== 0) return;
+                      beginGesture(e, clip, asset, "resize");
+                    }}
+                  />
+                ))}
               </>
             ) : null}
           </div>

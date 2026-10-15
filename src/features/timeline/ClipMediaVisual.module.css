@@ -8,3 +8,36 @@
   /* Stretch fixed-resolution canvas on zoom — no redraw. */
   image-rendering: auto;
 }
+
+/* Premiere-style filmstrip background. `<img>` only — captures are produced
+   off-band (see trackThumbs), so this layer never touches the decoder. */
+.filmstrip {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+.thumbImg {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.thumbImg + .thumbImg,
+.thumbSkeleton + .thumbSkeleton,
+.thumbSkeleton + .thumbImg,
+.thumbImg + .thumbSkeleton {
+  border-left: 1px solid rgba(0, 0, 0, 0.45);
+}
+
+.thumbSkeleton {
+  flex: 1 1 0;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.05);
+}

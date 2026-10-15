@@ -16,9 +16,11 @@ import styles from "./MediaBinPanel.module.css";
 
 interface MediaBinPanelProps {
   filter?: MediaKind;
+  /** Hide the panel title (when embedded under another library panel). */
+  hideTitle?: boolean;
 }
 
-export function MediaBinPanel({ filter }: MediaBinPanelProps) {
+export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps) {
   const assets = useProjectStore((s) => s.project.assets);
   const addAssets = useProjectStore((s) => s.addAssets);
   const setProject = useProjectStore((s) => s.setProject);
@@ -103,7 +105,11 @@ export function MediaBinPanel({ filter }: MediaBinPanelProps) {
   return (
     <div className={styles.panel}>
       <div className={styles.header}>
-        <h2>{title}</h2>
+        {hideTitle ? (
+          <h2 className="text-[13px] font-bold text-muted-foreground">Imported</h2>
+        ) : (
+          <h2>{title}</h2>
+        )}
         <button
           type="button"
           className={styles.importBtn}

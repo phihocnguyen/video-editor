@@ -51,11 +51,16 @@
   font-weight: 700;
   letter-spacing: 0.01em;
   pointer-events: none;
+  /* Instagram-style: with display:inline + bg, clone paints a pill per line */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
-.textHandleDelete,
-.textHandleResize {
+.textHandleDelete {
   position: absolute;
+  top: -28px;
+  left: 50%;
+  margin-left: -11px;
   width: 22px;
   height: 22px;
   border-radius: var(--radius-pill);
@@ -64,26 +69,51 @@
   border: 1.5px solid rgba(255, 255, 255, 0.8);
   display: grid;
   place-items: center;
-  z-index: 4;
+  z-index: 5;
   cursor: pointer;
   box-shadow: var(--shadow-md);
 }
 
-.textHandleDelete {
-  top: -18px;
-  left: -18px;
+.textHandleDelete:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
 }
 
-.textHandleResize {
-  right: -18px;
-  bottom: -18px;
+/* CapCut-style corner resize squares */
+.cornerHandle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #fff;
+  border: 1.5px solid var(--accent);
+  z-index: 6;
+  padding: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.cornerNW {
+  left: -5px;
+  top: -5px;
   cursor: nwse-resize;
 }
 
-.textHandleDelete:hover,
-.textHandleResize:hover {
-  background: var(--bg-hover);
-  border-color: var(--accent);
+.cornerNE {
+  right: -5px;
+  top: -5px;
+  cursor: nesw-resize;
+}
+
+.cornerSW {
+  left: -5px;
+  bottom: -5px;
+  cursor: nesw-resize;
+}
+
+.cornerSE {
+  right: -5px;
+  bottom: -5px;
+  cursor: nwse-resize;
 }
 
 .media,
@@ -114,6 +144,28 @@
   height: 100%;
 }
 
+/* Soft corner darkening for CapCut-style vignette (preview parity). */
+.vignetteOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 35%,
+    rgba(0, 0, 0, 0.55) 78%,
+    rgba(0, 0, 0, 0.92) 100%
+  );
+}
+
+/* Vegas-style frame flash (solid colour over media for 1 frame). */
+.strobeFlash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+
 /* Interactive media layer on the canvas (move/resize/rotate). */
 .mediaLayer,
 .mediaLayerSelected {
@@ -139,9 +191,11 @@
   background: transparent;
 }
 
-.mediaHandleRotate,
-.mediaHandleResize {
+.mediaHandleRotate {
   position: absolute;
+  left: 50%;
+  top: -28px;
+  margin-left: -8px;
   width: 16px;
   height: 16px;
   border-radius: var(--radius-pill);
@@ -151,21 +205,8 @@
   display: grid;
   place-items: center;
   z-index: 6;
-  cursor: pointer;
-  box-shadow: var(--shadow-md);
-}
-
-.mediaHandleResize {
-  right: -8px;
-  bottom: -8px;
-  cursor: nwse-resize;
-}
-
-.mediaHandleRotate {
-  left: 50%;
-  top: -26px;
-  margin-left: -8px;
   cursor: grab;
+  box-shadow: var(--shadow-md);
 }
 
 .placeholder {

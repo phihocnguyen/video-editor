@@ -1,4 +1,4 @@
-import { ffmpegVideoEffectsChain } from "./effects";
+import { ffmpegVideoEffectsChainAnimated } from "./effectKeyframes";
 import { mediaGeometry } from "./mediaTransform";
 import type { RenderClipPlan, RenderPlan } from "./renderPlan";
 import {
@@ -118,7 +118,7 @@ export function buildFfmpegArgs(
     audioOnlyOffset += 1;
   }
 
-  const filter = buildFilterComplex(plan, visuals, audioOnly, width, height, fileExists);
+  const filter = buildFilterComplex(plan, visuals, audioOnly, width, height, fps, fileExists);
   args.push("-filter_complex", filter, "-map", "[outv]");
 
   if (audios.length > 0) {
@@ -164,6 +164,7 @@ function buildFilterComplex(
   audioOnly: { inputIndex: number; clip: RenderClipPlan }[],
   width: number,
   height: number,
+  fps: number,
   fileExists: (path: string) => boolean,
 ): string {
   const parts: string[] = [];
@@ -247,23 +248,25 @@ function buildFilterComplex(
       : "";
     const baseSize = Math.max(8, Math.round(text.fontSize));
     const color = normalizeColor(text.color);
-    const alpha = Math.min(1, Math.max(0, text.opacity)).toFixed(3);
-    const xExpr =
-      text.align === "left"
-        ? `${Math.max(0, Math.round(text.x))}`
-        : text.align === "right"
-          ? `${Math.max(0, Math.round(text.x))}-text_w`
-          : `${Math.max(0, Math.round(text.x))}-(text_w/2)`;
-    const yExpr = `${Math.max(0, Math.round(text.y))}-(text_h/2)`;
+    const baseAlpha = Math.min(1, Math.max(0, text.opacity));
+    const xExpr = drawtextXExpr(text);
+    const yExpr = drawtextYExpr(text);
+    const alphaExpr = drawtextAlphaExpr(text, start, end, baseAlpha);
+    const box =
+      text.backgroundColor && text.backgroundColor.length > 0
+        ? `:box=1:boxcolor=${normalizeColor(text.backgroundColor)}@1:boxborderw=${Math.max(2, Math.round(text.backgroundPadding || 12))}`
+        : "";
     const next = `[txt${step.textIndex}]`;
     parts.push(
-      `${current}drawtext=text='${escaped}'${fontfile}:fontsize=${baseSize}:fontcolor=${color}@1:x='${xExpr}':y='${yExpr}':alpha=${alpha}:enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'${next}`,
+      `${current}drawtext=text='${escaped}'${fontfile}:fontsize=${baseSize}:fontcolor=${color}@1:x='${xExpr}':y='${yExpr}':alpha='${alphaExpr}'${box}:enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'${next}`,
     );
     current = next;
   }
 
   if (current !== "[outv]") {
-    parts.push(`${current}null[outv]`);
+    // Force constant frame rate = canvas fps so motion matches preview
+    // (sources may be VFR or a different fps; lavfi base alone doesn't fix it).
+    parts.push(`${current}fps=${formatFps(fps)}[outv]`);
   }
 
   const audioLabels: string[] = [];
@@ -326,7 +329,10 @@ export function mediaPlacementFilters(
 
   const parts: string[] = [];
   // Fit source into the (scaled) box, then flip / rotate if needed.
-  parts.push(`scale=${boxW}:${boxH}:force_original_aspect_ratio=decrease`);
+  // lanczos keeps downscaled sources (e.g. 4K → 1080p) sharp like preview.
+  parts.push(
+    `scale=${boxW}:${boxH}:force_original_aspect_ratio=decrease:flags=lanczos`,
+  );
   if (geom.scaleX < 0) parts.push("hflip");
   if (geom.scaleY < 0) parts.push("vflip");
   if (Math.abs(geom.rotation) > 0.01) {
@@ -343,7 +349,9 @@ export function mediaPlacementFilters(
   const offX = Math.max(0, Math.round(centerX - boxW / 2));
   const offY = Math.max(0, Math.round(centerY - boxH / 2));
   parts.push(`pad=${width}:${height}:${offX}:${offY}:black@0`);
-  parts.push(`scale=${width}:${height}`);
+  // pad already yields exactly width x height — a trailing scale would force a
+  // redundant full-frame resample (softening). setsar keeps geometry exact.
+  parts.push("setsar=1");
   return parts.join(",");
 }
 
@@ -373,8 +381,9 @@ function buildTrackChain(
         : 0;
     const setpts = clipSetpts(clip);
 
-    const fx = ffmpegVideoEffectsChain(clip.effects, clipDur, {
+    const fx = ffmpegVideoEffectsChainAnimated(clip.effects, clipDur, {
       delaySec: early,
+      keyframes: clip.effectKeyframes,
     });
     const bits: string[] = [
       `[${inputIndex}:v]${mediaPlacementFilters(clip, width, height)}`,
@@ -443,8 +452,12 @@ function buildTrackChain(
  * Build the `setpts` filter for a clip.
  *
  * - No ramp → constant-speed division (or identity when speed ≈ 1).
- * - Ramp → a piecewise-quadratic expression of the source offset
- *   `u = (PTS-STARTPTS)/1e6`, so output PTS follows ∫ds/v exactly like preview.
+ * - Ramp → a piecewise-quadratic *forward* map of the source offset
+ *   `u = (PTS-STARTPTS)*TB` (seconds, robust to `-ss` seek offsets) to the
+ *   output timeline `t = tStart + a·(u−uStart) + b·(u−uStart)²`, so output PTS
+ *   follows ∫ds/v exactly like preview. The result is divided by TB because
+ *   setpts evaluates in timestamp units (only `T`, `PTS`, `STARTPTS`, `TB`…
+ *   exist there — a lowercase `t` would fail parsing).
  */
 export function clipSetpts(clip: RenderClipPlan): string {
   const speed = clip.speed > 0 ? clip.speed : 1;
@@ -455,42 +468,46 @@ export function clipSetpts(clip: RenderClipPlan): string {
   }
 
   const sourceSpanSec = Math.max(0.001, clip.sourceOutSec - clip.sourceInSec);
-  const segments = rampTimeMapSegments(clip.speedRamp, sourceSpanSec);
+  const segments = rampTimeMapSegments(clip.speedRamp, sourceSpanSec, 32);
   if (segments.length === 0) {
     return "setpts=PTS-STARTPTS";
   }
 
-  // Invert: output timeline t → source offset u (smallest segment whose T(u) ≥ t).
-  let expr = `((PTS-STARTPTS)/1000000)`;
+  const u = "((PTS-STARTPTS)*TB)";
+  let expr = "0";
   for (let k = segments.length - 1; k >= 0; k -= 1) {
     const seg = segments[k];
-    const inner = quadInverseExpr(seg, "t");
-    expr = `if(gte(t\\,${formatNum(seg.tStart)})\\,${inner}\\,${expr})`;
+    expr = `if(gte(${u}\\,${formatNum(seg.uStart)})\\,${forwardExpr(seg, u)}\\,${expr})`;
   }
-  return `setpts=((${expr})*1000000)+STARTPTS`;
+  return `setpts=(${expr})/TB`;
 }
 
 /**
- * Expression for the source offset u given output time `tVar`, valid inside this
- * segment: solving t = tStart + a·du + b·du² gives
- *   du = (−a + √(a² + 4b·(t−tStart))) / (2b),
- * choosing the + root so du → 0 as t → tStart.
+ * Output timeline seconds for a source offset inside this segment:
+ * `t = tStart + a·du + b·du²`. Coefficients are emitted sign-safe
+ * (`-x*…` instead of `+-x*…`) so the expression always parses.
  */
-function quadInverseExpr(seg: RampExprSegment, tVar: string): string {
-  const dt = `(${tVar}-${formatNum(seg.tStart)})`;
-  const a = formatNum(seg.a);
-  const bRaw = Math.abs(seg.b) < 1e-12 ? 1e-12 : seg.b;
-  const b = formatNum(bRaw);
-  const u0 = formatNum(seg.uStart);
-  const disc = `(${formatNum(seg.a * seg.a)}+4*${b}*${dt})`;
-  const root = `sqrt(max(0\\,${disc}))`;
-  return `${u0}+(-(${a})+${root})/(2*${b})`;
+function forwardExpr(seg: RampExprSegment, uExpr: string): string {
+  const du = `(${uExpr}-${formatNum(seg.uStart)})`;
+  return `(${formatNum(seg.tStart)}${signedMul(seg.a, du)}${signedMul(seg.b, `${du}*${du}`)})`;
+}
+
+function signedMul(coef: number, term: string): string {
+  if (!Number.isFinite(coef) || coef === 0) return `+0*${term}`;
+  if (coef < 0) return `-${formatNum(-coef)}*${term}`;
+  return `+${formatNum(coef)}*${term}`;
 }
 
 function formatNum(value: number): string {
   if (!Number.isFinite(value)) return "0";
   // Trim trailing zeros while keeping enough precision for sub-ms accuracy.
   return Number(value.toFixed(6)).toString();
+}
+
+/** fps filter value: integer when whole, else 3 decimals (e.g. 29.970). */
+function formatFps(fps: number): string {
+  const safe = Number.isFinite(fps) && fps > 0 ? fps : 30;
+  return Number.isInteger(safe) ? String(safe) : safe.toFixed(3);
 }
 
 function atempoChain(speed: number): string {
@@ -535,7 +552,8 @@ function appendAudioChain(
   }
 
   const span = Math.max(0.01, clip.sourceOutSec - clip.sourceInSec);
-  const segments = rampTimeMapSegments(clip.speedRamp, span, 12);
+  // 24 slices halve the tempo step vs 12, so pitch glides instead of jumping.
+  const segments = rampTimeMapSegments(clip.speedRamp, span, 24);
   const n = segments.length;
   const sliceDur = span / n;
 
@@ -557,6 +575,142 @@ function appendAudioChain(
 }
 
 /** FFmpeg drawtext needs a real TTF/OTF path; UI fonts like Manrope often have none. */
+function drawtextBaseX(text: { align: string; x: number }): string {
+  if (text.align === "left") return `${Math.max(0, Math.round(text.x))}`;
+  if (text.align === "right")
+    return `${Math.max(0, Math.round(text.x))}-text_w`;
+  return `${Math.max(0, Math.round(text.x))}-(text_w/2)`;
+}
+
+function drawtextBaseY(text: { y: number }): string {
+  return `${Math.max(0, Math.round(text.y))}-(text_h/2)`;
+}
+
+function slideOffsetExpr(
+  anim: string,
+  axis: "x" | "y",
+  start: number,
+  dur: number,
+  outStart: number,
+  outDur: number,
+  dist: number,
+): string | null {
+  const wants =
+    (axis === "x" && (anim === "slideLeft" || anim === "slideRight")) ||
+    (axis === "y" && (anim === "slideUp" || anim === "slideDown"));
+  if (!wants) return null;
+  const sign =
+    anim === "slideLeft" || anim === "slideUp" ? 1 : -1;
+  const terms: string[] = [];
+  if (dur > 0.001) {
+    // Entrance: offset DIST → 0 over [start, start+dur].
+    terms.push(
+      `${(sign * dist).toFixed(1)}*(1-min(1\\,max(0\\,(t-${start.toFixed(3)})/${dur.toFixed(3)})))`,
+    );
+  }
+  if (outDur > 0.001) {
+    // Exit: 0 → offset over [outStart, outStart+outDur].
+    terms.push(
+      `${(sign * dist).toFixed(1)}*(min(1\\,max(0\\,(t-${outStart.toFixed(3)})/${outDur.toFixed(3)})))`,
+    );
+  }
+  if (terms.length === 0) return null;
+  return `(${terms.join("+")})`;
+}
+
+/** drawtext x/y with slide in/out offsets (B1); scalePop/blur degrade to fade. */
+export function drawtextXExpr(text: {
+  align: string;
+  x: number;
+  timelineStartSec: number;
+  timelineEndSec: number;
+  textAnimation?: { in: string; out: string; inDurationSec: number; outDurationSec: number } | null;
+}): string {
+  const base = drawtextBaseX(text);
+  const dur = Math.max(0, text.timelineEndSec - text.timelineStartSec);
+  const anim = text.textAnimation;
+  if (!anim || dur <= 0.01) return base;
+  const start = Math.max(0, text.timelineStartSec);
+  const inDur = Math.min(anim.inDurationSec, dur);
+  const outDur = Math.min(anim.outDurationSec, dur);
+  const outStart = start + Math.max(0, dur - outDur);
+  const offIn = slideOffsetExpr(anim.in, "x", start, inDur, outStart, 0, 48);
+  const offOut = slideOffsetExpr(anim.out, "x", start, 0, outStart, outDur, 48);
+  const off = [offIn, offOut].filter(Boolean).join("+");
+  return off ? `(${base}+${off})` : base;
+}
+
+export function drawtextYExpr(text: {
+  y: number;
+  timelineStartSec: number;
+  timelineEndSec: number;
+  textAnimation?: { in: string; out: string; inDurationSec: number; outDurationSec: number } | null;
+}): string {
+  const base = drawtextBaseY(text);
+  const dur = Math.max(0, text.timelineEndSec - text.timelineStartSec);
+  const anim = text.textAnimation;
+  if (!anim || dur <= 0.01) return base;
+  const start = Math.max(0, text.timelineStartSec);
+  const inDur = Math.min(anim.inDurationSec, dur);
+  const outDur = Math.min(anim.outDurationSec, dur);
+  const outStart = start + Math.max(0, dur - outDur);
+  const offIn = slideOffsetExpr(anim.in, "y", start, inDur, outStart, 0, 48);
+  const offOut = slideOffsetExpr(anim.out, "y", start, 0, outStart, outDur, 48);
+  const off = [offIn, offOut].filter(Boolean).join("+");
+  return off ? `(${base}+${off})` : base;
+}
+
+/**
+ * drawtext alpha combining base opacity, fadeInSec/fadeOutSec (B0) and
+ * textAnimation fade/slide/scalePop (B1, opacity part only).
+ */
+export function drawtextAlphaExpr(
+  text: {
+    timelineStartSec: number;
+    timelineEndSec: number;
+    fadeInSec?: number;
+    fadeOutSec?: number;
+    textAnimation?: { in: string; out: string; inDurationSec: number; outDurationSec: number } | null;
+  },
+  start: number,
+  end: number,
+  baseAlpha: number,
+): string {
+  const dur = Math.max(0.01, end - start);
+  const terms: string[] = [baseAlpha.toFixed(3)];
+  const fadeIn = Math.min(text.fadeInSec ?? 0, dur);
+  if (fadeIn > 0.001) {
+    terms.push(`min(1\\,max(0\\,(t-${start.toFixed(3)})/${fadeIn.toFixed(3)}))`);
+  }
+  const fadeOut = Math.min(text.fadeOutSec ?? 0, dur);
+  if (fadeOut > 0.001) {
+    terms.push(
+      `min(1\\,max(0\\,(${end.toFixed(3)}-t)/${fadeOut.toFixed(3)}))`,
+    );
+  }
+  const anim = text.textAnimation;
+  if (anim) {
+    const inDur = Math.min(anim.inDurationSec, dur);
+    if (anim.in !== "none" && inDur > 0.001) {
+      terms.push(
+        anim.in === "fade" || anim.in === "scalePop"
+          ? `min(1\\,max(0\\,(t-${start.toFixed(3)})/${inDur.toFixed(3)}))`
+          : `(0.15+0.85*min(1\\,max(0\\,(t-${start.toFixed(3)})/${inDur.toFixed(3)})))`,
+      );
+    }
+    const outDur = Math.min(anim.outDurationSec, dur);
+    if (anim.out !== "none" && outDur > 0.001) {
+      const outStart = start + Math.max(0, dur - outDur);
+      void outStart;
+      terms.push(
+        anim.out === "fade" || anim.out === "scalePop"
+          ? `min(1\\,max(0\\,(${end.toFixed(3)}-t)/${outDur.toFixed(3)}))`
+          : `(0.15+0.85*min(1\\,max(0\\,(${end.toFixed(3)}-t)/${outDur.toFixed(3)})))`,
+      );
+    }
+  }
+  return terms.join("*");
+}
 function resolveDrawtextFont(
   fontPath: string | null,
   fileExists: (path: string) => boolean,

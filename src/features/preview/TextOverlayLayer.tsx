@@ -1,12 +1,17 @@
 import {
+  useEffect,
   useRef,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
 import {
+  clipDurationTicks,
   deleteClips,
   layerStackZ,
+  normalizeClipEffects,
+  textAnimVisual,
+  ticksToSeconds,
   updateClipText,
   updateClipTransform,
   type Clip,
@@ -26,6 +31,7 @@ interface TextOverlayLayerProps {
   canvasWidth: number;
   canvasHeight: number;
   stageRef: RefObject<HTMLDivElement | null>;
+  playheadTicks: number;
 }
 
 function clientToCanvas(
@@ -46,6 +52,7 @@ export function TextOverlayLayer({
   canvasWidth,
   canvasHeight,
   stageRef,
+  playheadTicks,
 }: TextOverlayLayerProps) {
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
@@ -62,6 +69,56 @@ export function TextOverlayLayer({
     startFont: number;
     startDist: number;
   } | null>(null);
+  const itemEls = useRef(new Map<string, HTMLDivElement>());
+  const liveRef = useRef({ items, canvasWidth, canvasHeight });
+  liveRef.current = { items, canvasWidth, canvasHeight };
+
+  // Drive text animation imperatively at display rate. Routing every frame
+  // through React (listPlayhead) capped text motion at ~10fps and felt
+  // choppy — same lesson as the ramp playhead hairline. React still owns
+  // mount/unmount/positioning; this loop only refreshes opacity/transform.
+  useEffect(() => {
+    let raf = 0;
+    let lastPlayhead = -1;
+    let lastItems: TextOverlayItem[] | null = null;
+    let lastStageW = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const live = liveRef.current;
+      if (live.items.length === 0) return;
+      const playhead = useEditorUiStore.getState().playheadTicks;
+      const stage = stageRef.current;
+      const stageW = stage?.clientWidth ?? live.canvasWidth;
+      // Static while paused: skip redundant DOM writes entirely.
+      if (playhead === lastPlayhead && live.items === lastItems && stageW === lastStageW) {
+        return;
+      }
+      lastPlayhead = playhead;
+      lastItems = live.items;
+      lastStageW = stageW;
+      const stageScale = stageW / Math.max(1, live.canvasWidth);
+      for (const { clip } of live.items) {
+        const el = itemEls.current.get(clip.id);
+        const style = clip.text;
+        if (!el || !style) continue;
+        const dur = Math.max(0.01, ticksToSeconds(clipDurationTicks(clip)));
+        const local = Math.max(0, ticksToSeconds(playhead - clip.startTicks));
+        const anim = textAnimVisual(
+          style.textAnimation ?? null,
+          normalizeClipEffects(clip.effects),
+          local,
+          dur,
+        );
+        el.style.opacity = String(clip.transform.opacity * anim.opacity);
+        el.style.transform =
+          `translate(-50%, -50%) translate(${(anim.offsetX * stageScale).toFixed(2)}px, ` +
+          `${(anim.offsetY * stageScale).toFixed(2)}px) scale(${anim.scale.toFixed(4)})`;
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function previewFontPx(clip: Clip, stage: HTMLDivElement | null): number {
     const style = clip.text!;
@@ -169,16 +226,36 @@ export function TextOverlayLayer({
         const style = clip.text!;
         const selected = selectedClipIds.includes(clip.id);
         const fontPx = previewFontPx(clip, stageRef.current);
+        const durationSec = Math.max(
+          0.01,
+          ticksToSeconds(clipDurationTicks(clip)),
+        );
+        const localSec = Math.max(
+          0,
+          ticksToSeconds(playheadTicks - clip.startTicks),
+        );
+        const anim = textAnimVisual(
+          style.textAnimation ?? null,
+          normalizeClipEffects(clip.effects),
+          localSec,
+          durationSec,
+        );
+        const stageW = stageRef.current?.clientWidth ?? canvasWidth;
+        const stageScale = stageW / Math.max(1, canvasWidth);
 
         return (
           <div
             key={clip.id}
+            ref={(el) => {
+              if (el) itemEls.current.set(clip.id, el);
+              else itemEls.current.delete(clip.id);
+            }}
             className={selected ? styles.textBoxSelected : styles.textBox}
             style={{
               left: `${(clip.transform.x / canvasWidth) * 100}%`,
               top: `${(clip.transform.y / canvasHeight) * 100}%`,
-              opacity: clip.transform.opacity,
-              transform: "translate(-50%, -50%)",
+              opacity: clip.transform.opacity * anim.opacity,
+              transform: `translate(-50%, -50%) translate(${anim.offsetX * stageScale}px, ${anim.offsetY * stageScale}px) scale(${anim.scale})`,
               zIndex: layerStackZ(trackOrder, "text"),
             }}
             onPointerDown={(e) => {
@@ -194,6 +271,16 @@ export function TextOverlayLayer({
                 fontWeight: 700,
                 color: style.color,
                 textAlign: style.align,
+                ...(style.backgroundColor
+                  ? {
+                      display: "inline",
+                      backgroundColor: style.backgroundColor,
+                      padding: `${Math.max(2, style.backgroundPadding * stageScale)}px ${Math.max(4, style.backgroundPadding * 1.35 * stageScale)}px`,
+                      borderRadius: `${Math.max(0, style.backgroundRadius * stageScale)}px`,
+                      boxDecorationBreak: "clone" as const,
+                      WebkitBoxDecorationBreak: "clone" as const,
+                    }
+                  : null),
               }}
             >
               {style.content}
@@ -218,26 +305,26 @@ export function TextOverlayLayer({
                     />
                   </svg>
                 </button>
-                <button
-                  type="button"
-                  className={styles.textHandleResize}
-                  title="Resize text"
-                  aria-label="Resize text"
-                  onPointerDown={(e) => {
-                    if (e.button !== 0) return;
-                    beginGesture(e, clip, "resize");
-                  }}
-                >
-                  <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden>
-                    <path
-                      d="M4 2h6v6M8 4H2v6"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.4"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
+                {(
+                  [
+                    ["cornerNW", "Resize from top-left"],
+                    ["cornerNE", "Resize from top-right"],
+                    ["cornerSW", "Resize from bottom-left"],
+                    ["cornerSE", "Resize from bottom-right"],
+                  ] as const
+                ).map(([cls, label]) => (
+                  <button
+                    key={cls}
+                    type="button"
+                    className={`${styles.cornerHandle} ${styles[cls]}`}
+                    title="Resize text"
+                    aria-label={label}
+                    onPointerDown={(e) => {
+                      if (e.button !== 0) return;
+                      beginGesture(e, clip, "resize");
+                    }}
+                  />
+                ))}
               </>
             ) : null}
           </div>

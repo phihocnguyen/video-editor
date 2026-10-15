@@ -1,6 +1,9 @@
 import { normalizeClipEffects } from "./effects";
+import { normalizeEffectKeyframes } from "./effectKeyframes";
 import {
   PROJECT_SCHEMA_VERSION,
+  normalizeTextAnimation,
+  normalizeTextStyle,
   type Clip,
   type MediaAsset,
   type ProjectDocument,
@@ -280,6 +283,9 @@ export function normalizeProjectDocument(project: ProjectDocument): ProjectDocum
     ...project,
     canvas: {
       ...project.canvas,
+      // Keep even so preview geometry matches export dims (yuv420p needs even).
+      width: Math.max(2, Math.round(project.canvas.width) & ~1),
+      height: Math.max(2, Math.round(project.canvas.height) & ~1),
       backgroundColor:
         typeof canvas.backgroundColor === "string" && canvas.backgroundColor.length > 0
           ? canvas.backgroundColor
@@ -288,17 +294,37 @@ export function normalizeProjectDocument(project: ProjectDocument): ProjectDocum
     clips: project.clips.map((clip) => {
       const raw = clip as Clip & {
         effects?: Partial<Clip["effects"]> | null;
+        effectKeyframes?: Clip["effectKeyframes"];
         transitionIn?: Partial<Clip["transitionIn"]> | null;
         speedRamp?: Partial<Clip["speedRamp"]> | null;
         transform?: Partial<Clip["transform"]> | null;
+        text?: (Clip["text"] & { textAnimation?: unknown; animation?: unknown }) | null;
         animation?: unknown;
       };
       const normalizedRamp = normalizeSpeedRamp(raw.speedRamp ?? null);
+      const normalizedEffectKf = normalizeEffectKeyframes(raw.effectKeyframes ?? null);
       const { animation: _removedAnim, ...rest } = raw;
+      const { animation: _removedTextAnim, ...rawText } = (raw.text ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const text =
+        raw.text == null
+          ? raw.text
+          : normalizeTextStyle({
+              ...rawText,
+              textAnimation: normalizeTextAnimation(
+                (rawText.textAnimation ?? null) as Partial<
+                  import("./project").TextAnimation
+                > | null,
+              ),
+            } as Partial<import("./project").TextStyle>);
       return {
         ...rest,
+        text: text as Clip["text"],
         transform: { ...DEFAULT_TRANSFORM, ...(raw.transform ?? {}) },
         effects: normalizeClipEffects(raw.effects),
+        effectKeyframes: normalizedEffectKf,
         transitionIn: normalizeClipTransition(raw.transitionIn),
         speedRamp: normalizedRamp,
       };

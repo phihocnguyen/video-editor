@@ -13,11 +13,13 @@ import {
 } from "../../lib/localExport";
 import {
   cancelExport,
+  ffmpegStatus,
   getExportStatus,
   isTauriRuntime,
   pickExportOutputPath,
   startExport,
   type ExportJobStatus,
+  type ToolchainStatus,
 } from "../../lib/tauri";
 import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
@@ -44,6 +46,7 @@ export function ExportPanel() {
   const [busy, setBusy] = useState(false);
   const [helperOnline, setHelperOnline] = useState(false);
   const [ffmpegFound, setFfmpegFound] = useState(false);
+  const [toolchain, setToolchain] = useState<ToolchainStatus | null>(null);
   const plan = useMemo(
     () => buildRenderPlan(project, preset, quality),
     [preset, project, quality],
@@ -57,6 +60,23 @@ export function ExportPanel() {
   useEffect(() => {
     let cancelled = false;
     const ping = () => {
+      // Desktop: ask the backend which FFmpeg binary is active (bundled
+      // sidecar preferred). Browser: poll the local export helper.
+      if (isTauriRuntime()) {
+        void ffmpegStatus()
+          .then((status) => {
+            if (cancelled) return;
+            setToolchain(status);
+            setFfmpegFound(status.ffmpegOk);
+          })
+          .catch(() => {
+            if (!cancelled) {
+              setToolchain(null);
+              setFfmpegFound(false);
+            }
+          });
+        return;
+      }
       void localExportHealth().then((health) => {
         if (!cancelled) {
           setHelperOnline(health.ok);
@@ -109,6 +129,12 @@ export function ExportPanel() {
     setBusy(true);
     try {
       if (isTauriRuntime()) {
+        if (!ffmpegFound) {
+          setStatusMessage(
+            "FFmpeg missing — add the sidecar binaries (src-tauri/binaries) or install FFmpeg",
+          );
+          return;
+        }
         const outputPath = await pickExportOutputPath(project.name || "cutline-export");
         if (!outputPath) {
           setStatusMessage("Export cancelled");
@@ -161,18 +187,33 @@ export function ExportPanel() {
     job?.state !== "running" &&
     (isTauriRuntime() || (helperOnline && ffmpegFound));
 
+  const toolchainLabel = toolchain
+    ? toolchain.ffmpegOk
+      ? toolchain.bundled
+        ? "Bundled FFmpeg"
+        : "System FFmpeg"
+      : "FFmpeg missing"
+    : "Checking FFmpeg…";
+
   return (
     <div className={styles.panel}>
       <h2>Export</h2>
       <p className={styles.lead}>
         {isTauriRuntime()
-          ? "Desktop export via FFmpeg (PATH)."
+          ? `Desktop export · ${toolchainLabel}.`
           : helperOnline
             ? "Browser export via local helper + FFmpeg (same as Export button)."
             : "Start `pnpm dev` so the export helper is online, then import media and export."}
       </p>
 
-      {!isTauriRuntime() ? (
+      {isTauriRuntime() ? (
+        <p className={ffmpegFound ? styles.ok : styles.warn} title={toolchain?.ffmpeg ?? ""}>
+          {toolchainLabel}
+          {toolchain && !toolchain.ffmpegOk
+            ? " — add the sidecar binaries (src-tauri/binaries) or install FFmpeg"
+            : ""}
+        </p>
+      ) : (
         <p className={helperOnline && ffmpegFound ? styles.ok : styles.warn}>
           Helper: {helperOnline ? "online" : "offline"}
           {helperOnline
@@ -181,7 +222,7 @@ export function ExportPanel() {
               : " · FFmpeg missing (tools/ffmpeg/bin)"
             : " — run pnpm dev"}
         </p>
-      ) : null}
+      )}
 
       <div className={styles.canvasBlock}>
         <h3 className={styles.blockTitle}>Canvas</h3>

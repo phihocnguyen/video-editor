@@ -3,7 +3,12 @@ import {
   normalizeClipEffects,
   type ClipEffects,
 } from "./effects";
-import type { ClipTransform, ProjectDocument } from "./project";
+import {
+  normalizeEffectKeyframes,
+  type EffectKeyframes,
+} from "./effectKeyframes";
+import type { ClipTransform, ProjectDocument, TextAnimation } from "./project";
+import { normalizeTextAnimation } from "./project";
 import { clipDurationTicks } from "./timelineCommands";
 import { ticksToSeconds } from "./time";
 import {
@@ -33,6 +38,7 @@ export interface RenderClipPlan {
   includeAudio: boolean;
   kind: "video" | "audio" | "image";
   effects: ClipEffects;
+  effectKeyframes: EffectKeyframes | null;
   transitionIn: ClipTransition;
   /** Seconds to start overlay early for incoming transition overlap. */
   transitionOverlapSec: number;
@@ -56,11 +62,17 @@ export interface RenderTextPlan {
   fontSize: number;
   color: string;
   align: "left" | "center" | "right";
+  backgroundColor: string | null;
+  backgroundPadding: number;
+  backgroundRadius: number;
   x: number;
   y: number;
   opacity: number;
   timelineStartSec: number;
   timelineEndSec: number;
+  fadeInSec: number;
+  fadeOutSec: number;
+  textAnimation: TextAnimation;
 }
 
 export interface RenderPlan {
@@ -101,6 +113,7 @@ export function buildRenderPlan(
 
     if (clip.kind === "text" && clip.text) {
       if (track && !track.visible) continue;
+      const fx = normalizeClipEffects(clip.effects ?? DEFAULT_CLIP_EFFECTS);
       texts.push({
         clipId: clip.id,
         trackId: clip.trackId,
@@ -111,11 +124,17 @@ export function buildRenderPlan(
         fontSize: clip.text.fontSize * fontScale,
         color: clip.text.color,
         align: clip.text.align,
+        backgroundColor: clip.text.backgroundColor ?? null,
+        backgroundPadding: (clip.text.backgroundPadding ?? 12) * fontScale,
+        backgroundRadius: (clip.text.backgroundRadius ?? 10) * fontScale,
         x: clip.transform.x * scaleX,
         y: clip.transform.y * scaleY,
         opacity: clip.transform.opacity,
         timelineStartSec: ticksToSeconds(clip.startTicks),
         timelineEndSec: ticksToSeconds(end),
+        fadeInSec: fx.fadeInSec,
+        fadeOutSec: fx.fadeOutSec,
+        textAnimation: normalizeTextAnimation(clip.text.textAnimation ?? null),
       });
       continue;
     }
@@ -143,6 +162,7 @@ export function buildRenderPlan(
       includeAudio: !muted && asset.hasAudio && (asset.kind === "video" || asset.kind === "audio"),
       kind: asset.kind,
       effects: normalizeClipEffects(clip.effects ?? DEFAULT_CLIP_EFFECTS),
+      effectKeyframes: normalizeEffectKeyframes(clip.effectKeyframes ?? null),
       transitionIn: normalizeClipTransition(clip.transitionIn),
       transitionOverlapSec: 0,
       transform: clip.transform,

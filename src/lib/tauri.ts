@@ -155,6 +155,19 @@ export async function pickExportOutputPath(defaultName: string): Promise<string 
   return selected;
 }
 
+export interface ToolchainStatus {
+  ffmpeg: string;
+  ffmpegOk: boolean;
+  ffprobe: string;
+  ffprobeOk: boolean;
+  bundled: boolean;
+}
+
+/** Resolved FFmpeg/ffprobe binaries (bundled sidecar preferred). */
+export async function ffmpegStatus(): Promise<ToolchainStatus> {
+  return invoke<ToolchainStatus>("ffmpeg_status");
+}
+
 export async function safeInvoke<T>(
   command: string,
   args?: Record<string, unknown>,

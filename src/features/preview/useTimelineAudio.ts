@@ -1,5 +1,15 @@
 import { useEffect, useRef } from "react";
-import { clipDurationTicks, ticksToSeconds, type Clip, type MediaAsset, type Track } from "../../domain";
+import {
+  clipDurationTicks,
+  hasActiveRamp,
+  mediaSpeedAtTimelineTicks,
+  normalizeSpeedRamp,
+  sourceOffsetForTimelineOffset,
+  ticksToSeconds,
+  type Clip,
+  type MediaAsset,
+  type Track,
+} from "../../domain";
 import { resolveMediaUrl } from "../../lib/mediaUrl";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 
@@ -70,6 +80,13 @@ export function useTimelineAudio(options: {
       const key = active.map((a) => a.clip.id).join("|");
       const playing = isPlayingRef.current;
       const scrubbing = isScrubbingRef.current;
+      // Shuttle (J/L): reverse mutes timeline audio, fast/slow multiplies the
+      // element rate so it tracks the playhead instead of seek-fighting it.
+      const shuttle = Number.isFinite(useEditorUiStore.getState().playbackRate)
+        ? useEditorUiStore.getState().playbackRate
+        : 1;
+      const reverse = shuttle < 0;
+      const shuttleAbs = Math.abs(shuttle) || 1;
       const map = elementsRef.current;
       const live = new Set(active.map((a) => a.clip.id));
 
@@ -103,10 +120,46 @@ export function useTimelineAudio(options: {
           ),
         );
 
-        const localSec =
-          ticksToSeconds(playheadTicks - item.clip.startTicks) +
-          ticksToSeconds(item.clip.sourceInTicks);
-        const target = Math.max(0, localSec);
+        // Map timeline → source honouring constant speed and speed ramps.
+        // Without this, a ramped/sped audio clip drifts from the playhead and
+        // re-seeks every sync (stutter). With it, the element glides at the
+        // right rate and seeks only on real discontinuities (e.g. scrub).
+        const spanTicks = Math.max(
+          0,
+          item.clip.sourceOutTicks - item.clip.sourceInTicks,
+        );
+        const localTicks = Math.max(0, playheadTicks - item.clip.startTicks);
+        const constSpeed =
+          Number.isFinite(item.clip.speed) && item.clip.speed > 0
+            ? item.clip.speed
+            : 1;
+        const ramp = normalizeSpeedRamp(item.clip.speedRamp ?? null);
+        const srcOffTicks = ramp
+          ? sourceOffsetForTimelineOffset(ramp, spanTicks, localTicks)
+          : Math.min(spanTicks, localTicks * constSpeed);
+        const target = Math.max(
+          0,
+          ticksToSeconds(item.clip.sourceInTicks) + ticksToSeconds(srcOffTicks),
+        );
+        const wantRate =
+          ramp && hasActiveRamp(ramp)
+            ? mediaSpeedAtTimelineTicks(item.clip, playheadTicks)
+            : constSpeed;
+        const rate = Math.min(16, Math.max(0.0625, wantRate * shuttleAbs));
+        if (Math.abs(el.playbackRate - rate) > 0.02) {
+          try {
+            el.playbackRate = rate;
+          } catch {
+            /* ignore */
+          }
+        }
+        // Reverse shuttle: keep paused and don't chase the playhead — a paused
+        // element seek-fighting backward would stutter. Position resyncs on
+        // the next forward tick via the drift rule below.
+        if (reverse) {
+          el.pause();
+          continue;
+        }
         if (Math.abs(el.currentTime - target) > 0.08) {
           try {
             el.currentTime = target;
@@ -128,7 +181,8 @@ export function useTimelineAudio(options: {
       if (
         s.playheadTicks !== prev.playheadTicks ||
         s.isPlaying !== prev.isPlaying ||
-        s.isScrubbing !== prev.isScrubbing
+        s.isScrubbing !== prev.isScrubbing ||
+        s.playbackRate !== prev.playbackRate
       ) {
         sync(s.playheadTicks);
       }
@@ -138,11 +192,12 @@ export function useTimelineAudio(options: {
   useEffect(() => {
     // Transport flip without waiting for next playhead tick.
     const ticks = useEditorUiStore.getState().playheadTicks;
+    const reverse = useEditorUiStore.getState().playbackRate < 0;
     const active = findActiveAudioClips(clips, tracks, assets, ticks);
     for (const item of active) {
       const el = elementsRef.current.get(item.clip.id);
       if (!el) continue;
-      if (isPlaying && !isScrubbing) void el.play().catch(() => undefined);
+      if (isPlaying && !isScrubbing && !reverse) void el.play().catch(() => undefined);
       else el.pause();
     }
   }, [assets, clips, isPlaying, isScrubbing, tracks]);

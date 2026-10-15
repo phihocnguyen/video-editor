@@ -1,24 +1,44 @@
-import { useMemo, useState, type ReactNode } from "react";
 import {
-  createDefaultTextStyle,
+  useEffect,
+  useRef,
+  useMemo,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
+import {
+  clipDisplayTitle,
+  clipDurationTicks,
+  effectsAtProgress,
+  findKeyframeNear,
+  getParamTrack,
   mediaGeometry,
   mediaCenter,
-  normalizeClipEffects,
   normalizeClipTransition,
+  normalizeTextAnimation,
+  normalizeTextStyle,
+  paramHasKeyframes,
+  progressFromTicks,
   DEFAULT_CLIP_EFFECTS,
+  EFFECT_PRESETS,
+  applyEffectPreset,
+  findMatchingEffectPreset,
   findPreviousClipOnTrack,
+  setClipEffectKeyframes,
+  setEffectParamAtPlayhead,
+  toggleEffectKeyframeAtPlayhead,
+  TEXT_ANIM_OPTIONS,
   TRANSITION_DEFS,
   TRANSITION_GROUPS,
   transitionDef,
   updateClipEffects,
-  updateClipSpeed,
   updateClipText,
   updateClipTransform,
   updateClipTransition,
   updateClipVolume,
-  applySpeedToRange,
-  clipDurationTicks,
   type Clip,
+  type EffectParamKey,
+  type TextAnimType,
   type TextStyle,
   type TransitionType,
 } from "../../domain";
@@ -29,7 +49,13 @@ import {
 } from "../../lib/fonts";
 import { isTauriRuntime } from "../../lib/tauri";
 import { open } from "@tauri-apps/plugin-dialog";
-import { CloseIcon } from "../../components/icons";
+import {
+  CloseIcon,
+  ChevronDownIcon,
+  EyeIcon,
+  EyeOffIcon,
+  PlayIcon,
+} from "../../components/icons";
 import { PresetGrid, type PresetItem } from "../effects/PresetGrid";
 import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
@@ -45,40 +71,235 @@ const TRANSITION_ITEMS: PresetItem[] = TRANSITION_DEFS.map((d) => ({
 
 type AlignEdge = "left" | "centerH" | "right" | "top" | "middle" | "bottom";
 
-function SliderField({
-  label,
-  title,
-  min,
-  max,
-  step,
+function clamp(n: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, n));
+}
+
+function PencilIcon() {
+  return (
+    <svg width={12} height={12} viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M11.2 2.4l2.4 2.4-8.2 8.2H3v-2.4l8.2-8.2zM9.8 3.8l2.4 2.4"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ChevronRightIcon() {
+  return (
+    <svg width={14} height={14} viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M6 3.5 10.5 8 6 12.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function DistributeIcon() {
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path d="M2 3h12M2 13h12M5 6h6v4H5z" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+/** CapCut-style filled opacity bar (not a native range input). */
+function OpacityBar({
   value,
-  display,
   onChange,
 }: {
-  label: string;
-  title: string;
-  min: number;
-  max: number;
-  step: number;
   value: number;
-  display?: string;
   onChange: (v: number) => void;
 }) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+
+  function setFromClientX(clientX: number) {
+    const el = trackRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const t = clamp((clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+    onChange(Math.round(t * 100) / 100);
+  }
+
+  function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    dragging.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setFromClientX(e.clientX);
+  }
+
+  function onPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+    if (!dragging.current) return;
+    setFromClientX(e.clientX);
+  }
+
+  function onPointerUp(e: ReactPointerEvent<HTMLDivElement>) {
+    dragging.current = false;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  }
+
+  const pct = Math.round(clamp(value, 0, 1) * 100);
+
   return (
-    <label className={styles.sliderField} title={title}>
-      <div className={styles.sliderHead}>
-        <span>{label}</span>
-        <span className={styles.sliderValue}>{display ?? value.toFixed(2)}</span>
+    <div
+      ref={trackRef}
+      className={styles.opacityBar}
+      role="slider"
+      tabIndex={0}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={pct}
+      aria-label="Opacity"
+      title="Opacity"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      onKeyDown={(e) => {
+        if (e.key === "ArrowLeft" || e.key === "ArrowDown") {
+          e.preventDefault();
+          onChange(clamp(value - 0.01, 0, 1));
+        } else if (e.key === "ArrowRight" || e.key === "ArrowUp") {
+          e.preventDefault();
+          onChange(clamp(value + 0.01, 0, 1));
+        }
+      }}
+    >
+      <div className={styles.opacityFill} style={{ width: `${pct}%` }} />
+      <span className={styles.opacityValue}>{pct}</span>
+    </div>
+  );
+}
+
+function StepperField({
+  label,
+  value,
+  display,
+  step = 1,
+  min,
+  max,
+  onChange,
+  keyframeActive,
+  keyframeOn,
+  onToggleKeyframe,
+}: {
+  label: string;
+  value: number;
+  display?: string;
+  step?: number;
+  min: number;
+  max: number;
+  onChange: (v: number) => void;
+  /** Show CapCut-style ◇ control. */
+  keyframeActive?: boolean;
+  /** Diamond filled when a keyframe sits at the playhead. */
+  keyframeOn?: boolean;
+  onToggleKeyframe?: () => void;
+}) {
+  const [draft, setDraft] = useState(display ?? String(value));
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    if (!editing) setDraft(display ?? String(value));
+  }, [display, value, editing]);
+
+  function commitDraft(raw: string) {
+    const parsed = Number(String(raw).replace(/[^\d.-]/g, ""));
+    if (!Number.isFinite(parsed)) {
+      setDraft(display ?? String(value));
+      return;
+    }
+    onChange(clamp(parsed, min, max));
+  }
+
+  return (
+    <div className="flex w-full items-center justify-between gap-2">
+      <span className="min-w-0 shrink truncate text-xs font-semibold text-muted-foreground">
+        {label}
+      </span>
+      <div className="ml-auto flex shrink-0 items-center gap-1">
+        {onToggleKeyframe ? (
+          <button
+            type="button"
+            title={
+              keyframeOn
+                ? "Remove keyframe at playhead"
+                : keyframeActive
+                  ? "Add keyframe at playhead"
+                  : "Add keyframe at playhead (starts animating this param)"
+            }
+            aria-label={`Keyframe ${label}`}
+            aria-pressed={Boolean(keyframeOn)}
+            className={
+              keyframeOn
+                ? "grid h-8 w-7 place-items-center rounded-md text-primary"
+                : keyframeActive
+                  ? "grid h-8 w-7 place-items-center rounded-md text-foreground/80 hover:bg-accent"
+                  : "grid h-8 w-7 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+            }
+            onClick={onToggleKeyframe}
+          >
+            <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden>
+              <path
+                d="M6 1.2 L10.8 6 L6 10.8 L1.2 6 Z"
+                fill={keyframeOn ? "currentColor" : "none"}
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        ) : null}
+        <div className="grid h-8 w-[148px] shrink-0 grid-cols-[32px_1fr_32px] items-center overflow-hidden rounded-lg border border-border bg-secondary">
+          <button
+            type="button"
+            className="grid h-full place-items-center text-base leading-none text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            aria-label={`Decrease ${label}`}
+            onClick={() => onChange(clamp(value - step, min, max))}
+          >
+            −
+          </button>
+          <input
+            className="h-full w-full min-w-0 border-x border-border bg-transparent px-1 text-center text-xs font-semibold tabular-nums text-foreground outline-none focus-visible:bg-accent/40"
+            value={editing ? draft : (display ?? String(value))}
+            aria-label={label}
+            onFocus={() => {
+              setEditing(true);
+              setDraft(String(value));
+            }}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => {
+              setEditing(false);
+              commitDraft(draft);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.currentTarget.blur();
+              } else if (e.key === "Escape") {
+                setDraft(display ?? String(value));
+                setEditing(false);
+                e.currentTarget.blur();
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="grid h-full place-items-center text-base leading-none text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            aria-label={`Increase ${label}`}
+            onClick={() => onChange(clamp(value + step, min, max))}
+          >
+            +
+          </button>
+        </div>
       </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-    </label>
+    </div>
   );
 }
 
@@ -174,18 +395,27 @@ export function PropertiesPanel() {
   const assets = project.assets;
   const canvas = project.canvas;
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
+  const playheadTicks = useEditorUiStore((s) => s.playheadTicks);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
-  const markInTicks = useEditorUiStore((s) => s.markInTicks);
-  const markOutTicks = useEditorUiStore((s) => s.markOutTicks);
   const [fontOptions, setFontOptions] = useState(() => listFontOptions());
-  const [sizeOpen, setSizeOpen] = useState(true);
+  const [sizeOpen, setSizeOpen] = useState(false);
+  const [roundCorners, setRoundCorners] = useState(0);
+  const [strokeVisible, setStrokeVisible] = useState(false);
+  const [fillVisible, setFillVisible] = useState(true);
 
   const clip = useMemo(() => {
     const id = selectedClipIds[0];
     if (!id) return null;
     return clips.find((c) => c.id === id) ?? null;
   }, [clips, selectedClipIds]);
+
+  useEffect(() => {
+    setRoundCorners(0);
+    setStrokeVisible(false);
+    setFillVisible(true);
+    setSizeOpen(false);
+  }, [clip?.id]);
 
   if (!clip) return null;
 
@@ -196,17 +426,42 @@ export function PropertiesPanel() {
   const isAudio = !isText && asset?.kind === "audio";
   const isVisual = isText || (!isAudio && selected.kind === "media");
   const showVolume = selected.kind === "media" && Boolean(asset?.hasAudio || isAudio);
-  const showSpeed = selected.kind === "media";
   const showEffects = selected.kind === "media" && !isAudio;
-  const effects = normalizeClipEffects(selected.effects);
+  const clipProgress = progressFromTicks(
+    selected.startTicks,
+    clipDurationTicks(selected),
+    playheadTicks,
+  );
+  const effects = effectsAtProgress(
+    selected.effects,
+    selected.effectKeyframes,
+    clipProgress,
+  );
   const transition = normalizeClipTransition(selected.transitionIn);
+
+  function kfProps(param: EffectParamKey) {
+    const track = getParamTrack(selected.effectKeyframes, param);
+    const on = Boolean(track && findKeyframeNear(track.points, clipProgress));
+    return {
+      keyframeActive: paramHasKeyframes(selected.effectKeyframes, param),
+      keyframeOn: on,
+      onToggleKeyframe: () =>
+        commitProjectChange((p) =>
+          toggleEffectKeyframeAtPlayhead(p, selected.id, param, playheadTicks),
+        ),
+    };
+  }
+
+  function setParam(param: EffectParamKey, value: number) {
+    commitProjectChange((p) =>
+      setEffectParamAtPlayhead(p, selected.id, param, value, playheadTicks),
+    );
+  }
   const prev = findPreviousClipOnTrack(project, selected.id);
   const canTransition = showEffects && Boolean(prev);
-  const text = selected.text ?? createDefaultTextStyle();
-  const title = isText
-    ? text.content.trim() || "Text"
-    : asset?.name ?? "Clip";
-  const kindLabel = isText ? "Text" : asset?.kind ?? "media";
+  const text = normalizeTextStyle(selected.text);
+  const title = clipDisplayTitle(project, selected, asset);
+  const fillKind = isText ? "Text" : asset?.kind === "image" ? "Image" : "Video";
 
   const geom = isVisual && !isText
     ? mediaGeometry(selected.transform, canvas.width, canvas.height, asset)
@@ -254,21 +509,21 @@ export function PropertiesPanel() {
   async function handleBrowseFont() {
     try {
       if (isTauriRuntime()) {
-        const selected = await open({
+        const selectedPath = await open({
           multiple: false,
           filters: [{ name: "Fonts", extensions: ["ttf", "otf", "woff", "woff2"] }],
         });
-        if (typeof selected !== "string") return;
-        const name = selected.split(/[/\\]/).pop() ?? "Custom Font";
+        if (typeof selectedPath !== "string") return;
+        const name = selectedPath.split(/[/\\]/).pop() ?? "Custom Font";
         const family = name.replace(/\.(ttf|otf|woff2?)$/i, "");
         const option = {
           id: `custom-${crypto.randomUUID()}`,
           family,
-          path: selected,
+          path: selectedPath,
           source: "custom" as const,
         };
-        setFontOptions((prev) => [...prev, option]);
-        applyText({ ...text, fontFamily: family, fontPath: selected });
+        setFontOptions((prevOpts) => [...prevOpts, option]);
+        applyText({ ...text, fontFamily: family, fontPath: selectedPath });
         setStatusMessage(`Font selected · ${family}`);
         return;
       }
@@ -280,41 +535,6 @@ export function PropertiesPanel() {
       setStatusMessage(`Font loaded · ${option.family}`);
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : "Font browse failed");
-    }
-  }
-
-  const clipEnd = selected.startTicks + clipDurationTicks(selected);
-  const rangeReady =
-    markInTicks != null &&
-    markOutTicks != null &&
-    markOutTicks > markInTicks &&
-    markInTicks < clipEnd &&
-    markOutTicks > selected.startTicks;
-
-  function applyRangeSpeed(speed: number) {
-    if (!rangeReady || markInTicks == null || markOutTicks == null) {
-      setStatusMessage("Set Mark In (I) and Mark Out (O) on the portion to retime");
-      return;
-    }
-    try {
-      let midId = selected.id;
-      commitProjectChange((p) => {
-        const result = applySpeedToRange(
-          p,
-          selected.id,
-          markInTicks,
-          markOutTicks,
-          speed,
-        );
-        midId = result.midClipId;
-        return result.project;
-      });
-      setSelectedClipIds([midId]);
-      setStatusMessage(`Speed ${speed}× on marked range`);
-    } catch (error) {
-      setStatusMessage(
-        error instanceof Error ? error.message : "Could not apply speed range",
-      );
     }
   }
 
@@ -333,498 +553,778 @@ export function PropertiesPanel() {
           <CloseIcon size={14} />
         </button>
         <div className={styles.propsTitleBlock}>
-          <strong className={styles.propsTitle} title={title}>
-            {title}
-          </strong>
-          <span className={styles.propsKind}>{kindLabel}</span>
+          <div className={styles.propsTitleRow}>
+            <strong className={styles.propsTitle} title={title}>
+              {title}
+            </strong>
+            <span className={styles.propsEditIcon} aria-hidden>
+              <PencilIcon />
+            </span>
+          </div>
         </div>
       </header>
 
       {isVisual ? (
-        <Section title="Layer">
-          <div className={styles.alignRow}>
-            {edges.map((edge) => (
-              <button
-                key={edge}
-                type="button"
-                className={styles.alignBtn}
-                title={`Align ${edge}`}
-                onClick={() => align(edge)}
-              >
-                <AlignIcon kind={edge} />
-              </button>
-            ))}
-          </div>
-
-          <div className={styles.layerRow}>
-            <label className={styles.compactField} title="Rotation degrees">
-              <span>Rotate</span>
-              <input
-                type="number"
-                step={1}
-                value={Math.round(selected.transform.rotation)}
-                onChange={(e) =>
-                  patchTransform({ rotation: Number(e.target.value) || 0 })
-                }
-              />
-              <span className={styles.unit}>°</span>
-            </label>
-            {!isText ? (
-              <div className={styles.flipGroup}>
-                <button
-                  type="button"
-                  className={styles.alignBtn}
-                  title="Flip horizontal"
-                  onClick={() =>
-                    patchTransform({
-                      scaleX: -(geom?.scaleX ?? (selected.transform.scaleX || 1)),
-                    })
-                  }
-                >
-                  <FlipHIcon />
-                </button>
-                <button
-                  type="button"
-                  className={styles.alignBtn}
-                  title="Flip vertical"
-                  onClick={() =>
-                    patchTransform({
-                      scaleY: -(geom?.scaleY ?? (selected.transform.scaleY || 1)),
-                    })
-                  }
-                >
-                  <FlipVIcon />
-                </button>
-              </div>
-            ) : null}
-          </div>
-
-          <SliderField
-            label="Opacity"
-            title="Layer opacity"
-            min={0}
-            max={1}
-            step={0.01}
-            value={selected.transform.opacity}
-            display={`${Math.round(selected.transform.opacity * 100)}`}
-            onChange={(opacity) => patchTransform({ opacity })}
-          />
-        </Section>
-      ) : null}
-
-      {isVisual ? (
-        <Section
-          title="Position & size"
-          action={
-            <button
-              type="button"
-              className={styles.chevronBtn}
-              aria-expanded={sizeOpen}
-              onClick={() => setSizeOpen((v) => !v)}
-            >
-              {sizeOpen ? "−" : "+"}
-            </button>
-          }
-        >
-          {sizeOpen ? (
-            <>
-              <div className={styles.row}>
-                <label className={styles.field}>
-                  <span>X</span>
-                  <input
-                    type="number"
-                    value={Math.round(center.x)}
-                    onChange={(e) =>
-                      patchTransform({ x: Number(e.target.value) || 0 })
-                    }
-                  />
-                </label>
-                <label className={styles.field}>
-                  <span>Y</span>
-                  <input
-                    type="number"
-                    value={Math.round(center.y)}
-                    onChange={(e) =>
-                      patchTransform({ y: Number(e.target.value) || 0 })
-                    }
-                  />
-                </label>
-              </div>
-              {!isText ? (
-                <div className={styles.row}>
-                  <label className={styles.field}>
-                    <span>Scale X</span>
-                    <input
-                      type="number"
-                      min={0.02}
-                      max={20}
-                      step={0.01}
-                      value={Number(Math.abs(geom?.scaleX ?? 1).toFixed(2))}
-                      onChange={(e) => {
-                        const mag = Math.max(0.02, Number(e.target.value) || 1);
-                        const sign = (geom?.scaleX ?? 1) < 0 ? -1 : 1;
-                        patchTransform({ scaleX: mag * sign });
-                      }}
-                    />
-                  </label>
-                  <label className={styles.field}>
-                    <span>Scale Y</span>
-                    <input
-                      type="number"
-                      min={0.02}
-                      max={20}
-                      step={0.01}
-                      value={Number(Math.abs(geom?.scaleY ?? 1).toFixed(2))}
-                      onChange={(e) => {
-                        const mag = Math.max(0.02, Number(e.target.value) || 1);
-                        const sign = (geom?.scaleY ?? 1) < 0 ? -1 : 1;
-                        patchTransform({ scaleY: mag * sign });
-                      }}
-                    />
-                  </label>
-                </div>
-              ) : null}
-            </>
-          ) : null}
-        </Section>
-      ) : null}
-
-      {isText ? (
-        <>
-          <Section title="Content">
-            <textarea
-              className={styles.textarea}
-              rows={3}
-              value={text.content}
-              onChange={(e) => applyText({ ...text, content: e.target.value })}
-            />
-          </Section>
-          <Section title="Font">
-            <div className={styles.row}>
-              <select
-                className={styles.select}
-                value={text.fontFamily}
-                onChange={(e) => {
-                  const opt = fontOptions.find((f) => f.family === e.target.value);
-                  applyText({
-                    ...text,
-                    fontFamily: e.target.value,
-                    fontPath: opt?.path ?? null,
-                  });
-                }}
-              >
-                {fontOptions.map((font) => (
-                  <option key={font.id} value={font.family}>
-                    {font.family}
-                    {font.source === "custom" ? " (custom)" : ""}
-                  </option>
+            <Section title="Layer">
+              <div className={styles.alignRow}>
+                {edges.map((edge) => (
+                  <button
+                    key={edge}
+                    type="button"
+                    className={styles.alignBtn}
+                    title={`Align ${edge}`}
+                    onClick={() => align(edge)}
+                  >
+                    <AlignIcon kind={edge} />
+                  </button>
                 ))}
-              </select>
-              <button
-                type="button"
-                className={styles.secondary}
-                onClick={() => void handleBrowseFont()}
-              >
-                Browse…
-              </button>
-            </div>
-            <div className={styles.row}>
-              <label className={styles.field}>
-                <span>Size</span>
-                <input
-                  type="number"
-                  min={8}
-                  max={400}
-                  value={text.fontSize}
-                  onChange={(e) =>
-                    applyText({ ...text, fontSize: Number(e.target.value) || 64 })
-                  }
-                />
-              </label>
-              <label className={styles.field}>
-                <span>Align</span>
-                <select
-                  value={text.align}
-                  onChange={(e) =>
-                    applyText({
-                      ...text,
-                      align: e.target.value as TextStyle["align"],
-                    })
-                  }
+                <button
+                  type="button"
+                  className={styles.alignBtn}
+                  title="Distribute"
+                  disabled
                 >
-                  <option value="left">Left</option>
-                  <option value="center">Center</option>
-                  <option value="right">Right</option>
+                  <DistributeIcon />
+                </button>
+              </div>
+
+              <div className={styles.layerRow}>
+                <label className={styles.rotateField} title="Rotation degrees">
+                  <input
+                    type="number"
+                    step={1}
+                    value={Math.round(selected.transform.rotation)}
+                    onChange={(e) =>
+                      patchTransform({ rotation: Number(e.target.value) || 0 })
+                    }
+                  />
+                  <span className={styles.unit}>°</span>
+                  <ChevronDownIcon size={12} />
+                </label>
+                {!isText ? (
+                  <div className={styles.flipGroup}>
+                    <button
+                      type="button"
+                      className={styles.alignBtn}
+                      title="Flip horizontal"
+                      onClick={() =>
+                        patchTransform({
+                          scaleX: -(geom?.scaleX ?? (selected.transform.scaleX || 1)),
+                        })
+                      }
+                    >
+                      <FlipHIcon />
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.alignBtn}
+                      title="Flip vertical"
+                      onClick={() =>
+                        patchTransform({
+                          scaleY: -(geom?.scaleY ?? (selected.transform.scaleY || 1)),
+                        })
+                      }
+                    >
+                      <FlipVIcon />
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+
+              <OpacityBar
+                value={selected.transform.opacity}
+                onChange={(opacity) => patchTransform({ opacity })}
+              />
+
+              <label className={styles.blendSelect} title="Blend mode">
+                <select defaultValue="normal" disabled>
+                  <option value="normal">Normal</option>
                 </select>
               </label>
-            </div>
-          </Section>
-          <Section title="Fill">
-            <div className={styles.colorRow}>
-              <input
-                type="color"
-                value={text.color}
-                onChange={(e) => applyText({ ...text, color: e.target.value })}
-              />
-              <input
-                value={text.color}
-                onChange={(e) => applyText({ ...text, color: e.target.value })}
-              />
-            </div>
-          </Section>
-        </>
-      ) : null}
 
-      {showEffects ? (
-        <Section title="Fill">
-          <div className={styles.fillChip}>
-            <span className={styles.fillDot} aria-hidden />
-            <span>{asset?.kind === "image" ? "Image" : "Video"}</span>
-          </div>
-        </Section>
-      ) : null}
+              <div className={styles.propRow}>
+                <span className={styles.propLabel}>Transform</span>
+                <button
+                  type="button"
+                  className={styles.navBtnCompact}
+                  aria-expanded={sizeOpen}
+                  onClick={() => setSizeOpen((v) => !v)}
+                >
+                  Position &amp; Size
+                  <ChevronRightIcon />
+                </button>
+              </div>
 
-      {showVolume || showSpeed ? (
-        <Section title="Basic">
-          <div className={styles.stack}>
-            {showVolume ? (
-              <SliderField
-                label="Volume"
-                title="Clip audio gain"
+              {sizeOpen ? (
+                <div className={styles.sizeBlock}>
+                  <div className={styles.row}>
+                    <label className={styles.field}>
+                      <span>X</span>
+                      <input
+                        type="number"
+                        value={Math.round(center.x)}
+                        onChange={(e) =>
+                          patchTransform({ x: Number(e.target.value) || 0 })
+                        }
+                      />
+                    </label>
+                    <label className={styles.field}>
+                      <span>Y</span>
+                      <input
+                        type="number"
+                        value={Math.round(center.y)}
+                        onChange={(e) =>
+                          patchTransform({ y: Number(e.target.value) || 0 })
+                        }
+                      />
+                    </label>
+                  </div>
+                  {!isText ? (
+                    <div className={styles.row}>
+                      <label className={styles.field}>
+                        <span>Scale X</span>
+                        <input
+                          type="number"
+                          min={0.02}
+                          max={20}
+                          step={0.01}
+                          value={Number(Math.abs(geom?.scaleX ?? 1).toFixed(2))}
+                          onChange={(e) => {
+                            const mag = Math.max(0.02, Number(e.target.value) || 1);
+                            const sign = (geom?.scaleX ?? 1) < 0 ? -1 : 1;
+                            patchTransform({ scaleX: mag * sign });
+                          }}
+                        />
+                      </label>
+                      <label className={styles.field}>
+                        <span>Scale Y</span>
+                        <input
+                          type="number"
+                          min={0.02}
+                          max={20}
+                          step={0.01}
+                          value={Number(Math.abs(geom?.scaleY ?? 1).toFixed(2))}
+                          onChange={(e) => {
+                            const mag = Math.max(0.02, Number(e.target.value) || 1);
+                            const sign = (geom?.scaleY ?? 1) < 0 ? -1 : 1;
+                            patchTransform({ scaleY: mag * sign });
+                          }}
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </Section>
+          ) : null}
+
+          {isVisual && !isText ? (
+            <Section title="Shape">
+              <div className={styles.propRow}>
+                <span className={styles.propLabel}>Shape</span>
+                <button type="button" className={styles.navBtnCompact}>
+                  Rectangle
+                  <ChevronRightIcon />
+                </button>
+              </div>
+              <StepperField
+                label="Round Corners"
+                value={roundCorners}
+                display={`${roundCorners} px`}
                 min={0}
-                max={2}
-                step={0.01}
+                max={200}
+                step={1}
+                onChange={setRoundCorners}
+              />
+              <button
+                type="button"
+                className={styles.fullBtn}
+                onClick={() => setStatusMessage("Path editing coming soon")}
+              >
+                Edit Path
+              </button>
+            </Section>
+          ) : null}
+
+          {isText ? (
+            <>
+              <Section title="Content">
+                <textarea
+                  className={styles.textarea}
+                  rows={3}
+                  value={text.content}
+                  onChange={(e) => applyText({ ...text, content: e.target.value })}
+                />
+              </Section>
+              <Section title="Font">
+                <div className={styles.row}>
+                  <select
+                    className={styles.select}
+                    value={text.fontFamily}
+                    onChange={(e) => {
+                      const opt = fontOptions.find((f) => f.family === e.target.value);
+                      applyText({
+                        ...text,
+                        fontFamily: e.target.value,
+                        fontPath: opt?.path ?? null,
+                      });
+                    }}
+                  >
+                    {fontOptions.map((font) => (
+                      <option key={font.id} value={font.family}>
+                        {font.family}
+                        {font.source === "custom" ? " (custom)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className={styles.secondary}
+                    onClick={() => void handleBrowseFont()}
+                  >
+                    Browse…
+                  </button>
+                </div>
+                <div className={styles.row}>
+                  <label className={styles.field}>
+                    <span>Size</span>
+                    <input
+                      type="number"
+                      min={8}
+                      max={400}
+                      value={text.fontSize}
+                      onChange={(e) =>
+                        applyText({ ...text, fontSize: Number(e.target.value) || 64 })
+                      }
+                    />
+                  </label>
+                  <label className={styles.field}>
+                    <span>Align</span>
+                    <select
+                      value={text.align}
+                      onChange={(e) =>
+                        applyText({
+                          ...text,
+                          align: e.target.value as TextStyle["align"],
+                        })
+                      }
+                    >
+                      <option value="left">Left</option>
+                      <option value="center">Center</option>
+                      <option value="right">Right</option>
+                    </select>
+                  </label>
+                </div>
+              </Section>
+              <Section title="Fill">
+                <div className={styles.colorRow}>
+                  <input
+                    type="color"
+                    value={text.color}
+                    onChange={(e) => applyText({ ...text, color: e.target.value })}
+                  />
+                  <input
+                    value={text.color}
+                    onChange={(e) => applyText({ ...text, color: e.target.value })}
+                  />
+                </div>
+              </Section>
+              <Section
+                title="Background"
+                action={
+                  <button
+                    type="button"
+                    className={styles.linkBtn}
+                    onClick={() =>
+                      applyText({
+                        ...text,
+                        backgroundColor: text.backgroundColor ? null : "#FFFFFF",
+                        color: text.backgroundColor ? text.color : "#111111",
+                      })
+                    }
+                  >
+                    {text.backgroundColor ? "Remove" : "Add"}
+                  </button>
+                }
+              >
+                {text.backgroundColor ? (
+                  <div className={styles.stack}>
+                    <div className={styles.colorRow}>
+                      <input
+                        type="color"
+                        value={
+                          text.backgroundColor.startsWith("#") &&
+                          text.backgroundColor.length >= 7
+                            ? text.backgroundColor.slice(0, 7)
+                            : "#FFFFFF"
+                        }
+                        onChange={(e) =>
+                          applyText({ ...text, backgroundColor: e.target.value })
+                        }
+                      />
+                      <input
+                        value={text.backgroundColor}
+                        onChange={(e) =>
+                          applyText({
+                            ...text,
+                            backgroundColor: e.target.value || null,
+                          })
+                        }
+                      />
+                    </div>
+                    <StepperField
+                      label="Padding"
+                      value={text.backgroundPadding}
+                      display={`${Math.round(text.backgroundPadding)}px`}
+                      min={0}
+                      max={48}
+                      step={1}
+                      onChange={(backgroundPadding) =>
+                        applyText({ ...text, backgroundPadding })
+                      }
+                    />
+                    <StepperField
+                      label="Radius"
+                      value={text.backgroundRadius}
+                      display={`${Math.round(text.backgroundRadius)}px`}
+                      min={0}
+                      max={40}
+                      step={1}
+                      onChange={(backgroundRadius) =>
+                        applyText({ ...text, backgroundRadius })
+                      }
+                    />
+                  </div>
+                ) : null}
+              </Section>
+              <Section title="Text animation">
+                {(() => {
+                  const anim = normalizeTextAnimation(text.textAnimation ?? null);
+                  const setAnim = (patch: Partial<typeof anim>) =>
+                    applyText({
+                      ...text,
+                      textAnimation: { ...anim, ...patch },
+                    });
+                  return (
+                    <div className={styles.stack}>
+                      <div className={styles.row}>
+                        <label className={styles.field}>
+                          <span>Enter</span>
+                          <select
+                            value={anim.in}
+                            onChange={(e) =>
+                              setAnim({ in: e.target.value as TextAnimType })
+                            }
+                          >
+                            {TEXT_ANIM_OPTIONS.map((o) => (
+                              <option key={o.type} value={o.type}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className={styles.field}>
+                          <span>Exit</span>
+                          <select
+                            value={anim.out}
+                            onChange={(e) =>
+                              setAnim({ out: e.target.value as TextAnimType })
+                            }
+                          >
+                            {TEXT_ANIM_OPTIONS.map((o) => (
+                              <option key={o.type} value={o.type}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      <StepperField
+                        label="Enter duration"
+                        value={anim.inDurationSec}
+                        display={`${anim.inDurationSec.toFixed(1)}s`}
+                        min={0}
+                        max={5}
+                        step={0.1}
+                        onChange={(inDurationSec) => setAnim({ inDurationSec })}
+                      />
+                      <StepperField
+                        label="Exit duration"
+                        value={anim.outDurationSec}
+                        display={`${anim.outDurationSec.toFixed(1)}s`}
+                        min={0}
+                        max={5}
+                        step={0.1}
+                        onChange={(outDurationSec) => setAnim({ outDurationSec })}
+                      />
+                      <StepperField
+                        label="Fade in"
+                        value={effects.fadeInSec}
+                        display={`${effects.fadeInSec.toFixed(1)}s`}
+                        min={0}
+                        max={5}
+                        step={0.1}
+                        onChange={(fadeInSec) =>
+                          commitProjectChange((p) =>
+                            updateClipEffects(p, selected.id, { fadeInSec }),
+                          )
+                        }
+                      />
+                      <StepperField
+                        label="Fade out"
+                        value={effects.fadeOutSec}
+                        display={`${effects.fadeOutSec.toFixed(1)}s`}
+                        min={0}
+                        max={5}
+                        step={0.1}
+                        onChange={(fadeOutSec) =>
+                          commitProjectChange((p) =>
+                            updateClipEffects(p, selected.id, { fadeOutSec }),
+                          )
+                        }
+                      />
+                    </div>
+                  );
+                })()}
+              </Section>
+            </>
+          ) : null}
+
+          {showEffects ? (
+            <Section title="Fill">
+              <div className={styles.fillRow}>
+                <button
+                  type="button"
+                  className={`${styles.navBtn} ${!fillVisible ? styles.navBtnMuted : ""}`}
+                >
+                  <span className={styles.navBtnIcon}>
+                    <PlayIcon size={14} />
+                  </span>
+                  <span className={styles.navBtnLabel}>{fillKind}</span>
+                  <ChevronRightIcon />
+                </button>
+                <button
+                  type="button"
+                  className={styles.iconToggle}
+                  title={fillVisible ? "Hide fill" : "Show fill"}
+                  aria-pressed={fillVisible}
+                  onClick={() => setFillVisible((v) => !v)}
+                >
+                  {fillVisible ? <EyeIcon size={16} /> : <EyeOffIcon size={16} />}
+                </button>
+              </div>
+            </Section>
+          ) : null}
+
+          {isVisual && !isText ? (
+            <Section title="Stroke">
+              <div className={styles.fillRow}>
+                <button
+                  type="button"
+                  className={`${styles.colorNav} ${!strokeVisible ? styles.navBtnMuted : ""}`}
+                  onClick={() => setStatusMessage("Stroke color coming soon")}
+                >
+                  <span
+                    className={styles.colorSwatch}
+                    style={{ background: "#ABABAB" }}
+                    aria-hidden
+                  />
+                  <span className={styles.navBtnLabel}>#ABABAB</span>
+                  <ChevronRightIcon />
+                </button>
+                <button
+                  type="button"
+                  className={styles.iconToggle}
+                  title={strokeVisible ? "Hide stroke" : "Show stroke"}
+                  aria-pressed={strokeVisible}
+                  onClick={() => setStrokeVisible((v) => !v)}
+                >
+                  {strokeVisible ? <EyeIcon size={16} /> : <EyeOffIcon size={16} />}
+                </button>
+              </div>
+            </Section>
+          ) : null}
+
+          {showVolume ? (
+            <Section title="Audio">
+              <StepperField
+                label="Volume"
                 value={selected.volume}
                 display={`${Math.round(selected.volume * 100)}%`}
+                min={0}
+                max={2}
+                step={0.05}
                 onChange={(volume) =>
                   commitProjectChange((p) => updateClipVolume(p, selected.id, volume))
                 }
               />
-            ) : null}
-            {showSpeed ? (
-              <>
-                <SliderField
-                  label="Speed"
-                  title="Constant speed for the whole clip"
-                  min={0.1}
-                  max={4}
-                  step={0.05}
-                  value={selected.speed}
-                  display={`${selected.speed.toFixed(2)}×`}
-                  onChange={(speed) => {
-                    if (!(speed > 0)) return;
-                    commitProjectChange((p) => updateClipSpeed(p, selected.id, speed));
-                  }}
-                />
-                <div className={styles.chipRow}>
-                  {[0.25, 0.5, 1, 1.5, 2].map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      className={
-                        Math.abs(selected.speed - s) < 0.001
-                          ? styles.chipActive
-                          : styles.chip
-                      }
-                      onClick={() =>
-                        commitProjectChange((p) => updateClipSpeed(p, selected.id, s))
-                      }
-                    >
-                      {s}×
-                    </button>
-                  ))}
-                </div>
-                <div className={styles.blockHead}>
-                  <label className={styles.label}>Speed on range</label>
-                  <span className={rangeReady ? styles.pill : styles.pillMuted}>
-                    {rangeReady ? "In/Out ready" : "Mark In/Out"}
-                  </span>
-                </div>
-                <div className={styles.chipRow}>
-                  {[0.25, 0.5, 1.5, 2, 4].map((s) => (
-                    <button
-                      key={`r-${s}`}
-                      type="button"
-                      className={styles.chip}
-                      disabled={!rangeReady}
-                      onClick={() => applyRangeSpeed(s)}
-                    >
-                      {s}×
-                    </button>
-                  ))}
-                </div>
-              </>
-            ) : null}
-          </div>
-        </Section>
-      ) : null}
+            </Section>
+          ) : null}
 
-      {showEffects ? (
-        <>
-          <Section
-            title="Transition in"
-            action={
-              canTransition ? (
-                <span className={styles.pill}>{transitionDef(transition.type).label}</span>
-              ) : (
-                <span className={styles.pillMuted}>Needs previous</span>
-              )
-            }
-          >
-            <PresetGrid
-              items={TRANSITION_ITEMS}
-              groups={TRANSITION_GROUPS}
-              value={transition.type}
-              onSelect={(id) => {
-                if (!canTransition && id !== "none") return;
-                commitProjectChange((p) =>
-                  updateClipTransition(p, selected.id, {
-                    type: id as TransitionType,
-                    durationTicks:
-                      id === "none"
-                        ? transition.durationTicks
-                        : Math.max(transition.durationTicks, 600_000),
-                  }),
-                );
-              }}
-              footnote={
-                canTransition
-                  ? undefined
-                  : "Place another clip before this one to enable transitions."
-              }
-            />
-            {canTransition && transition.type !== "none" ? (
-              <SliderField
-                label="Duration"
-                title="Transition length"
-                min={0.1}
-                max={2}
-                step={0.05}
-                value={transition.durationTicks / 1_000_000}
-                display={`${(transition.durationTicks / 1_000_000).toFixed(2)}s`}
-                onChange={(sec) =>
-                  commitProjectChange((p) =>
-                    updateClipTransition(p, selected.id, {
-                      durationTicks: Math.round(sec * 1_000_000),
-                    }),
-                  )
-                }
-              />
-            ) : null}
-          </Section>
-
-          <Section
-            title="Adjustment"
-            action={
-              <button
-                type="button"
-                className={styles.linkBtn}
-                onClick={() =>
-                  commitProjectChange((p) =>
-                    updateClipEffects(p, selected.id, { ...DEFAULT_CLIP_EFFECTS }),
+          {showEffects ? (
+            <>
+              <Section
+                title="Transition in"
+                action={
+                  canTransition ? (
+                    <span className={styles.pill}>{transitionDef(transition.type).label}</span>
+                  ) : (
+                    <span className={styles.pillMuted}>Needs previous</span>
                   )
                 }
               >
-                Reset
-              </button>
-            }
-          >
-            <div className={styles.stack}>
-              <SliderField
-                label="Brightness"
-                title="1 = original"
-                min={0}
-                max={2}
-                step={0.01}
-                value={effects.brightness}
-                onChange={(brightness) =>
-                  commitProjectChange((p) =>
-                    updateClipEffects(p, selected.id, { brightness }),
-                  )
+                <PresetGrid
+                  items={TRANSITION_ITEMS}
+                  groups={TRANSITION_GROUPS}
+                  value={transition.type}
+                  onSelect={(id) => {
+                    if (!canTransition && id !== "none") return;
+                    commitProjectChange((p) =>
+                      updateClipTransition(p, selected.id, {
+                        type: id as TransitionType,
+                        durationTicks:
+                          id === "none"
+                            ? transition.durationTicks
+                            : Math.max(transition.durationTicks, 600_000),
+                      }),
+                    );
+                  }}
+                  footnote={
+                    canTransition
+                      ? undefined
+                      : "Place another clip before this one to enable transitions."
+                  }
+                />
+                {canTransition && transition.type !== "none" ? (
+                  <StepperField
+                    label="Duration"
+                    value={transition.durationTicks / 1_000_000}
+                    display={`${(transition.durationTicks / 1_000_000).toFixed(2)}s`}
+                    min={0.1}
+                    max={2}
+                    step={0.05}
+                    onChange={(sec) =>
+                      commitProjectChange((p) =>
+                        updateClipTransition(p, selected.id, {
+                          durationTicks: Math.round(sec * 1_000_000),
+                        }),
+                      )
+                    }
+                  />
+                ) : null}
+              </Section>
+
+              <Section title="Filters">
+                <div className={styles.filterGrid}>
+                  {EFFECT_PRESETS.map((preset) => {
+                    const active = findMatchingEffectPreset(effects)?.id === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        title={preset.label}
+                        className={`${styles.filterBtn}${active ? ` ${styles.filterBtnActive}` : ""}`}
+                        onClick={() =>
+                          commitProjectChange((p) =>
+                            updateClipEffects(
+                              p,
+                              selected.id,
+                              applyEffectPreset(effects, preset),
+                            ),
+                          )
+                        }
+                      >
+                        <span
+                          className={styles.filterSwatch}
+                          style={{ background: preset.swatch }}
+                        >
+                          {active ? <span className={styles.filterCheck}>✓</span> : null}
+                        </span>
+                        <span className={styles.filterLabel}>{preset.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </Section>
+
+              <Section
+                title="Adjustment"
+                action={
+                  <button
+                    type="button"
+                    className={styles.linkBtn}
+                    onClick={() =>
+                      commitProjectChange((p) => {
+                        const cleared = updateClipEffects(p, selected.id, {
+                          ...DEFAULT_CLIP_EFFECTS,
+                        });
+                        return setClipEffectKeyframes(cleared, selected.id, null);
+                      })
+                    }
+                  >
+                    Reset
+                  </button>
                 }
-              />
-              <SliderField
-                label="Contrast"
-                title="1 = original"
-                min={0}
-                max={2}
-                step={0.01}
-                value={effects.contrast}
-                onChange={(contrast) =>
-                  commitProjectChange((p) =>
-                    updateClipEffects(p, selected.id, { contrast }),
-                  )
-                }
-              />
-              <SliderField
-                label="Saturation"
-                title="1 = original"
-                min={0}
-                max={3}
-                step={0.01}
-                value={effects.saturation}
-                onChange={(saturation) =>
-                  commitProjectChange((p) =>
-                    updateClipEffects(p, selected.id, { saturation }),
-                  )
-                }
-              />
-              <SliderField
-                label="Blur"
-                title="Blur radius"
-                min={0}
-                max={20}
-                step={0.5}
-                value={effects.blur}
-                display={`${effects.blur.toFixed(1)}px`}
-                onChange={(blur) =>
-                  commitProjectChange((p) => updateClipEffects(p, selected.id, { blur }))
-                }
-              />
-              <SliderField
-                label="Fade in"
-                title="Seconds from clip start"
-                min={0}
-                max={5}
-                step={0.1}
-                value={effects.fadeInSec}
-                display={`${effects.fadeInSec.toFixed(1)}s`}
-                onChange={(fadeInSec) =>
-                  commitProjectChange((p) =>
-                    updateClipEffects(p, selected.id, { fadeInSec }),
-                  )
-                }
-              />
-              <SliderField
-                label="Fade out"
-                title="Seconds to clip end"
-                min={0}
-                max={5}
-                step={0.1}
-                value={effects.fadeOutSec}
-                display={`${effects.fadeOutSec.toFixed(1)}s`}
-                onChange={(fadeOutSec) =>
-                  commitProjectChange((p) =>
-                    updateClipEffects(p, selected.id, { fadeOutSec }),
-                  )
-                }
-              />
-            </div>
-            <label className={styles.checkRow}>
-              <input
-                type="checkbox"
-                checked={effects.grayscale}
-                onChange={(e) =>
-                  commitProjectChange((p) =>
-                    updateClipEffects(p, selected.id, { grayscale: e.target.checked }),
-                  )
-                }
-              />
-              <span>Grayscale</span>
-            </label>
-          </Section>
-        </>
-      ) : null}
+              >
+                <div className={styles.stack}>
+                  <StepperField
+                    label="Brightness"
+                    value={effects.brightness}
+                    display={effects.brightness.toFixed(2)}
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    onChange={(brightness) => setParam("brightness", brightness)}
+                    {...kfProps("brightness")}
+                  />
+                  <StepperField
+                    label="Contrast"
+                    value={effects.contrast}
+                    display={effects.contrast.toFixed(2)}
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    onChange={(contrast) => setParam("contrast", contrast)}
+                    {...kfProps("contrast")}
+                  />
+                  <StepperField
+                    label="Saturation"
+                    value={effects.saturation}
+                    display={effects.saturation.toFixed(2)}
+                    min={0}
+                    max={3}
+                    step={0.05}
+                    onChange={(saturation) => setParam("saturation", saturation)}
+                    {...kfProps("saturation")}
+                  />
+                  <StepperField
+                    label="Blur"
+                    value={effects.blur}
+                    display={`${effects.blur.toFixed(1)}px`}
+                    min={0}
+                    max={20}
+                    step={0.5}
+                    onChange={(blur) => setParam("blur", blur)}
+                    {...kfProps("blur")}
+                  />
+                  <StepperField
+                    label="Vignette"
+                    value={Math.round(effects.vignette * 100)}
+                    display={`${Math.round(effects.vignette * 100)}`}
+                    min={0}
+                    max={100}
+                    step={5}
+                    onChange={(pct) => setParam("vignette", pct / 100)}
+                    {...kfProps("vignette")}
+                  />
+                  <StepperField
+                    label="Sharpen"
+                    value={Math.round(effects.sharpen * 50)}
+                    display={`${Math.round(effects.sharpen * 50)}`}
+                    min={0}
+                    max={100}
+                    step={5}
+                    onChange={(pct) => setParam("sharpen", pct / 50)}
+                    {...kfProps("sharpen")}
+                  />
+                  <StepperField
+                    label="Strobe"
+                    value={effects.strobeFrames}
+                    display={
+                      effects.strobeFrames <= 0
+                        ? "Off"
+                        : `1/${effects.strobeFrames}f`
+                    }
+                    min={0}
+                    max={30}
+                    step={1}
+                    onChange={(strobeFrames) =>
+                      setParam("strobeFrames", Math.round(strobeFrames))
+                    }
+                    {...kfProps("strobeFrames")}
+                  />
+                  {effects.strobeFrames > 0 ||
+                  paramHasKeyframes(selected.effectKeyframes, "strobeFrames") ? (
+                    <div className={styles.colorRow}>
+                      <span className={styles.propLabel}>Flash</span>
+                      <input
+                        type="color"
+                        value={effects.strobeColor}
+                        onChange={(e) =>
+                          commitProjectChange((p) =>
+                            updateClipEffects(p, selected.id, {
+                              strobeColor: e.target.value,
+                            }),
+                          )
+                        }
+                      />
+                      <input
+                        value={effects.strobeColor}
+                        onChange={(e) =>
+                          commitProjectChange((p) =>
+                            updateClipEffects(p, selected.id, {
+                              strobeColor: e.target.value,
+                            }),
+                          )
+                        }
+                      />
+                    </div>
+                  ) : null}
+                  <StepperField
+                    label="Fade in"
+                    value={effects.fadeInSec}
+                    display={`${effects.fadeInSec.toFixed(1)}s`}
+                    min={0}
+                    max={5}
+                    step={0.1}
+                    onChange={(fadeInSec) =>
+                      commitProjectChange((p) =>
+                        updateClipEffects(p, selected.id, { fadeInSec }),
+                      )
+                    }
+                  />
+                  <StepperField
+                    label="Fade out"
+                    value={effects.fadeOutSec}
+                    display={`${effects.fadeOutSec.toFixed(1)}s`}
+                    min={0}
+                    max={5}
+                    step={0.1}
+                    onChange={(fadeOutSec) =>
+                      commitProjectChange((p) =>
+                        updateClipEffects(p, selected.id, { fadeOutSec }),
+                      )
+                    }
+                  />
+                </div>
+                <label className={styles.checkRow}>
+                  <input
+                    type="checkbox"
+                    checked={effects.grayscale}
+                    onChange={(e) => setParam("grayscale", e.target.checked ? 1 : 0)}
+                  />
+                  <span>Grayscale</span>
+                  <button
+                    type="button"
+                    className="ml-auto text-[11px] font-semibold text-muted-foreground hover:text-foreground"
+                    title="Toggle grayscale keyframe at playhead"
+                    onClick={() =>
+                      commitProjectChange((p) =>
+                        toggleEffectKeyframeAtPlayhead(
+                          p,
+                          selected.id,
+                          "grayscale",
+                          playheadTicks,
+                        ),
+                      )
+                    }
+                  >
+                    {paramHasKeyframes(selected.effectKeyframes, "grayscale") ? "◇ on" : "◇"}
+                  </button>
+                </label>
+              </Section>
+            </>
+          ) : null}
     </div>
   );
 }

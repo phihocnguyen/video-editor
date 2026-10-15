@@ -77,7 +77,10 @@ describe("transitions", () => {
     });
     project = { ...project, assets: [mk("a1", "a.mp4"), mk("a2", "b.mp4")] };
     project = addMediaClip(project, "a1", { startTicks: 0 });
-    project = addMediaClip(project, "a2", { startTicks: 3_000_000 });
+    // Transitions blend same-lane neighbors — pin both clips to one track
+    // (the default add flow would spread them across lanes).
+    const laneId = project.clips.find((c) => c.assetId === "a1")!.trackId;
+    project = addMediaClip(project, "a2", { trackId: laneId, startTicks: 3_000_000 });
     const second = project.clips.find((c) => c.assetId === "a2")!;
     project = updateClipTransition(project, second.id, {
       type: "dissolve",
@@ -127,14 +130,16 @@ describe("transitions", () => {
     for (const def of TRANSITION_DEFS) {
       expect(normalizeClipTransition({ type: def.type }).type).toBe(def.type);
     }
-    expect(TRANSITION_DEFS).toHaveLength(4);
-    expect(new Set(TRANSITION_DEFS.map((d) => d.type)).size).toBe(4);
+    expect(TRANSITION_DEFS).toHaveLength(12);
+    expect(new Set(TRANSITION_DEFS.map((d) => d.type)).size).toBe(12);
     expect(transitionDef("dissolve").xfade).toBe("fade");
     expect(transitionDef("fade").xfade).toBe("fadeblack");
     expect(transitionDef("fadeWhite").xfade).toBe("fadewhite");
     expect(transitionDef("none").xfade).toBeNull();
+    expect(transitionDef("wipeLeft").xfade).toBe("wipeleft");
+    expect(transitionDef("slideLeft").xfade).toBe("slideleft");
     // Unknown / legacy types collapse to a hard cut.
-    expect(normalizeClipTransition({ type: "wipeLeft" as never }).type).toBe("none");
+    expect(normalizeClipTransition({ type: "cubeSpin" as never }).type).toBe("none");
   });
 
   it("preview visual is opacity-only", () => {
@@ -143,6 +148,44 @@ describe("transitions", () => {
     expect(mid.opacity).toBeLessThan(0.6);
     expect(transitionPreview("fade", 0).opacity).toBe(0);
     expect(transitionPreview("fade", 1).opacity).toBe(1);
+  });
+
+  it("wipe reveals via clip-path and slide offsets both layers", async () => {
+    const { transitionVisualPair } = await import("../../src/domain/transitions");
+    const wipe = transitionVisualPair("wipeLeft", 0.5);
+    expect(wipe.curr.clipPath).toContain("inset(");
+    expect(wipe.prev.opacity).toBe(1);
+    expect(wipe.curr.opacity).toBe(1);
+    const slide = transitionVisualPair("slideLeft", 0);
+    expect(slide.curr.offsetXPct).toBeCloseTo(100, 5);
+    expect(slide.prev.offsetXPct).toBeCloseTo(0, 5);
+    const slideEnd = transitionVisualPair("slideLeft", 1);
+    expect(slideEnd.curr.offsetXPct).toBeCloseTo(0, 5);
+    expect(slideEnd.prev.offsetXPct).toBeCloseTo(-100, 5);
+  });
+
+  it("text animations combine fades and slide offsets", async () => {
+    const { textAnimVisual, DEFAULT_TEXT_ANIMATION } = await import(
+      "../../src/domain/project"
+    );
+    const base = textAnimVisual(null, { fadeInSec: 1, fadeOutSec: 0 }, 0.5, 4);
+    expect(base.opacity).toBeCloseTo(0.5, 5);
+    const slide = textAnimVisual(
+      { ...DEFAULT_TEXT_ANIMATION, in: "slideUp", inDurationSec: 1 },
+      { fadeInSec: 0, fadeOutSec: 0 },
+      0.5,
+      4,
+    );
+    expect(slide.offsetY).toBeGreaterThan(0);
+    expect(slide.opacity).toBeLessThan(1);
+    const settled = textAnimVisual(
+      { ...DEFAULT_TEXT_ANIMATION, in: "slideUp", inDurationSec: 1 },
+      { fadeInSec: 0, fadeOutSec: 0 },
+      2,
+      4,
+    );
+    expect(settled.offsetY).toBe(0);
+    expect(settled.opacity).toBe(1);
   });
 
   it("hands visibility from clip1 to clip2 across a centered dissolve", () => {
@@ -161,7 +204,8 @@ describe("transitions", () => {
     });
     project = { ...project, assets: [mk("a1", "a.mp4"), mk("a2", "b.mp4")] };
     project = addMediaClip(project, "a1", { startTicks: 0 });
-    project = addMediaClip(project, "a2", { startTicks: 3_000_000 });
+    const laneId = project.clips.find((c) => c.assetId === "a1")!.trackId;
+    project = addMediaClip(project, "a2", { trackId: laneId, startTicks: 3_000_000 });
     const first = project.clips.find((c) => c.assetId === "a1")!;
     const second = project.clips.find((c) => c.assetId === "a2")!;
     project = updateClipTransition(project, second.id, {
@@ -201,7 +245,8 @@ describe("transitions", () => {
     });
     project = { ...project, assets: [mk("a1", "a.mp4"), mk("a2", "b.mp4")] };
     project = addMediaClip(project, "a1", { startTicks: 0 });
-    project = addMediaClip(project, "a2", { startTicks: 3_000_000 });
+    const laneId = project.clips.find((c) => c.assetId === "a1")!.trackId;
+    project = addMediaClip(project, "a2", { trackId: laneId, startTicks: 3_000_000 });
     const second = project.clips.find((c) => c.assetId === "a2")!;
     project = updateClipTransition(project, second.id, {
       type: "fade",

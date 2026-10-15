@@ -1,4 +1,5 @@
 import type { ClipEffects } from "./effects";
+import type { EffectKeyframes } from "./effectKeyframes";
 import type { ClipTransition } from "./transitions";
 import type { Tick } from "./time";
 import type { SpeedRamp } from "./speedRamp";
@@ -42,6 +43,57 @@ export interface ClipTransform {
   opacity: number;
 }
 
+export type TextAnimType =
+  | "none"
+  | "fade"
+  | "slideUp"
+  | "slideDown"
+  | "slideLeft"
+  | "slideRight"
+  | "scalePop";
+
+export interface TextAnimation {
+  in: TextAnimType;
+  out: TextAnimType;
+  inDurationSec: number;
+  outDurationSec: number;
+}
+
+export const DEFAULT_TEXT_ANIMATION: TextAnimation = {
+  in: "none",
+  out: "none",
+  inDurationSec: 0.5,
+  outDurationSec: 0.5,
+};
+
+export const TEXT_ANIM_OPTIONS: { type: TextAnimType; label: string }[] = [
+  { type: "none", label: "None" },
+  { type: "fade", label: "Fade" },
+  { type: "slideUp", label: "Slide Up" },
+  { type: "slideDown", label: "Slide Down" },
+  { type: "slideLeft", label: "Slide Left" },
+  { type: "slideRight", label: "Slide Right" },
+  { type: "scalePop", label: "Pop" },
+];
+
+function isTextAnimType(value: unknown): value is TextAnimType {
+  return TEXT_ANIM_OPTIONS.some((o) => o.type === value);
+}
+
+export function normalizeTextAnimation(input?: Partial<TextAnimation> | null): TextAnimation {
+  const src = (input ?? {}) as Record<string, unknown>;
+  const clampDur = (v: unknown, fallback: number) =>
+    typeof v === "number" && Number.isFinite(v)
+      ? Math.min(10, Math.max(0, v))
+      : fallback;
+  return {
+    in: isTextAnimType(src.in) ? (src.in as TextAnimType) : "none",
+    out: isTextAnimType(src.out) ? (src.out as TextAnimType) : "none",
+    inDurationSec: clampDur(src.inDurationSec, DEFAULT_TEXT_ANIMATION.inDurationSec),
+    outDurationSec: clampDur(src.outDurationSec, DEFAULT_TEXT_ANIMATION.outDurationSec),
+  };
+}
+
 export interface TextStyle {
   content: string;
   fontFamily: string;
@@ -50,6 +102,16 @@ export interface TextStyle {
   fontSize: number;
   color: string;
   align: "left" | "center" | "right";
+  /**
+   * Instagram-style highlight behind glyphs. `null` / empty = no background.
+   */
+  backgroundColor: string | null;
+  /** Extra padding around glyphs (canvas px at design size). */
+  backgroundPadding: number;
+  /** Corner radius of the highlight pill (canvas px). */
+  backgroundRadius: number;
+  /** Entrance/exit animation (B1). Missing on older projects → none. */
+  textAnimation?: TextAnimation | null;
 }
 
 export function createDefaultTextStyle(content = "Title text"): TextStyle {
@@ -57,9 +119,124 @@ export function createDefaultTextStyle(content = "Title text"): TextStyle {
     content,
     fontFamily: "Manrope Variable",
     fontPath: null,
-    fontSize: 72,
+    fontSize: 48,
     color: "#FFE566",
     align: "center",
+    backgroundColor: null,
+    backgroundPadding: 12,
+    backgroundRadius: 10,
+    textAnimation: { ...DEFAULT_TEXT_ANIMATION },
+  };
+}
+
+export function normalizeTextStyle(input?: Partial<TextStyle> | null): TextStyle {
+  const base = createDefaultTextStyle();
+  const src = input ?? {};
+  const bg =
+    typeof src.backgroundColor === "string" && src.backgroundColor.trim().length > 0
+      ? src.backgroundColor.trim()
+      : null;
+  return {
+    content: typeof src.content === "string" ? src.content : base.content,
+    fontFamily: typeof src.fontFamily === "string" ? src.fontFamily : base.fontFamily,
+    fontPath: typeof src.fontPath === "string" ? src.fontPath : src.fontPath === null ? null : base.fontPath,
+    fontSize:
+      typeof src.fontSize === "number" && Number.isFinite(src.fontSize)
+        ? Math.min(400, Math.max(8, src.fontSize))
+        : base.fontSize,
+    color: typeof src.color === "string" ? src.color : base.color,
+    align:
+      src.align === "left" || src.align === "center" || src.align === "right"
+        ? src.align
+        : base.align,
+    backgroundColor: bg,
+    backgroundPadding:
+      typeof src.backgroundPadding === "number" && Number.isFinite(src.backgroundPadding)
+        ? Math.min(80, Math.max(0, src.backgroundPadding))
+        : base.backgroundPadding,
+    backgroundRadius:
+      typeof src.backgroundRadius === "number" && Number.isFinite(src.backgroundRadius)
+        ? Math.min(80, Math.max(0, src.backgroundRadius))
+        : base.backgroundRadius,
+    textAnimation: normalizeTextAnimation(src.textAnimation ?? null),
+  };
+}
+
+/**
+ * Preview style for a text clip at local time `localSec` within duration `durSec`.
+ * Combines clip fadeInSec/fadeOutSec (B0) with textAnimation in/out (B1).
+ * Slide distance is in canvas px; scalePop is 0.8→1 with fade.
+ */
+export function textAnimVisual(
+  textAnimation: TextAnimation | null | undefined,
+  effects: { fadeInSec: number; fadeOutSec: number },
+  localSec: number,
+  durationSec: number,
+): { opacity: number; offsetX: number; offsetY: number; scale: number } {
+  const dur = Math.max(0.01, durationSec);
+  const t = Math.max(0, Math.min(dur, localSec));
+  let opacity = 1;
+  let offsetX = 0;
+  let offsetY = 0;
+  let scale = 1;
+
+  // B0: legacy fade effects.
+  const fadeIn = Math.min(effects.fadeInSec, dur);
+  if (fadeIn > 0.001 && t < fadeIn) opacity = Math.min(opacity, t / fadeIn);
+  const fadeOut = Math.min(effects.fadeOutSec, dur);
+  if (fadeOut > 0.001 && t > dur - fadeOut) {
+    opacity = Math.min(opacity, (dur - t) / fadeOut);
+  }
+
+  const anim = normalizeTextAnimation(textAnimation);
+  const DIST = 48;
+  const applySide = (
+    type: TextAnimType,
+    progress: number, // 0 = hidden, 1 = fully in
+  ) => {
+    const e = progress * progress * (3 - 2 * progress);
+    switch (type) {
+      case "none":
+        break;
+      case "fade":
+        opacity = Math.min(opacity, e);
+        break;
+      case "slideUp":
+        offsetY = (1 - e) * DIST;
+        opacity = Math.min(opacity, 0.15 + 0.85 * e);
+        break;
+      case "slideDown":
+        offsetY = -(1 - e) * DIST;
+        opacity = Math.min(opacity, 0.15 + 0.85 * e);
+        break;
+      case "slideLeft":
+        offsetX = (1 - e) * DIST;
+        opacity = Math.min(opacity, 0.15 + 0.85 * e);
+        break;
+      case "slideRight":
+        offsetX = -(1 - e) * DIST;
+        opacity = Math.min(opacity, 0.15 + 0.85 * e);
+        break;
+      case "scalePop":
+        scale = 0.8 + 0.2 * e;
+        opacity = Math.min(opacity, e);
+        break;
+    }
+  };
+
+  const inDur = Math.min(anim.inDurationSec, dur);
+  if (anim.in !== "none" && inDur > 0.001 && t < inDur) {
+    applySide(anim.in, t / inDur);
+  }
+  const outDur = Math.min(anim.outDurationSec, dur);
+  if (anim.out !== "none" && outDur > 0.001 && t > dur - outDur) {
+    applySide(anim.out, (dur - t) / outDur);
+  }
+  return {
+    opacity: Math.min(1, Math.max(0, opacity)),
+    offsetX,
+    offsetY,
+    scale,
   };
 }
 
@@ -79,6 +256,11 @@ export interface Clip {
   volume: number;
   /** Visual effects; missing on older projects → treat as DEFAULT_CLIP_EFFECTS. */
   effects: ClipEffects;
+  /**
+   * Optional per-parameter effect keyframes (CapCut-style). Missing → static
+   * `effects` for the whole clip.
+   */
+  effectKeyframes?: EffectKeyframes | null;
   /**
    * Incoming transition from the previous clip on the same track.
    * Missing on older projects → none.

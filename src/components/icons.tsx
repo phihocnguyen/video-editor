@@ -176,6 +176,14 @@ export const PhotosIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const ShapeIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2.6" y="8.2" width="6.4" height="5.2" rx="1" />
+    <circle cx="11.2" cy="5.2" r="2.8" />
+    <path d="M7.2 2.8 11.6 10.8 H2.8 Z" />
+  </Svg>
+);
+
 export const SubtitlesIcon = (p: IconProps) => (
   <Svg {...p}>
     <rect x="2.4" y="3.4" width="11.2" height="9.2" rx="1.6" />

@@ -1,10 +1,28 @@
 import {
   DEFAULT_CLIP_EFFECTS,
+  effectsAreDefault,
   normalizeClipEffects,
   type ClipEffects,
 } from "./effects";
 import {
+  cloneEffectKeyframes,
+  effectsAtProgress,
+  findKeyframeNear,
+  getParamTrack,
+  normalizeEffectKeyframes,
+  paramHasKeyframes,
+  progressFromTicks,
+  readBaseParam,
+  removeParamKeyframeNear,
+  sliceEffectKeyframes,
+  upsertParamKeyframe,
+  writeBaseParam,
+  type EffectKeyframes,
+  type EffectParamKey,
+} from "./effectKeyframes";
+import {
   createDefaultTextStyle,
+  normalizeTextStyle,
   type Clip,
   type MediaAsset,
   type ProjectDocument,
@@ -112,6 +130,43 @@ export function findTrackForAsset(project: ProjectDocument, asset: MediaAsset): 
   return project.tracks.find((t) => t.kind === kind && !t.locked);
 }
 
+/** Empty unlocked lane of `kind`. `prefer: "bottom"` = main lane; `"top"` = overlay. */
+export function findEmptyTrack(
+  project: ProjectDocument,
+  kind: TrackKind,
+  prefer: "top" | "bottom" = "bottom",
+): Track | undefined {
+  const occupied = new Set(project.clips.map((c) => c.trackId));
+  const empty = project.tracks.filter(
+    (t) => t.kind === kind && !t.locked && !occupied.has(t.id),
+  );
+  return [...empty].sort((a, b) =>
+    prefer === "top" ? a.order - b.order : b.order - a.order,
+  )[0];
+}
+
+/**
+ * Remove a track when it has no clips left, keeping at least one track per kind.
+ * No-op if the track still has clips, is unknown, or is the last of its kind.
+ */
+export function pruneEmptyTrack(
+  project: ProjectDocument,
+  trackId: string,
+): ProjectDocument {
+  const track = project.tracks.find((t) => t.id === trackId);
+  if (!track) return project;
+  if (project.clips.some((c) => c.trackId === trackId)) return project;
+  const remainingSameKind = project.tracks.filter(
+    (t) => t.kind === track.kind && t.id !== trackId,
+  );
+  if (remainingSameKind.length === 0) return project;
+  return {
+    ...project,
+    tracks: project.tracks.filter((t) => t.id !== trackId),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export function addMediaClip(
   project: ProjectDocument,
   assetId: string,
@@ -122,10 +177,25 @@ export function addMediaClip(
     throw new Error("Unknown assetId");
   }
 
-  const track =
-    (options?.trackId
-      ? project.tracks.find((t) => t.id === options.trackId)
-      : undefined) ?? findTrackForAsset(project, asset);
+  const kind = compatibleTrackKind(asset);
+  let working = project;
+  let track: Track | undefined =
+    options?.trackId != null
+      ? working.tracks.find((t) => t.id === options.trackId)
+      : undefined;
+
+  const duration = defaultClipDuration(asset);
+  const startTicks = Math.max(0, options?.startTicks ?? 0);
+
+  // No explicit track → reuse an empty lane; otherwise create a new overlay.
+  if (!options?.trackId) {
+    track = findEmptyTrack(working, kind);
+    if (!track) {
+      const beforeIds = new Set(working.tracks.map((t) => t.id));
+      working = addTrack(working, kind);
+      track = working.tracks.find((t) => !beforeIds.has(t.id));
+    }
+  }
 
   if (!track) {
     throw new Error("No compatible track for asset");
@@ -133,25 +203,23 @@ export function addMediaClip(
   if (track.locked) {
     throw new Error("Track is locked");
   }
-  if (compatibleTrackKind(asset) !== track.kind) {
+  if (kind !== track.kind) {
     throw new Error("Asset kind does not match track kind");
   }
-
-  const duration = defaultClipDuration(asset);
   const clip: Clip = {
     id: crypto.randomUUID(),
     trackId: track.id,
     assetId: asset.id,
     kind: "media",
-    startTicks: Math.max(0, options?.startTicks ?? 0),
+    startTicks,
     sourceInTicks: 0,
     sourceOutTicks: duration,
     speed: 1,
     // Media default = centred; contain-fit box is applied by the renderer.
     transform: {
       ...DEFAULT_TRANSFORM,
-      x: project.canvas.width / 2,
-      y: project.canvas.height / 2,
+      x: working.canvas.width / 2,
+      y: working.canvas.height / 2,
     },
     volume: 1,
     effects: { ...DEFAULT_CLIP_EFFECTS },
@@ -159,7 +227,7 @@ export function addMediaClip(
     text: null,
   };
 
-  return withUpdatedClips(project, [...project.clips, clip]);
+  return withUpdatedClips(working, [...working.clips, clip]);
 }
 
 export function deleteClips(project: ProjectDocument, clipIds: string[]): ProjectDocument {
@@ -187,6 +255,7 @@ function cloneClipData(clip: Clip): Clip {
     ...clip,
     transform: { ...clip.transform },
     effects: { ...clip.effects },
+    effectKeyframes: cloneEffectKeyframes(clip.effectKeyframes ?? null),
     transitionIn: { ...clip.transitionIn },
     text: clip.text ? { ...clip.text } : null,
     speedRamp: clip.speedRamp
@@ -278,10 +347,15 @@ export function moveClip(
   clipId: string,
   startTicks: Tick,
   trackId?: string,
+  options?: { pruneEmptySource?: boolean },
 ): ProjectDocument {
-  return mapClip(project, clipId, (clip) => {
-    const nextTrackId = trackId ?? clip.trackId;
-    const track = project.tracks.find((t) => t.id === nextTrackId);
+  const source = project.clips.find((c) => c.id === clipId);
+  const sourceTrackId = source?.trackId;
+  const nextTrackId = trackId ?? sourceTrackId;
+
+  let next = mapClip(project, clipId, (clip) => {
+    const destId = trackId ?? clip.trackId;
+    const track = project.tracks.find((t) => t.id === destId);
     if (!track) throw new Error("Unknown trackId");
     if (track.locked) throw new Error("Track is locked");
     if (clip.kind === "text" && track.kind !== "video") {
@@ -295,10 +369,20 @@ export function moveClip(
     }
     return {
       ...clip,
-      trackId: nextTrackId,
+      trackId: destId,
       startTicks: Math.max(0, startTicks),
     };
   });
+
+  if (
+    options?.pruneEmptySource &&
+    sourceTrackId &&
+    nextTrackId &&
+    sourceTrackId !== nextTrackId
+  ) {
+    next = pruneEmptyTrack(next, sourceTrackId);
+  }
+  return next;
 }
 
 export function trimClip(
@@ -351,11 +435,15 @@ export function splitClipAt(
   const rampRight = clip.speedRamp
     ? sliceRamp(clip.speedRamp, splitProgress, 1)
     : null;
+  const timelineSplit = local / duration;
+  const fxLeft = sliceEffectKeyframes(clip.effectKeyframes ?? null, 0, timelineSplit);
+  const fxRight = sliceEffectKeyframes(clip.effectKeyframes ?? null, timelineSplit, 1);
 
   const left: Clip = {
     ...clip,
     sourceOutTicks: splitSource,
     ...(rampSplit ? { speedRamp: rampSplit } : {}),
+    effectKeyframes: fxLeft,
   };
   const right: Clip = {
     ...clip,
@@ -363,6 +451,7 @@ export function splitClipAt(
     startTicks: timelineTicks,
     sourceInTicks: splitSource,
     ...(rampRight ? { speedRamp: rampRight } : {}),
+    effectKeyframes: fxRight,
     // Incoming transition belongs to the cut into this piece — clear by default.
     transitionIn: { ...DEFAULT_CLIP_TRANSITION },
   };
@@ -481,17 +570,31 @@ export function addTextClip(
     text?: Partial<TextStyle>;
   },
 ): ProjectDocument {
-  const track =
-    (options?.trackId
-      ? project.tracks.find((t) => t.id === options.trackId)
-      : undefined) ?? project.tracks.find((t) => t.kind === "video" && !t.locked);
+  let working = project;
+  let track: Track | undefined =
+    options?.trackId != null
+      ? working.tracks.find((t) => t.id === options.trackId)
+      : undefined;
+
+  // Text is an overlay: reuse an empty top lane, never share a V lane with media.
+  if (!options?.trackId) {
+    track = findEmptyTrack(working, "video", "top");
+    if (!track) {
+      const beforeIds = new Set(working.tracks.map((t) => t.id));
+      working = addTrack(working, "video");
+      track = working.tracks.find((t) => !beforeIds.has(t.id));
+    }
+  }
 
   if (!track) throw new Error("No video track for text");
   if (track.locked) throw new Error("Track is locked");
   if (track.kind !== "video") throw new Error("Text clips require a video track");
 
   const duration = Math.max(1, options?.durationTicks ?? 5_000_000);
-  const text = { ...createDefaultTextStyle(), ...options?.text };
+  const text = normalizeTextStyle({
+    ...createDefaultTextStyle(),
+    ...options?.text,
+  });
   const clip: Clip = {
     id: crypto.randomUUID(),
     trackId: track.id,
@@ -503,8 +606,8 @@ export function addTextClip(
     speed: 1,
     transform: {
       ...DEFAULT_TRANSFORM,
-      x: project.canvas.width / 2,
-      y: project.canvas.height / 2,
+      x: working.canvas.width / 2,
+      y: working.canvas.height / 2,
     },
     volume: 1,
     effects: { ...DEFAULT_CLIP_EFFECTS },
@@ -512,7 +615,7 @@ export function addTextClip(
     text,
   };
 
-  return withUpdatedClips(project, [...project.clips, clip]);
+  return withUpdatedClips(working, [...working.clips, clip]);
 }
 
 export function updateClipEffects(
@@ -524,6 +627,123 @@ export function updateClipEffects(
     ...clip,
     effects: normalizeClipEffects({ ...clip.effects, ...effects }),
   }));
+}
+
+/**
+ * Set an Adjustment param. If that param is keyframed, upserts a keyframe at
+ * the playhead; otherwise updates the static `effects` base.
+ */
+export function setEffectParamAtPlayhead(
+  project: ProjectDocument,
+  clipId: string,
+  param: EffectParamKey,
+  value: number,
+  playheadTicks: Tick,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => {
+    const progress = progressFromTicks(
+      clip.startTicks,
+      clipDurationTicks(clip),
+      playheadTicks,
+    );
+    if (paramHasKeyframes(clip.effectKeyframes, param)) {
+      return {
+        ...clip,
+        effectKeyframes: upsertParamKeyframe(
+          clip.effectKeyframes,
+          param,
+          progress,
+          value,
+        ),
+      };
+    }
+    return {
+      ...clip,
+      effects: normalizeClipEffects({
+        ...clip.effects,
+        ...writeBaseParam(clip.effects, param, value),
+      }),
+    };
+  });
+}
+
+/**
+ * CapCut ◇ toggle: add keyframe at playhead (seeded from current value) or
+ * remove one near the playhead.
+ */
+export function toggleEffectKeyframeAtPlayhead(
+  project: ProjectDocument,
+  clipId: string,
+  param: EffectParamKey,
+  playheadTicks: Tick,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => {
+    const progress = progressFromTicks(
+      clip.startTicks,
+      clipDurationTicks(clip),
+      playheadTicks,
+    );
+    const track = getParamTrack(clip.effectKeyframes, param);
+    if (track && findKeyframeNear(track.points, progress)) {
+      return {
+        ...clip,
+        effectKeyframes: removeParamKeyframeNear(
+          clip.effectKeyframes,
+          param,
+          progress,
+        ),
+      };
+    }
+    const resolved = effectsAtProgress(clip.effects, clip.effectKeyframes, progress);
+    const value = readBaseParam(resolved, param);
+    // First keyframe mid-clip: reset base to default so the look applies
+    // *from* this keyframe onward (before = neutral / base default).
+    const isFirstForParam = !track?.points.length;
+    if (isFirstForParam && progress > 0.02) {
+      const defaults = DEFAULT_CLIP_EFFECTS;
+      const neutral =
+        param === "grayscale" ? 0 : (defaults[param] as number);
+      return {
+        ...clip,
+        effects: normalizeClipEffects({
+          ...clip.effects,
+          ...writeBaseParam(clip.effects, param, neutral),
+        }),
+        effectKeyframes: upsertParamKeyframe(
+          clip.effectKeyframes,
+          param,
+          progress,
+          value,
+        ),
+      };
+    }
+    return {
+      ...clip,
+      effectKeyframes: upsertParamKeyframe(
+        clip.effectKeyframes,
+        param,
+        progress,
+        value,
+      ),
+    };
+  });
+}
+
+export function setClipEffectKeyframes(
+  project: ProjectDocument,
+  clipId: string,
+  keyframes: EffectKeyframes | null,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => ({
+    ...clip,
+    effectKeyframes: normalizeEffectKeyframes(keyframes),
+  }));
+}
+
+/** True when the clip has non-default static effects or any effect keyframes. */
+export function clipHasEffectLook(clip: Clip): boolean {
+  if (normalizeEffectKeyframes(clip.effectKeyframes ?? null)) return true;
+  return !effectsAreDefault(normalizeClipEffects(clip.effects));
 }
 
 export function updateClipTransition(
@@ -545,8 +765,10 @@ export function updateCanvas(
   project: ProjectDocument,
   patch: Partial<ProjectDocument["canvas"]>,
 ): ProjectDocument {
-  const width = clampInt(patch.width ?? project.canvas.width, 2, 7680);
-  const height = clampInt(patch.height ?? project.canvas.height, 2, 7680);
+  // Width/height stay even so the canvas (preview) always matches export dims
+  // (H.264/yuv420p requires even sizes; the builders floor odd values).
+  const width = clampInt(patch.width ?? project.canvas.width, 2, 7680) & ~1;
+  const height = clampInt(patch.height ?? project.canvas.height, 2, 7680) & ~1;
   const frameRate = clampNum(patch.frameRate ?? project.canvas.frameRate, 1, 240);
   const backgroundColor =
     typeof patch.backgroundColor === "string" && patch.backgroundColor.length > 0
@@ -575,7 +797,10 @@ export function updateClipText(
 ): ProjectDocument {
   return mapClip(project, clipId, (clip) => {
     if (clip.kind !== "text") throw new Error("Clip is not a text clip");
-    return { ...clip, text };
+    return {
+      ...clip,
+      text: normalizeTextStyle(text),
+    };
   });
 }
 
@@ -614,26 +839,60 @@ export function updateClipSpeed(
   });
 }
 
+/**
+ * Add a track. Default `position: "top"` inserts above existing same-kind
+ * tracks (new overlays appear at the head of the timeline). Use `"bottom"`
+ * when stacking under the current lanes (e.g. move layer down).
+ */
 export function addTrack(
   project: ProjectDocument,
   kind: TrackKind,
-  options?: { name?: string },
+  options?: { name?: string; position?: "top" | "bottom" },
 ): ProjectDocument {
   const sameKind = project.tracks.filter((t) => t.kind === kind);
   const index = sameKind.length + 1;
+  const position = options?.position ?? "top";
+  const sorted = [...project.tracks].sort((a, b) => a.order - b.order);
+
+  let insertOrder: number;
+  if (position === "bottom") {
+    insertOrder = sorted.reduce((max, t) => Math.max(max, t.order), -1) + 1;
+  } else {
+    // Top of same-kind stack (video → very top; audio → above existing audio).
+    const firstSame = sorted.find((t) => t.kind === kind);
+    if (firstSame) {
+      insertOrder = firstSame.order;
+    } else if (kind === "audio") {
+      insertOrder = sorted.reduce((max, t) => Math.max(max, t.order), -1) + 1;
+    } else {
+      insertOrder = sorted[0]?.order ?? 0;
+    }
+  }
+
   const track: Track = {
     id: crypto.randomUUID(),
     kind,
     name: options?.name ?? (kind === "video" ? `V${index}` : `A${index}`),
-    order: project.tracks.reduce((max, t) => Math.max(max, t.order), -1) + 1,
+    order: insertOrder,
     muted: false,
     visible: true,
     locked: false,
     volume: 1,
   };
+
+  const tracks =
+    position === "bottom"
+      ? [...project.tracks, track]
+      : [
+          ...project.tracks.map((t) =>
+            t.order >= insertOrder ? { ...t, order: t.order + 1 } : t,
+          ),
+          track,
+        ];
+
   return {
     ...project,
-    tracks: [...project.tracks, track],
+    tracks,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -763,23 +1022,31 @@ export function moveClipLayer(
     if (idx < sorted.length - 1) {
       const dest = sorted[idx + 1];
       if (dest.locked) throw new Error("Destination track is locked");
-      return moveClip(project, clipId, clip.startTicks, dest.id);
+      return moveClip(project, clipId, clip.startTicks, dest.id, {
+        pruneEmptySource: true,
+      });
     }
-    const next = addTrack(project, kind);
+    const next = addTrack(project, kind, { position: "bottom" });
     const created = next.tracks.find(
       (t) => t.kind === kind && !project.tracks.some((o) => o.id === t.id),
     );
     if (!created) throw new Error("Failed to create track");
-    return moveClip(next, clipId, clip.startTicks, created.id);
+    return moveClip(next, clipId, clip.startTicks, created.id, {
+      pruneEmptySource: true,
+    });
   }
 
   if (idx > 0) {
     const dest = sorted[idx - 1];
     if (dest.locked) throw new Error("Destination track is locked");
-    return moveClip(project, clipId, clip.startTicks, dest.id);
+    return moveClip(project, clipId, clip.startTicks, dest.id, {
+      pruneEmptySource: true,
+    });
   }
   const { project: withTrack, trackId } = insertTrackAbove(project, kind, track.id);
-  return moveClip(withTrack, clipId, clip.startTicks, trackId);
+  return moveClip(withTrack, clipId, clip.startTicks, trackId, {
+    pruneEmptySource: true,
+  });
 }
 
 export function updateTrack(
@@ -957,6 +1224,165 @@ export function setRampPointSpeed(
     );
     return { ...clip, speedRamp: normalizeSpeedRamp(points) ?? ramp };
   });
+}
+
+/**
+ * Move an anchor and/or change its speed in a single pass (same clamping as
+ * `moveRampPoint` + `setRampPointSpeed`). Preferred by drag gestures so one
+ * pointermove produces exactly one project update instead of two.
+ */
+export function updateRampPoint(
+  project: ProjectDocument,
+  clipId: string,
+  pointId: string,
+  patch: { atProgress?: number; speed?: number },
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => {
+    const ramp = normalizeSpeedRamp(clip.speedRamp);
+    if (!ramp) throw new Error("Clip has no speed ramp");
+    const idx = ramp.points.findIndex((p) => p.id === pointId);
+    if (idx < 0) throw new Error("Unknown ramp point");
+    let points = ramp.points;
+    if (patch.atProgress !== undefined) {
+      const lo = idx === 0 ? 0 : points[idx - 1].atProgress + MIN_RAMP_POINT_GAP;
+      const hi =
+        idx === points.length - 1
+          ? 1
+          : points[idx + 1].atProgress - MIN_RAMP_POINT_GAP;
+      const clamped = Math.min(hi, Math.max(lo, patch.atProgress));
+      points = points.map((p) =>
+        p.id === pointId ? { ...p, atProgress: clamped } : p,
+      );
+    }
+    if (patch.speed !== undefined) {
+      points = points.map((p) =>
+        p.id === pointId ? { ...p, speed: clampRampSpeed(patch.speed!) } : p,
+      );
+    }
+    return { ...clip, speedRamp: normalizeSpeedRamp(points) ?? ramp };
+  });
+}
+
+/**
+ * Restore a clip's timeline duration after a ramp edit by trimming /
+ * extending `sourceOutTicks` (the timeline start stays anchored, so the
+ * track never stretches while dragging — Premiere-style).
+ *
+ * Extension is capped at the asset's media end when known; hitting the cap
+ * lets the duration change (unavoidable: no more source to consume).
+ * No-op for text clips, unknown clips, or when already within a tick.
+ */
+export function relockClipDuration(
+  project: ProjectDocument,
+  clipId: string,
+  lockedDurationTicks: Tick,
+): ProjectDocument {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip || clip.kind === "text") return project;
+  if (Math.abs(clipDurationTicks(clip) - lockedDurationTicks) <= 1) {
+    return project;
+  }
+  const profile = getRampProfile(clip.speedRamp);
+  const speed = Number.isFinite(clip.speed) && clip.speed > 0 ? clip.speed : 1;
+  const factor = profile ? profile.durationFactor : 1 / speed;
+  if (!(factor > 0)) return project;
+  const asset =
+    clip.assetId != null
+      ? project.assets.find((a) => a.id === clip.assetId)
+      : undefined;
+  const maxSpan =
+    asset?.durationTicks != null && asset.durationTicks > clip.sourceInTicks
+      ? asset.durationTicks - clip.sourceInTicks
+      : Number.POSITIVE_INFINITY;
+  const span = Math.min(
+    Math.max(1, Math.round(lockedDurationTicks / factor)),
+    maxSpan,
+  );
+  if (span === clip.sourceOutTicks - clip.sourceInTicks) return project;
+  return mapClip(project, clipId, (c) => ({
+    ...c,
+    sourceOutTicks: (c.sourceInTicks + span) as Tick,
+  }));
+}
+
+/**
+ * Drag-style ramp edit that NEVER changes the timeline duration (Premiere
+ * behavior): the patch is applied, then the duration is relocked. When the
+ * relock would hit the media end, the patch is pulled back (bisection
+ * between the current point state and the desired patch) until it fits, so
+ * the point feels "blocked" at the wall instead of stretching the track.
+ *
+ * Returns the project plus whether the patch had to be constrained.
+ */
+export function updateRampPointLocked(
+  project: ProjectDocument,
+  clipId: string,
+  pointId: string,
+  patch: { atProgress?: number; speed?: number },
+  lockedDurationTicks: Tick,
+): { project: ProjectDocument; constrained: boolean } {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip) throw new Error("Unknown clipId");
+  if (clip.kind === "text") throw new Error("Text clips do not support speed ramps");
+  const ramp = normalizeSpeedRamp(clip.speedRamp);
+  if (!ramp) throw new Error("Clip has no speed ramp");
+  const current = ramp.points.find((p) => p.id === pointId);
+  if (!current) throw new Error("Unknown ramp point");
+
+  const fits = (candidate: ProjectDocument): boolean => {
+    const after = candidate.clips.find((c) => c.id === clipId);
+    return (
+      !!after && Math.abs(clipDurationTicks(after) - lockedDurationTicks) <= 1
+    );
+  };
+  const apply = (
+    base: ProjectDocument,
+    atProgress: number,
+    speed: number,
+  ): ProjectDocument =>
+    relockClipDuration(
+      updateRampPoint(base, clipId, pointId, { atProgress, speed }),
+      clipId,
+      lockedDurationTicks,
+    );
+
+  const wantProgress = patch.atProgress ?? current.atProgress;
+  const wantSpeed = patch.speed ?? current.speed;
+  const direct = apply(project, wantProgress, wantSpeed);
+  if (fits(direct)) return { project: direct, constrained: false };
+
+  // Pull the patch back toward the current state until the duration fits.
+  let feasible = 0;
+  let infeasible = 1;
+  for (let i = 0; i < 10; i += 1) {
+    const mid = (feasible + infeasible) / 2;
+    const trial = apply(
+      project,
+      current.atProgress + (wantProgress - current.atProgress) * mid,
+      current.speed + (wantSpeed - current.speed) * mid,
+    );
+    if (fits(trial)) feasible = mid;
+    else infeasible = mid;
+  }
+  if (feasible <= 0) return { project, constrained: true };
+  const progress =
+    current.atProgress + (wantProgress - current.atProgress) * feasible;
+  const speed = current.speed + (wantSpeed - current.speed) * feasible;
+  // Fully blocked (the patch collapses onto the current state) or moving by
+  // an imperceptible epsilon (sub-pixel): return the ORIGINAL project so
+  // zustand skips notifying (no re-render storm, no thumbnail/waveform
+  // recompute while the point sits at the wall).
+  const sameProgress = Math.abs(progress - current.atProgress) < 0.0005;
+  const sameSpeed =
+    Math.abs(speed - current.speed) < Math.abs(current.speed) * 0.002 + 1e-9;
+  if (sameProgress && sameSpeed) {
+    return { project, constrained: true };
+  }
+  const pulled = apply(project, progress, speed);
+  return {
+    project: fits(pulled) ? pulled : project,
+    constrained: feasible < 0.999,
+  };
 }
 
 /**

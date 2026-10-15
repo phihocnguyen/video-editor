@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { ticksToSeconds } from "../../domain";
-import { requestPlay } from "../../lib/playback";
+import { pausePlayback, requestPlay } from "../../lib/playback";
 import {
   GoEndIcon,
   GoStartIcon,
@@ -34,7 +34,6 @@ export function TransportBar() {
   const frameTicks = Math.round(1_000_000 / fps);
 
   const isPlaying = useEditorUiStore((s) => s.isPlaying);
-  const setPlaying = useEditorUiStore((s) => s.setPlaying);
   const setPlayheadTicks = useEditorUiStore((s) => s.setPlayheadTicks);
   const durationTicks = useEditorUiStore((s) => s.durationTicks);
   const playbackRate = useEditorUiStore((s) => s.playbackRate);
@@ -97,7 +96,7 @@ export function TransportBar() {
       : null;
 
   function step(deltaFrames: number) {
-    setPlaying(false);
+    pausePlayback();
     const playheadTicks = useEditorUiStore.getState().playheadTicks;
     setPlayheadTicks(
       Math.max(0, Math.min(durationTicks, playheadTicks + deltaFrames * frameTicks)),
@@ -105,7 +104,7 @@ export function TransportBar() {
   }
 
   function seekRatio(ratio: number) {
-    setPlaying(false);
+    pausePlayback();
     setPlayheadTicks(Math.round(Math.min(1, Math.max(0, ratio)) * durationTicks));
   }
 
@@ -118,7 +117,7 @@ export function TransportBar() {
           style={{ left: 0 }}
           title="Go to start"
           onClick={() => {
-            setPlaying(false);
+            pausePlayback();
             setPlayheadTicks(0);
           }}
         />
@@ -155,7 +154,7 @@ export function TransportBar() {
           style={{ right: 0 }}
           title="Go to end"
           onClick={() => {
-            setPlaying(false);
+            pausePlayback();
             setPlayheadTicks(durationTicks);
           }}
         />
@@ -186,7 +185,7 @@ export function TransportBar() {
             disabled={markInTicks == null}
             onClick={() => {
               if (markInTicks == null) return;
-              setPlaying(false);
+              pausePlayback();
               setPlayheadTicks(markInTicks);
             }}
           >
@@ -203,7 +202,7 @@ export function TransportBar() {
             className={styles.playBtn}
             onClick={() => {
               if (isPlaying) {
-                setPlaying(false);
+                pausePlayback();
               } else {
                 requestPlay();
               }
@@ -234,7 +233,7 @@ export function TransportBar() {
             disabled={markOutTicks == null}
             onClick={() => {
               if (markOutTicks == null) return;
-              setPlaying(false);
+              pausePlayback();
               setPlayheadTicks(markOutTicks);
             }}
           >

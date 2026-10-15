@@ -7,22 +7,30 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   addMediaClip,
   addRampPointAtPlayhead,
   addTrack,
   applySpeedToRange,
+  clipDisplayTitle,
   clipDurationTicks,
+  clipHasEffectLook,
+  clipShortLabel,
   deleteClips,
   enableSpeedRamp,
   getRampProfile,
   hasActiveRamp,
+  hasEffectKeyframes,
   moveClip,
   moveClipLayer,
   moveTrack,
   normalizeClipEffects,
   normalizeClipTransition,
+  normalizeEffectKeyframes,
   projectDurationTicks,
+  pruneEmptyTrack,
+  relockClipDuration,
   removeTrack,
   setClipRamp,
   snapTicks,
@@ -42,7 +50,10 @@ import {
 } from "../../lib/clipClipboard";
 import { resolveMediaUrl } from "../../lib/mediaUrl";
 import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
-import { useEditorUiStore } from "../../stores/editorUiStore";
+import {
+  DEFAULT_TRACK_HEIGHT_PX,
+  useEditorUiStore,
+} from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import {
@@ -61,6 +72,7 @@ import {
   ZoomInIcon,
   ZoomOutIcon,
 } from "../../components/icons";
+import { ClipFilmstrip } from "./ClipFilmstrip";
 import { ClipWaveform } from "./ClipWaveform";
 import { RampEditor } from "./RampEditor";
 import styles from "./TimelinePanel.module.css";
@@ -137,16 +149,24 @@ export function TimelinePanel() {
   const setDurationTicks = useEditorUiStore((s) => s.setDurationTicks);
   const timelineZoom = useEditorUiStore((s) => s.timelineZoom);
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
+  const selectedTrackId = useEditorUiStore((s) => s.selectedTrackId);
+  const trackHeightsPx = useEditorUiStore((s) => s.trackHeightsPx);
   const snapEnabled = useEditorUiStore((s) => s.snapEnabled);
   const setTimelineZoom = useEditorUiStore((s) => s.setTimelineZoom);
   const setPlayheadTicks = useEditorUiStore((s) => s.setPlayheadTicks);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
+  const setSelectedTrackId = useEditorUiStore((s) => s.setSelectedTrackId);
+  const nudgeTrackHeight = useEditorUiStore((s) => s.nudgeTrackHeight);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const setPlaying = useEditorUiStore((s) => s.setPlaying);
   const setScrubbing = useEditorUiStore((s) => s.setScrubbing);
   const setSnapEnabled = useSettingsStore((s) => s.setSnapEnabled);
   const trackLabelWidthPx = useEditorUiStore((s) => s.trackLabelWidthPx);
   const setTrackLabelWidthPx = useEditorUiStore((s) => s.setTrackLabelWidthPx);
+
+  function trackHeight(trackId: string): number {
+    return trackHeightsPx[trackId] ?? DEFAULT_TRACK_HEIGHT_PX;
+  }
 
   // Single selected media clip — target for the speed-ramp overlay/menu.
   const rampTargetClip =
@@ -366,6 +386,7 @@ export function TimelinePanel() {
       event.preventDefault();
       setPlaying(false);
       setSelectedClipIds([clipId]);
+      setSelectedTrackId(trackId);
 
       const clip = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
       if (!clip) return;
@@ -425,11 +446,24 @@ export function TimelinePanel() {
       };
 
       const onUp = () => {
+        const drag = clipDragRef.current;
         clipDragRef.current = null;
         setDraggingClipId(null);
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
+
+        // Dropped onto another track → remove the now-empty origin lane.
+        if (drag && drag.lastTrackId !== drag.originTrackId) {
+          const before = useProjectStore.getState().project;
+          const pruned = pruneEmptyTrack(before, drag.originTrackId);
+          if (pruned !== before) {
+            useProjectStore.getState().setProject(pruned, { dirty: true });
+            if (useEditorUiStore.getState().selectedTrackId === drag.originTrackId) {
+              setSelectedTrackId(drag.lastTrackId);
+            }
+          }
+        }
       };
 
       window.addEventListener("pointermove", onMove);
@@ -439,6 +473,7 @@ export function TimelinePanel() {
     [
       setPlaying,
       setSelectedClipIds,
+      setSelectedTrackId,
       setStatusMessage,
       snapEnabled,
       ticksFromClientX,
@@ -446,6 +481,41 @@ export function TimelinePanel() {
       trackIdFromClientY,
     ],
   );
+
+  // Premiere-style track height: Ctrl+= / Ctrl+- / Ctrl+wheel on selected track.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const trackId = useEditorUiStore.getState().selectedTrackId;
+      if (!trackId) return;
+      const key = e.key;
+      if (key === "=" || key === "+") {
+        e.preventDefault();
+        nudgeTrackHeight(trackId, 12);
+      } else if (key === "-" || key === "_") {
+        e.preventDefault();
+        nudgeTrackHeight(trackId, -12);
+      }
+    }
+
+    function onWheel(e: WheelEvent) {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const trackId = useEditorUiStore.getState().selectedTrackId;
+      if (!trackId) return;
+      // Only when pointer is over the timeline panel.
+      const panel = (e.target as HTMLElement | null)?.closest?.(`.${styles.panel}`);
+      if (!panel) return;
+      e.preventDefault();
+      nudgeTrackHeight(trackId, e.deltaY < 0 ? 12 : -12);
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("wheel", onWheel);
+    };
+  }, [nudgeTrackHeight]);
 
   return (
     <div className={styles.panel}>
@@ -568,10 +638,20 @@ export function TimelinePanel() {
           {tracks.map((track) => (
             <div
               key={track.id}
-              className={styles.label}
+              className={
+                selectedTrackId === track.id
+                  ? `${styles.label} ${styles.labelSelected}`
+                  : styles.label
+              }
+              style={{ height: trackHeight(track.id) }}
+              onClick={(e) => {
+                if ((e.target as HTMLElement).closest("button")) return;
+                setSelectedTrackId(track.id);
+              }}
               onContextMenu={(e) => {
                 e.preventDefault();
                 setClipMenu(null);
+                setSelectedTrackId(track.id);
                 setTrackMenu({
                   trackId: track.id,
                   ...placeCtxMenu(e.clientX, e.clientY),
@@ -689,17 +769,23 @@ export function TimelinePanel() {
 
           {tracks.map((track) => {
             const trackClips = clips.filter((c) => c.trackId === track.id);
+            const h = trackHeight(track.id);
             return (
               <div
                 key={track.id}
-                className={styles.lane}
+                className={
+                  selectedTrackId === track.id
+                    ? `${styles.lane} ${styles.laneSelected}`
+                    : styles.lane
+                }
                 data-kind={track.kind}
                 data-track-id={track.id}
-                style={{ width: laneWidth }}
+                style={{ width: laneWidth, height: h }}
                 onPointerDown={(e) => {
                   if (e.button !== 0) return;
                   if ((e.target as HTMLElement).closest(`.${styles.clip}`)) return;
                   e.preventDefault();
+                  setSelectedTrackId(track.id);
                   beginScrub(e.clientX);
                 }}
                 onDragOver={(e) => e.preventDefault()}
@@ -712,6 +798,7 @@ export function TimelinePanel() {
                     commitProjectChange((p) =>
                       addMediaClip(p, assetId, { trackId: track.id, startTicks }),
                     );
+                    setSelectedTrackId(track.id);
                     setStatusMessage("Clip dropped on timeline");
                   } catch {
                     setStatusMessage("Drop failed — check track type");
@@ -728,10 +815,8 @@ export function TimelinePanel() {
                   const asset = assets.find((a) => a.id === clip.assetId);
                   const selected = selectedClipIds.includes(clip.id);
                   const dragging = draggingClipId === clip.id;
-                  const label =
-                    clip.kind === "text"
-                      ? clip.text?.content || "Text"
-                      : asset?.name ?? "Clip";
+                  const label = clipShortLabel(project, clip, asset);
+                  const labelTitle = clipDisplayTitle(project, clip, asset);
                   const tin = normalizeClipTransition(clip.transitionIn);
                   const prev = clipIndex > 0 ? ordered[clipIndex - 1] : null;
                   const showTx =
@@ -822,8 +907,24 @@ export function TimelinePanel() {
                         setSelectedClipIds(ids);
                         setClipMenu(placeCtxMenu(e.clientX, e.clientY));
                       }}
-                      title={label}
+                      title={labelTitle}
                     >
+                      {(() => {
+                        const showFilmstrip =
+                          clip.kind === "media" &&
+                          track.kind === "video" &&
+                          (asset?.kind === "video" || asset?.kind === "image") &&
+                          mediaUrl != null;
+                        if (!showFilmstrip || !asset || !mediaUrl) return null;
+                        return (
+                          <ClipFilmstrip
+                            clip={clip}
+                            asset={asset}
+                            mediaUrl={mediaUrl}
+                            widthPx={clipWidthPx}
+                          />
+                        );
+                      })()}
                       {showWaveform && asset && mediaUrl ? (
                         <ClipWaveform
                           cacheKey={asset.id}
@@ -834,11 +935,12 @@ export function TimelinePanel() {
                           heightPx={40}
                         />
                       ) : null}
-                      {selected && hasActiveRamp(clip.speedRamp) ? (
+                      {hasActiveRamp(clip.speedRamp) ? (
                         <RampEditor
                           clip={clip}
                           widthPx={clipWidthPx}
                           heightPx={42}
+                          interactive={selected}
                         />
                       ) : null}
                       {(() => {
@@ -1019,6 +1121,67 @@ export function TimelinePanel() {
                         </>
                       ) : null}
                       <span className={styles.clipLabel}>{label}</span>
+                      {clip.kind === "media" && clipHasEffectLook(clip) ? (
+                        <span
+                          className={`${styles.clipBadge} ${styles.clipFxBadge}`}
+                          title={
+                            hasEffectKeyframes(clip.effectKeyframes)
+                              ? "Effects + keyframes"
+                              : "Effects applied"
+                          }
+                        >
+                          FX
+                        </span>
+                      ) : null}
+                      {clip.kind === "media" &&
+                      hasEffectKeyframes(clip.effectKeyframes)
+                        ? (() => {
+                            const kf = normalizeEffectKeyframes(clip.effectKeyframes);
+                            if (!kf) return null;
+                            const marks = new Map<
+                              number,
+                              { progress: number; params: string[] }
+                            >();
+                            for (const track of kf.tracks) {
+                              for (const p of track.points) {
+                                const key = Math.round(p.atProgress * 1000);
+                                const existing = marks.get(key);
+                                if (existing) {
+                                  if (!existing.params.includes(track.param)) {
+                                    existing.params.push(track.param);
+                                  }
+                                } else {
+                                  marks.set(key, {
+                                    progress: p.atProgress,
+                                    params: [track.param],
+                                  });
+                                }
+                              }
+                            }
+                            const durTicks = clipDurationTicks(clip);
+                            return [...marks.entries()].map(([key, mark]) => (
+                              <button
+                                key={`${clip.id}-ek-${key}`}
+                                type="button"
+                                className={styles.effectKeyframeMark}
+                                style={{ left: `${mark.progress * 100}%` }}
+                                title={`Keyframe · ${mark.params.join(", ")} — click to edit`}
+                                aria-label={`Effect keyframe at ${(mark.progress * 100).toFixed(0)}%`}
+                                onPointerDown={(e) => {
+                                  e.stopPropagation();
+                                  e.preventDefault();
+                                  const ticks =
+                                    clip.startTicks +
+                                    Math.round(mark.progress * durTicks);
+                                  useEditorUiStore.getState().setPlayheadTicks(ticks);
+                                  useEditorUiStore
+                                    .getState()
+                                    .setSelectedClipIds([clip.id]);
+                                }}
+                              />
+                            ));
+                          })()
+                        : null}
                       {clip.kind === "media" && Math.abs(clip.speed - 1) > 0.001 ? (
                         <span
                           className={styles.clipBadge}
@@ -1048,14 +1211,15 @@ export function TimelinePanel() {
         </div>
       </div>
 
-      {clipMenu ? (
-        <div
-          ref={clipMenuRef}
-          className={styles.ctxMenu}
-          style={{ left: clipMenu.x, top: clipMenu.y, visibility: "hidden" }}
-          role="menu"
-          onPointerDown={(e) => e.stopPropagation()}
-        >
+      {clipMenu
+        ? createPortal(
+            <div
+              ref={clipMenuRef}
+              className={styles.ctxMenu}
+              style={{ left: clipMenu.x, top: clipMenu.y, visibility: "hidden" }}
+              role="menu"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
           <button
             type="button"
             role="menuitem"
@@ -1209,24 +1373,41 @@ export function TimelinePanel() {
               if (!id) return;
               try {
                 let added = false;
+                let locked = 0;
                 commitProjectChange((p) => {
                   const clip = p.clips.find((c) => c.id === id);
                   const already = hasActiveRamp(clip?.speedRamp);
                   // First time: 2 points centered on playhead. Otherwise clear.
                   if (already) return setClipRamp(p, id, null);
                   added = true;
-                  return enableSpeedRamp(
+                  if (!clip) throw new Error("Unknown clipId");
+                  locked = clipDurationTicks(clip);
+                  const enabled = enableSpeedRamp(
                     p,
                     id,
                     useEditorUiStore.getState().playheadTicks,
                     1,
                     2,
                   );
+                  // Enabling must not stretch the track either.
+                  return relockClipDuration(enabled, id, locked);
                 });
+                const clamped =
+                  added &&
+                  (() => {
+                    const after = useProjectStore
+                      .getState()
+                      .project.clips.find((c) => c.id === id);
+                    return (
+                      !!after && Math.abs(clipDurationTicks(after) - locked) > 1
+                    );
+                  })();
                 setStatusMessage(
-                  added
-                    ? "Speed ramp at playhead — drag points to move / change speed"
-                    : "Speed ramp removed",
+                  clamped
+                    ? "Reached end of media — clip shortened"
+                    : added
+                      ? "Speed ramp at playhead — drag points to move / change speed"
+                      : "Speed ramp removed",
                 );
               } catch (error) {
                 setStatusMessage(
@@ -1246,19 +1427,30 @@ export function TimelinePanel() {
               const id = useEditorUiStore.getState().selectedClipIds[0];
               if (!id) return;
               try {
-                commitProjectChange(
-                  (p) =>
-                    addRampPointAtPlayhead(
-                      p,
-                      id,
-                      useEditorUiStore.getState().playheadTicks,
-                      getRampProfile(
-                        useProjectStore.getState().project.clips.find((c) => c.id === id)
-                          ?.speedRamp,
-                      )?.speedAtProgress(0.5) ?? 1,
-                    ).project,
+                let locked = 0;
+                commitProjectChange((p) => {
+                  const clip = p.clips.find((c) => c.id === id);
+                  if (!clip) throw new Error("Unknown clipId");
+                  locked = clipDurationTicks(clip);
+                  const addedRamp = addRampPointAtPlayhead(
+                    p,
+                    id,
+                    useEditorUiStore.getState().playheadTicks,
+                    getRampProfile(
+                      useProjectStore.getState().project.clips.find((c) => c.id === id)
+                        ?.speedRamp,
+                    )?.speedAtProgress(0.5) ?? 1,
+                  ).project;
+                  return relockClipDuration(addedRamp, id, locked);
+                });
+                const after = useProjectStore
+                  .getState()
+                  .project.clips.find((c) => c.id === id);
+                setStatusMessage(
+                  after && Math.abs(clipDurationTicks(after) - locked) > 1
+                    ? "Reached end of media — clip shortened"
+                    : "Ramp point added — drag vertically to change speed",
                 );
-                setStatusMessage("Ramp point added — drag vertically to change speed");
               } catch (error) {
                 setStatusMessage(
                   error instanceof Error ? error.message : "Add point failed",
@@ -1297,87 +1489,98 @@ export function TimelinePanel() {
             Delete
             <kbd className={styles.ctxKbd}>Del</kbd>
           </button>
-        </div>
-      ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
 
-      {trackMenu ? (
-        <div
-          ref={trackMenuRef}
-          className={styles.ctxMenu}
-          style={{ left: trackMenu.x, top: trackMenu.y, visibility: "hidden" }}
-          role="menu"
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!clipClipboard?.length}
-            onClick={() => {
-              pasteClipboardClips();
-              setTrackMenu(null);
-            }}
-          >
-            Paste
-            <kbd className={styles.ctxKbd}>Ctrl+V</kbd>
-          </button>
-          <div className={styles.ctxSep} />
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              try {
-                commitProjectChange((p) => moveTrack(p, trackMenu.trackId, "up"));
-                setStatusMessage("Track moved up");
-              } catch (error) {
-                setStatusMessage(
-                  error instanceof Error ? error.message : "Cannot move",
-                );
-              }
-              setTrackMenu(null);
-            }}
-          >
-            Move up
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              try {
-                commitProjectChange((p) => moveTrack(p, trackMenu.trackId, "down"));
-                setStatusMessage("Track moved down");
-              } catch (error) {
-                setStatusMessage(
-                  error instanceof Error ? error.message : "Cannot move",
-                );
-              }
-              setTrackMenu(null);
-            }}
-          >
-            Move down
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className={styles.ctxDanger}
-            onClick={() => {
-              try {
-                const name =
-                  project.tracks.find((t) => t.id === trackMenu.trackId)?.name ??
-                  "track";
-                commitProjectChange((p) => removeTrack(p, trackMenu.trackId));
-                setStatusMessage(`Deleted ${name}`);
-              } catch (error) {
-                setStatusMessage(
-                  error instanceof Error ? error.message : "Cannot delete track",
-                );
-              }
-              setTrackMenu(null);
-            }}
-          >
-            Delete track
-          </button>
-        </div>
-      ) : null}
+      {trackMenu
+        ? createPortal(
+            <div
+              ref={trackMenuRef}
+              className={styles.ctxMenu}
+              style={{ left: trackMenu.x, top: trackMenu.y, visibility: "hidden" }}
+              role="menu"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!clipClipboard?.length}
+                onClick={() => {
+                  pasteClipboardClips();
+                  setTrackMenu(null);
+                }}
+              >
+                Paste
+                <kbd className={styles.ctxKbd}>Ctrl+V</kbd>
+              </button>
+              <div className={styles.ctxSep} />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  try {
+                    commitProjectChange((p) =>
+                      moveTrack(p, trackMenu.trackId, "up"),
+                    );
+                    setStatusMessage("Track moved up");
+                  } catch (error) {
+                    setStatusMessage(
+                      error instanceof Error ? error.message : "Cannot move",
+                    );
+                  }
+                  setTrackMenu(null);
+                }}
+              >
+                Move up
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  try {
+                    commitProjectChange((p) =>
+                      moveTrack(p, trackMenu.trackId, "down"),
+                    );
+                    setStatusMessage("Track moved down");
+                  } catch (error) {
+                    setStatusMessage(
+                      error instanceof Error ? error.message : "Cannot move",
+                    );
+                  }
+                  setTrackMenu(null);
+                }}
+              >
+                Move down
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className={styles.ctxDanger}
+                onClick={() => {
+                  try {
+                    const name =
+                      project.tracks.find((t) => t.id === trackMenu.trackId)
+                        ?.name ?? "track";
+                    commitProjectChange((p) => removeTrack(p, trackMenu.trackId));
+                    setStatusMessage(`Deleted ${name}`);
+                  } catch (error) {
+                    setStatusMessage(
+                      error instanceof Error
+                        ? error.message
+                        : "Cannot delete track",
+                    );
+                  }
+                  setTrackMenu(null);
+                }}
+              >
+                Delete track
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

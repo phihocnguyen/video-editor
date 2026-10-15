@@ -2,6 +2,9 @@
 @layer theme, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
 
 /* =========================================================================
    Cutline — design tokens
@@ -44,6 +47,26 @@
   --danger-soft: rgba(255, 92, 108, 0.14);
   --warn: #f0b429;
   --ok: #34c77b;
+
+  /* shadcn/ui tokens (mapped to Cutline dark) */
+  --background: #0d0d10;
+  --foreground: #ececf1;
+  --card: #141418;
+  --card-foreground: #ececf1;
+  --popover: #1c1c22;
+  --popover-foreground: #ececf1;
+  --primary: #3ea6ff;
+  --primary-foreground: #04121f;
+  --secondary: #1c1c22;
+  --secondary-foreground: #ececf1;
+  --muted: #1c1c22;
+  --muted-foreground: #86868f;
+  --accent-ui: #23232a;
+  --accent-ui-foreground: #ececf1;
+  --destructive: #ff5c6c;
+  --border-ui: #24242b;
+  --input: #24242b;
+  --ring: #3ea6ff;
 
   /* Track hues */
   --track-video: #3f8cff;
@@ -96,6 +119,27 @@
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --dur-fast: 110ms;
   --dur: 180ms;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent-ui);
+  --color-accent-foreground: var(--accent-ui-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border-ui);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
 }
 
 *,

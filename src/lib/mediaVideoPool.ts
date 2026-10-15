@@ -45,6 +45,19 @@ export function acquireMediaVideo(url: string, clipId: string): HTMLVideoElement
   return video;
 }
 
+/** Strip host geometry that may have been baked onto the element mid-remount. */
+function clearVideoLayoutStyles(video: HTMLVideoElement) {
+  video.style.zIndex = "";
+  video.style.opacity = "";
+  video.style.filter = "";
+  video.style.clipPath = "";
+  video.style.left = "";
+  video.style.top = "";
+  video.style.width = "";
+  video.style.height = "";
+  video.style.transform = "";
+}
+
 /** Return a clip's video to the idle pool (keeps decoder warm). */
 export function releaseMediaVideo(clipId: string): void {
   const entry = inUseByClip.get(clipId);
@@ -58,6 +71,7 @@ export function releaseMediaVideo(clipId: string): void {
   if (entry.video.parentElement) {
     entry.video.parentElement.removeChild(entry.video);
   }
+  clearVideoLayoutStyles(entry.video);
   const idle = idleByUrl.get(entry.url) ?? [];
   idle.push(entry.video);
   idleByUrl.set(entry.url, idle);

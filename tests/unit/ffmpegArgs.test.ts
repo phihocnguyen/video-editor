@@ -10,7 +10,12 @@ import {
 import { clipSetpts } from "../../src/domain/ffmpegArgs";
 import { DEFAULT_CLIP_EFFECTS } from "../../src/domain/effects";
 import type { RenderClipPlan } from "../../src/domain/renderPlan";
-import { createSpeedPoint, type SpeedRamp } from "../../src/domain/speedRamp";
+import {
+  createSpeedPoint,
+  rampOutputDurationSec,
+  rampTimeMapSegments,
+  type SpeedRamp,
+} from "../../src/domain/speedRamp";
 
 function clipPlan(overrides: Partial<RenderClipPlan> = {}): RenderClipPlan {
   return {
@@ -29,6 +34,7 @@ function clipPlan(overrides: Partial<RenderClipPlan> = {}): RenderClipPlan {
     includeAudio: true,
     kind: "video",
     effects: { ...DEFAULT_CLIP_EFFECTS },
+    effectKeyframes: null,
     transitionIn: { type: "none", durationTicks: 0 } as RenderClipPlan["transitionIn"],
     transitionOverlapSec: 0,
     transform: {
@@ -79,6 +85,33 @@ describe("buildFfmpegArgs", () => {
     expect(built.tempOutput).toMatch(/\.tmp\.mp4$/i);
   });
 
+  it("forces canvas fps and sharp placement (no double resample)", () => {
+    let project = createEmptyProject();
+    const asset: MediaAsset = {
+      id: "a1",
+      kind: "video",
+      path: "C:/media/clip.mp4",
+      name: "clip.mp4",
+      durationTicks: 3_000_000,
+      width: 1280,
+      height: 720,
+      frameRate: 30,
+      hasAudio: true,
+      missing: false,
+    };
+    project = { ...project, assets: [asset] };
+    project = addMediaClip(project, "a1", { startTicks: 0 });
+    const plan = buildRenderPlan(project, "720", "draft");
+    const built = buildFfmpegArgs(plan, "C:/out/export.mp4", {
+      fileExists: () => true,
+    });
+    const filter = built.args[built.args.indexOf("-filter_complex") + 1];
+    // CFR at canvas fps, matching preview motion.
+    expect(filter).toContain("fps=30[outv]");
+    expect(filter).toContain("flags=lanczos");
+    expect(filter).toContain("setsar=1");
+  });
+
   it("quotes Windows fontfile paths for drawtext", () => {
     let project = createEmptyProject();
     project = addTextClip(project, { text: { content: "Hi" } });
@@ -90,6 +123,67 @@ describe("buildFfmpegArgs", () => {
     const filter = built.args[built.args.indexOf("-filter_complex") + 1];
     expect(filter).toContain("drawtext=text='Hi'");
     expect(filter).toContain("fontfile='C\\:/Windows/Fonts/arial.ttf'");
+  });
+
+  it("emits drawtext box for Instagram-style text background", () => {
+    let project = createEmptyProject();
+    project = addTextClip(project, {
+      text: {
+        content: "Story",
+        backgroundColor: "#FFFFFF",
+        backgroundPadding: 14,
+      },
+    });
+    const plan = buildRenderPlan(project, "source", "draft");
+    expect(plan.texts[0]?.backgroundColor).toBe("#FFFFFF");
+    const built = buildFfmpegArgs(plan, "C:/out/export.mp4", {
+      fileExists: () => true,
+    });
+    const filter = built.args[built.args.indexOf("-filter_complex") + 1];
+    expect(filter).toContain("box=1");
+    expect(filter).toContain("boxcolor=");
+    expect(filter).toContain("boxborderw=");
+  });
+
+  it("paints lower-order tracks above higher-order ones (preview parity)", () => {
+    // Preview: layerStackZ gives lower track.order the higher z (on top).
+    // Export must paint in the same order: high order first (behind).
+    let project = createEmptyProject();
+    const v1 = project.tracks.find((t) => t.kind === "video")!;
+    const overlayTrack = {
+      id: "vt",
+      kind: "video" as const,
+      name: "V0",
+      order: -1,
+      muted: false,
+      visible: true,
+      locked: false,
+      volume: 1,
+    };
+    project = { ...project, tracks: [...project.tracks, overlayTrack] };
+    const image: MediaAsset = {
+      id: "a1",
+      kind: "image",
+      path: "C:/media/pic.png",
+      name: "pic.png",
+      durationTicks: 4_000_000,
+      width: 640,
+      height: 480,
+      frameRate: null,
+      hasAudio: false,
+      missing: false,
+    };
+    project = { ...project, assets: [image] };
+    project = addMediaClip(project, "a1", { trackId: "vt", startTicks: 0 });
+    project = addTextClip(project, { trackId: v1.id, startTicks: 0 });
+    const plan = buildRenderPlan(project, "source", "draft");
+    const built = buildFfmpegArgs(plan, "C:/out/export.mp4", {
+      fileExists: () => true,
+    });
+    const filter = built.args[built.args.indexOf("-filter_complex") + 1];
+    // Text (order 0) is painted before the top-track media overlay (order -1).
+    expect(filter).toContain("drawtext=");
+    expect(filter.indexOf("drawtext=")).toBeLessThan(filter.lastIndexOf("overlay="));
   });
 
   it("emits a piecewise-quadratic setpts + segmented atempo for a ramped clip", () => {
@@ -124,8 +218,10 @@ describe("buildFfmpegArgs", () => {
       fileExists: () => true,
     });
     const filter = built.args[built.args.indexOf("-filter_complex") + 1];
-    expect(filter).toContain("sqrt(max(0\\,");
-    expect(filter).toContain("if(gte(t\\,");
+    // Forward map u→t with valid setpts variables (lowercase t would not parse).
+    expect(filter).toContain("setpts=(if(gte(((PTS-STARTPTS)*TB)\\,");
+    expect(filter).toContain(")/TB");
+    expect(filter).not.toContain("sqrt(");
     // Audio ramp is approximated with sliced atempo segments joined by concat.
     expect(filter).toContain("concat=n=");
     expect(filter).toContain("atempo=");
@@ -152,28 +248,35 @@ describe("clipSetpts", () => {
       }),
     );
     expect(expr.startsWith("setpts=")).toBe(true);
-    expect(expr).toContain("if(gte(t\\,");
-    expect(expr).toContain("sqrt(");
+    expect(expr).toContain("if(gte(((PTS-STARTPTS)*TB)\\,");
     expect(expr).toContain("STARTPTS");
+    expect(expr).toContain(")/TB");
+    // No quadratic inverse: setpts maps input u → output t (forward only).
+    expect(expr).not.toContain("sqrt(");
+    expect(expr).not.toContain("gte(t\\,");
   });
 
   it("maps the last ramp segment back to the full source span", () => {
-    // Solve the innermost quadratic inverse numerically for a known t and verify
-    // the reconstructed source offset lands inside [0, span].
-    const expr = clipSetpts(
-      clipPlan({
-        sourceOutSec: 2,
-        speedRamp: ramp([
-          { atProgress: 0, speed: 2 },
-          { atProgress: 1, speed: 0.5 },
-        ]),
-      }),
-    );
+    // The forward map must reproduce the analytic output duration: evaluating
+    // the last segment at u = span gives T(span) ≈ ramp duration.
+    const span = 2;
+    const r = ramp([
+      { atProgress: 0, speed: 2 },
+      { atProgress: 1, speed: 0.5 },
+    ]);
+    const expr = clipSetpts(clipPlan({ sourceOutSec: span, speedRamp: r }));
     const numbers = expr.match(/-?\d+(\.\d+)?/g)?.map(Number) ?? [];
     expect(numbers.length).toBeGreaterThan(4);
     for (const value of numbers) {
       expect(Number.isFinite(value)).toBe(true);
     }
+    // tStart of the final segment plus its full quadratic step ≈ duration.
+    const segs = rampTimeMapSegments(r, span, 32);
+    const last = segs[segs.length - 1]!;
+    const du = last.uEnd - last.uStart;
+    const approx = last.tStart + last.a * du + last.b * du * du;
+    expect(approx).toBeCloseTo(rampOutputDurationSec(r, span), 2);
+    expect(expr).toContain(`if(gte(((PTS-STARTPTS)*TB)\\,${last.uStart}`);
   });
 });
 

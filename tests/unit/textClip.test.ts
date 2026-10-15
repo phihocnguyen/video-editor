@@ -2,14 +2,16 @@ import { describe, expect, it } from "vitest";
 import { addTextClip, createEmptyProject, updateClipText } from "../../src/domain";
 
 describe("text clips", () => {
-  it("adds a text clip onto a video track", () => {
+  it("adds a text clip onto an empty video track", () => {
     const project = createEmptyProject();
+    const v1 = project.tracks.find((t) => t.kind === "video")!;
     const next = addTextClip(project, {
       startTicks: 1_000_000,
       text: { content: "Hello" },
     });
     expect(next.clips).toHaveLength(1);
     expect(next.clips[0].kind).toBe("text");
+    expect(next.clips[0].trackId).toBe(v1.id);
     expect(next.clips[0].text?.content).toBe("Hello");
     expect(next.clips[0].text?.fontPath).toBeNull();
   });

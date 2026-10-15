@@ -2,7 +2,10 @@ import { useEffect, useRef } from "react";
 import {
   clipDurationTicks,
   cssFilterFromEffects,
+  effectsAtProgress,
   fadeOpacityMultiplier,
+  strobeIsFlashFrame,
+  vignetteOverlayOpacity,
   findNextClipOnTrack,
   getRampProfile,
   hasActiveRamp,
@@ -16,8 +19,7 @@ import {
   timelineOffsetForSourceOffset,
   transitionAwareMediaTimeSec,
   transitionHalfTicks,
-  transitionOpacityPair,
-  transitionPreview,
+  transitionVisualPair,
   type Clip,
   type MediaAsset,
   type ProjectDocument,
@@ -60,16 +62,45 @@ function inTransitionWindow(
   return playheadTicks >= cut - half && playheadTicks <= cut + half;
 }
 
+/**
+ * True when this clip is the outgoing side being held past its nominal end
+ * inside the next clip's centered transition window. Its preview frame must
+ * freeze (hold last frame) — letting the decoder keep playing would drift
+ * past `sourceOut` and force a yank-back seek every ~120ms (visible stutter).
+ */
+function isOutgoingHoldClip(
+  clip: Clip,
+  playheadTicks: number,
+  project: ProjectDocument,
+): boolean {
+  const end = clip.startTicks + clipDurationTicks(clip);
+  if (playheadTicks < end) return false;
+  const next = findNextClipOnTrack(project, clip.id);
+  if (!next) return false;
+  const tin = normalizeClipTransition(next.transitionIn);
+  if (tin.type === "none") return false;
+  const half = transitionHalfTicks(tin);
+  const cut = next.startTicks;
+  return playheadTicks >= cut - half && playheadTicks <= cut + half;
+}
+
 function transitionVisualMul(
   project: ProjectDocument,
   clip: Clip,
   playheadTicks: number,
-): number {
+): { opacity: number; clipPath?: string; offsetXPct: number; offsetYPct: number } {
   let opacityMul = 1;
+  let clipPath: string | undefined;
+  let offsetXPct = 0;
+  let offsetYPct = 0;
 
   const incoming = incomingTransitionProgress(clip, playheadTicks);
   if (incoming) {
-    opacityMul *= transitionPreview(incoming.transition.type, incoming.progress).opacity;
+    const visual = transitionVisualPair(incoming.transition.type, incoming.progress);
+    opacityMul *= visual.curr.opacity;
+    if (visual.curr.clipPath) clipPath = visual.curr.clipPath;
+    offsetXPct += visual.curr.offsetXPct;
+    offsetYPct += visual.curr.offsetYPct;
   }
 
   const next = findNextClipOnTrack(project, clip.id);
@@ -82,13 +113,16 @@ function transitionVisualMul(
       const windowEnd = cut + half;
       if (playheadTicks >= windowStart && playheadTicks <= windowEnd) {
         const progress = (playheadTicks - windowStart) / tin.durationTicks;
-        const pair = transitionOpacityPair(tin.type, progress);
-        opacityMul *= pair.prev;
+        const visual = transitionVisualPair(tin.type, progress);
+        opacityMul *= visual.prev.opacity;
+        if (visual.prev.clipPath) clipPath = visual.prev.clipPath;
+        offsetXPct += visual.prev.offsetXPct;
+        offsetYPct += visual.prev.offsetYPct;
       }
     }
   }
 
-  return opacityMul;
+  return { opacity: opacityMul, clipPath, offsetXPct, offsetYPct };
 }
 
 /** Later clips on the same track stack above earlier ones during overlap. */
@@ -100,11 +134,16 @@ interface LayerStyle {
   zIndex: number;
   opacity: number;
   filter?: string;
+  clipPath?: string;
   /** Geometry box in percentages of the canvas. */
   leftPct: number;
   topPct: number;
   widthPct: number;
   heightPct: number;
+  /** 0 = no vignette overlay; otherwise dark corner veil opacity. */
+  vignetteOpacity: number;
+  /** Solid flash colour for Vegas-style strobe frame, or null. */
+  strobeFlash: string | null;
   /** CSS transform for the whole layer (centring + scale + rotation). */
   transform: string;
 }
@@ -118,11 +157,18 @@ function layerVisualStyle(
   playheadTicks: number,
   zIndex: number,
 ): LayerStyle {
-  const effects = normalizeClipEffects(clip.effects);
-  const durationSec = ticksToSeconds(clipDurationTicks(clip));
+  const durationTicks = clipDurationTicks(clip);
+  const durationSec = ticksToSeconds(durationTicks);
   const localSec = Math.max(0, ticksToSeconds(playheadTicks - clip.startTicks));
+  const progress =
+    durationTicks > 0
+      ? Math.min(1, Math.max(0, (playheadTicks - clip.startTicks) / durationTicks))
+      : 0;
+  const effects = effectsAtProgress(clip.effects, clip.effectKeyframes, progress);
   const fadeMul = fadeOpacityMultiplier(effects, localSec, durationSec);
-  const opacityMul = transitionVisualMul(project, clip, playheadTicks);
+  const flash = strobeIsFlashFrame(effects, localSec, project.canvas.frameRate);
+  const txVisual = transitionVisualMul(project, clip, playheadTicks);
+  const opacityMul = txVisual.opacity;
   const filter = cssFilterFromEffects(effects) || undefined;
 
   const geom = clipMediaGeometry(clip, canvasWidth, canvasHeight, asset);
@@ -136,26 +182,80 @@ function layerVisualStyle(
     zIndex,
     opacity: clip.transform.opacity * fadeMul * opacityMul,
     filter,
-    leftPct: (geom.centerX / Math.max(1, canvasWidth)) * 100,
-    topPct: (geom.centerY / Math.max(1, canvasHeight)) * 100,
+    clipPath: txVisual.clipPath,
+    leftPct: (geom.centerX / Math.max(1, canvasWidth)) * 100 + txVisual.offsetXPct,
+    topPct: (geom.centerY / Math.max(1, canvasHeight)) * 100 + txVisual.offsetYPct,
     widthPct: (geom.fitWidth / Math.max(1, canvasWidth)) * 100,
     heightPct: (geom.fitHeight / Math.max(1, canvasHeight)) * 100,
+    vignetteOpacity: vignetteOverlayOpacity(effects),
+    strobeFlash: flash ? effects.strobeColor : null,
     transform: parts.join(" "),
   };
+}
+
+function syncStrobeFlash(host: HTMLElement, color: string | null) {
+  let flash = host.querySelector("[data-strobe]") as HTMLElement | null;
+  if (!color) {
+    flash?.remove();
+    return;
+  }
+  if (!flash) {
+    flash = document.createElement("div");
+    flash.setAttribute("data-strobe", "");
+    flash.className = styles.strobeFlash;
+    host.appendChild(flash);
+  }
+  flash.style.background = color;
+}
+
+function syncVignetteOverlay(host: HTMLElement, opacity: number) {
+  let overlay = host.querySelector("[data-vignette]") as HTMLElement | null;
+  if (opacity < 0.01) {
+    overlay?.remove();
+    return;
+  }
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.setAttribute("data-vignette", "");
+    overlay.className = styles.vignetteOverlay;
+    host.appendChild(overlay);
+  }
+  overlay.style.opacity = String(opacity);
 }
 
 type StyleCache = {
   zIndex: number;
   opacity: number;
   filter: string;
+  clipPath: string;
   transform: string;
   left: string;
   top: string;
   width: string;
   height: string;
+  vignetteOpacity: number;
+  strobeFlash: string | null;
 };
 
 const styleCache = new WeakMap<HTMLElement, StyleCache>();
+
+/**
+ * Pooled <video> elements must never carry host geometry (width/height/%
+ * transform). During transition remounts the element can briefly be orphaned;
+ * applyMediaStyle used to paint those styles onto the video itself, and they
+ * survived into the next host — looking like a permanent shrink on replay.
+ */
+function clearPooledVideoLayoutStyles(video: HTMLElement) {
+  video.style.zIndex = "";
+  video.style.opacity = "";
+  video.style.filter = "";
+  video.style.clipPath = "";
+  video.style.left = "";
+  video.style.top = "";
+  video.style.width = "";
+  video.style.height = "";
+  video.style.transform = "";
+}
 
 function applyMediaStyle(
   el: HTMLElement,
@@ -176,26 +276,40 @@ function applyMediaStyle(
     playheadTicks,
     zIndex,
   );
-  // Pooled videos sit inside a host div — style the host so geometry/stacking work.
-  const target =
-    el.parentElement?.hasAttribute("data-layer-host") ? el.parentElement : el;
+  // Geometry always lives on the layer host. Never fall back to styling the
+  // pooled <video> — orphan frames during remount would bake % size onto it.
+  const host = el.parentElement?.hasAttribute("data-layer-host")
+    ? el.parentElement
+    : el.hasAttribute("data-layer-host")
+      ? el
+      : null;
+  if (!host) return;
+  if (el !== host) clearPooledVideoLayoutStyles(el);
+
+  const target = host;
   const filter = style.filter ?? "";
+  const clipPath = style.clipPath ?? "none";
   const left = `${style.leftPct}%`;
   const top = `${style.topPct}%`;
   const width = `${style.widthPct}%`;
   const height = `${style.heightPct}%`;
   const transform = style.transform;
+  const vignetteOpacity = style.vignetteOpacity;
+  const strobeFlash = style.strobeFlash;
   const prev = styleCache.get(target);
   if (
     prev &&
     prev.zIndex === style.zIndex &&
     prev.opacity === style.opacity &&
     prev.filter === filter &&
+    prev.clipPath === clipPath &&
     prev.transform === transform &&
     prev.left === left &&
     prev.top === top &&
     prev.width === width &&
-    prev.height === height
+    prev.height === height &&
+    prev.vignetteOpacity === vignetteOpacity &&
+    prev.strobeFlash === strobeFlash
   ) {
     return;
   }
@@ -203,20 +317,26 @@ function applyMediaStyle(
     zIndex: style.zIndex,
     opacity: style.opacity,
     filter,
+    clipPath,
     transform,
     left,
     top,
     width,
     height,
+    vignetteOpacity,
+    strobeFlash,
   });
   target.style.zIndex = String(style.zIndex);
   target.style.opacity = String(style.opacity);
   target.style.filter = filter;
+  target.style.clipPath = clipPath;
   target.style.left = left;
   target.style.top = top;
   target.style.width = width;
   target.style.height = height;
   target.style.transform = transform;
+  syncVignetteOverlay(target, vignetteOpacity);
+  syncStrobeFlash(target, strobeFlash);
 }
 
 /** True when opacity is still changing this frame (fade / transition). */
@@ -225,7 +345,9 @@ function needsPerFrameVisual(
   clip: Clip,
   playheadTicks: number,
 ): boolean {
+  if (clip.effectKeyframes?.tracks?.length) return true;
   const effects = normalizeClipEffects(clip.effects);
+  if (effects.strobeFrames > 0) return true;
   const dur = ticksToSeconds(clipDurationTicks(clip));
   const local = Math.max(0, ticksToSeconds(playheadTicks - clip.startTicks));
   if (effects.fadeInSec > 0.001 && local <= effects.fadeInSec + 0.08) return true;
@@ -237,6 +359,10 @@ function needsPerFrameVisual(
 
 /** Skip re-seek when the warm/pooled decoder is already near the target. */
 const SEEK_CLOSE_SEC = 0.08;
+/** A seek pending longer than this never resolves — re-issue instead of freezing. */
+const SEEK_STUCK_MS = 600;
+/** Sustainable reverse cadence: backward seeks decode from the keyframe. */
+const REVERSE_SEEK_MIN_GAP_MS = 110;
 
 function safeSeek(video: HTMLVideoElement, timeSec: number) {
   if (!Number.isFinite(timeSec) || timeSec < 0) return;
@@ -271,25 +397,64 @@ export function CompositeLayers({
   const lastSeekAtRef = useRef(0);
   /** Per-clip last applied playbackRate — avoid resetting the decoder every frame. */
   const lastRateByClipRef = useRef(new Map<string, number>());
+  /** Was live-visual last frame — force one clean style pass after transition ends. */
+  const liveVisualByClipRef = useRef(new Map<string, boolean>());
   const wakePendingRef = useRef(new WeakSet<HTMLVideoElement>());
   /** One-shot seek when a ramped clip first becomes the clock master. */
   const rampArmedRef = useRef(new Set<string>());
-  /** Throttle timeline playhead writes from the ramp video-clock. */
-  const lastRampPlayheadWriteRef = useRef(0);
+  /** Last ramp-driven playhead written (write every frame like wall-clock). */
+  const lastRampTicksRef = useRef(0);
+  /**
+   * When the current seek was issued per clip — a seek stuck longer than
+   * SEEK_STUCK_MS never resolves (UHD), so a new one may be issued.
+   */
+  const seekStartRef = useRef(new Map<string, number>());
   const layersRef = useRef(layers);
   const projectRef = useRef(project);
   const isPlayingRef = useRef(isPlaying);
   const isScrubbingRef = useRef(isScrubbing);
   const playbackRateRef = useRef(playbackRate);
   const syncRef = useRef<(playheadTicks: number) => void>(() => undefined);
+  /**
+   * Stable host ref callbacks per clip. Inline `ref={(host) => ...}` creates a
+   * new function every render, so React detaches (ref(null) → releaseMediaVideo
+   * → video.pause() + DOM yank) and re-attaches on every frame while the
+   * transition forces `listPlayhead` updates — that pause/yank/re-play cycle
+   * every frame is the visible fade stutter. Cached callbacks keep identity
+   * stable; the latest url is read from a map when (re)mounted.
+   */
+  const hostUrlsRef = useRef(new Map<string, string>());
+  const hostCallbacksRef = useRef(new Map<string, (host: HTMLDivElement | null) => void>());
+  /**
+   * Clips pre-warmed ahead of their transition window (acquired + seeked, not
+   * yet mounted). Adopted on mount; released if the window passes unplayed.
+   */
+  const warmedRef = useRef(new Set<string>());
+  const lastWarmRef = useRef(0);
   layersRef.current = layers;
   projectRef.current = project;
   isPlayingRef.current = isPlaying;
   isScrubbingRef.current = isScrubbing;
   playbackRateRef.current = playbackRate;
 
-  const ensurePlaying = (video: HTMLVideoElement) => {
+  const ensurePlaying = (video: HTMLVideoElement, clipId?: string) => {
     if (!isPlayingRef.current || isScrubbingRef.current) return;
+    // Outgoing hold side must stay frozen — never (re)play it, not even from
+    // a seeked-event wakeup, or it drifts and gets yanked back every ~120ms.
+    if (clipId) {
+      const layer = layersRef.current.find((l) => l.clip.id === clipId);
+      if (layer) {
+        const ticks = useEditorUiStore.getState().playheadTicks;
+        if (isOutgoingHoldClip(layer.clip, ticks, projectRef.current)) {
+          try {
+            video.pause();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+      }
+    }
     // Still seeking from an earlier scrub — play() after seeked (listener below).
     // Don't early-return when paused+seeking: we still want play() queued.
     if (!video.paused && !video.ended && !video.seeking) return;
@@ -332,8 +497,11 @@ export function CompositeLayers({
     );
     const playing = isPlayingRef.current && !isScrubbingRef.current;
     const transitioning = inTransitionWindow(projectRef.current, layer.clip, ticks);
-    // Seek when paused, or once when mounting into an active transition.
-    if (!playing || transitioning) {
+    // Mount MUST land on the right frame: a pooled element can carry a stale
+    // position (or sit at EOF → frozen) from earlier use. Seek once when the
+    // drift is large — one bounded seek per mount, not a per-frame fight.
+    // Small drifts are left alone so warm UHD decodes are never disturbed.
+    if (!playing || transitioning || Math.abs(video.currentTime - target) > 0.5) {
       safeSeek(video, target);
     }
     if (video.readyState < HTMLMediaElement.HAVE_METADATA) {
@@ -343,7 +511,7 @@ export function CompositeLayers({
         /* ignore */
       }
     }
-    ensurePlaying(video);
+    ensurePlaying(video, clipId);
   };
 
   const attachVideo = (clipId: string, el: HTMLVideoElement | null) => {
@@ -362,13 +530,14 @@ export function CompositeLayers({
 
     const onReady = () => {
       primeVideo(clipId, el);
-      ensurePlaying(el);
+      ensurePlaying(el, clipId);
     };
     el.addEventListener("loadedmetadata", onReady);
     el.addEventListener("canplay", onReady);
     el.addEventListener("seeked", () => {
       wakePendingRef.current.delete(el);
-      ensurePlaying(el);
+      seekStartRef.current.delete(clipId);
+      ensurePlaying(el, clipId);
     });
 
     // Pooled/warmed videos are often already past metadata — don't call load()
@@ -395,10 +564,29 @@ export function CompositeLayers({
     const video = acquireMediaVideo(url, clipId);
     video.className = styles.layerMedia;
     video.playsInline = true;
+    clearPooledVideoLayoutStyles(video);
     if (video.parentElement !== host) {
       host.replaceChildren(video);
     }
     attachVideo(clipId, video);
+  };
+
+  const videoHostRef = (clipId: string, url: string) => {
+    hostUrlsRef.current.set(clipId, url);
+    let cb = hostCallbacksRef.current.get(clipId);
+    if (!cb) {
+      cb = (host: HTMLDivElement | null) => {
+        if (host) {
+          mountPooledVideo(host, clipId, hostUrlsRef.current.get(clipId) ?? url);
+        } else {
+          mountPooledVideo(null, clipId, "");
+          hostUrlsRef.current.delete(clipId);
+          hostCallbacksRef.current.delete(clipId);
+        }
+      };
+      hostCallbacksRef.current.set(clipId, cb);
+    }
+    return cb;
   };
 
   // Start/stop decoder when transport changes.
@@ -446,10 +634,23 @@ export function CompositeLayers({
 
       // Resume must NOT seek. UHD seeks often never finish, leaving a stuck
       // frame while the software playhead keeps advancing.
+      // Outgoing hold side stays frozen even at Play-from-transition.
+      if (isOutgoingHoldClip(layer.clip, ticks, proj)) {
+        const target = transitionAwareMediaTimeSec(layer.clip, ticks);
+        if (Math.abs(video.currentTime - target) > 0.08) {
+          safeSeek(video, target);
+        }
+        try {
+          video.pause();
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
       const speed = mediaSpeedAtTimelineTicks(layer.clip, ticks);
       video.playbackRate = Math.min(16, Math.max(0.0625, speed * (shuttle || 1)));
       lastRateByClipRef.current.set(layer.clip.id, video.playbackRate);
-      ensurePlaying(video);
+      ensurePlaying(video, layer.clip.id);
     });
 
     return () => {
@@ -468,13 +669,30 @@ export function CompositeLayers({
 
   // Watchdog: re-issue play() while transport is live but the element is paused.
   // Do NOT nudge currentTime here — a +0.001s seek looks like a tiny glitch and
-  // can abort the first play() on UHD.
+  // can abort the first play() on UHD. Outgoing hold clips stay paused by
+  // design (ensurePlaying pauses them instead of playing).
+  // Cold elements with zero data (HAVE_NOTHING) can never start on their own —
+  // kick load() at most once per 5s per clip so a stalled mount recovers
+  // instead of sitting black.
+  const coldKickRef = useRef(new Map<string, number>());
   useEffect(() => {
     if (!isPlaying || isScrubbing) return;
     let raf = 0;
     const tick = () => {
-      for (const video of videoRefs.current.values()) {
-        if (video.paused || video.ended) ensurePlaying(video);
+      const now = performance.now();
+      for (const [clipId, video] of videoRefs.current.entries()) {
+        if (video.paused || video.ended) ensurePlaying(video, clipId);
+        if (
+          video.readyState < HTMLMediaElement.HAVE_METADATA &&
+          now - (coldKickRef.current.get(clipId) ?? 0) > 5000
+        ) {
+          coldKickRef.current.set(clipId, now);
+          try {
+            video.load();
+          } catch {
+            /* ignore */
+          }
+        }
       }
       raf = requestAnimationFrame(tick);
     };
@@ -529,8 +747,19 @@ export function CompositeLayers({
         const spanSec = Math.max(1e-6, sourceOut - sourceIn);
 
         if (!armed) {
-          // Do not seek on arm — resume seek freezes UHD. Just mark armed + play.
           rampArmedRef.current.add(layer.clip.id);
+          // Validate the arm position: a pooled element can sit anywhere
+          // (e.g. near EOF from earlier use). Arming from a stale position
+          // would teleport the playhead to the clip end — seek once to the
+          // playhead-mapped source time and skip this frame's write instead.
+          const expected = transitionAwareMediaTimeSec(layer.clip, playhead);
+          if (Math.abs(video.currentTime - expected) > 0.5) {
+            safeSeek(video, expected);
+            ensurePlaying(video, layer.clip.id);
+            setRampClockActive(true);
+            driven = true;
+            break;
+          }
         }
 
         const progress = Math.min(
@@ -539,12 +768,14 @@ export function CompositeLayers({
         );
         const speed = profile.speedAtProgress(progress);
         const rate = Math.min(16, Math.max(0.0625, speed * Math.abs(shuttle)));
-        if (Math.abs(video.playbackRate - rate) > 0.015) {
+        // Track the curve tightly: small frequent rate updates glide, while
+        // coarse steps make the decoder lurch between speeds.
+        if (Math.abs(video.playbackRate - rate) > 0.004) {
           video.playbackRate = rate;
           lastRateByClipRef.current.set(layer.clip.id, rate);
         }
 
-        ensurePlaying(video);
+        ensurePlaying(video, layer.clip.id);
 
         const sourceOffsetTicks = (video.currentTime - sourceIn) * 1_000_000;
         const local = timelineOffsetForSourceOffset(
@@ -553,10 +784,11 @@ export function CompositeLayers({
           sourceOffsetTicks,
         );
         const nextTicks = Math.round(layer.clip.startTicks + local);
-        // ~30Hz UI playhead is enough; writing Zustand 60×/s wakes every subscriber.
-        const nowWrite = performance.now();
-        if (nowWrite - lastRampPlayheadWriteRef.current >= 32) {
-          lastRampPlayheadWriteRef.current = nowWrite;
+        // Write every frame like the wall-clock path: throttling to ~30Hz
+        // quantizes the playhead and judders everything downstream of it
+        // (layer opacity, audio, timeline UI). Skip only redundant writes.
+        if (nextTicks !== lastRampTicksRef.current) {
+          lastRampTicksRef.current = nextTicks;
           useEditorUiStore.getState().setPlayheadTicks(nextTicks);
         }
 
@@ -601,6 +833,7 @@ export function CompositeLayers({
         if (!live.has(id)) {
           el.pause();
           videoRefs.current.delete(id);
+          seekStartRef.current.delete(id);
           releaseMediaVideo(id);
         }
       }
@@ -640,9 +873,14 @@ export function CompositeLayers({
           reverse ||
           overlapping ||
           needsPerFrameVisual(proj, layer.clip, playheadTicks);
-        if (liveVisual) {
+        const wasLiveVisual =
+          liveVisualByClipRef.current.get(layer.clip.id) ?? false;
+        // One extra pass after leaving the transition so wipe/slide/opacity
+        // snap back to full geometry instead of freezing mid-effect.
+        if (liveVisual || wasLiveVisual) {
           applyMediaStyle(video, proj, layer.clip, layer.asset, cw, ch, playheadTicks, z);
         }
+        liveVisualByClipRef.current.set(layer.clip.id, liveVisual);
 
         const muted =
           !layer.isTopVideo || layer.track.muted || !layer.asset.hasAudio;
@@ -658,7 +896,7 @@ export function CompositeLayers({
         // Ramped clips are driven by their own video clock (see effect below) —
         // don't seek/rate-fight them from the wall-clock playhead.
         if (playing && !scrubbing && !reverse && ramped) {
-          ensurePlaying(video);
+          ensurePlaying(video, layer.clip.id);
           return;
         }
 
@@ -678,16 +916,41 @@ export function CompositeLayers({
         }
 
         if (playing && !scrubbing && !reverse) {
+          // Outgoing hold side: freeze on the last frame instead of playing
+          // past `sourceOut` and being yanked back (~120ms stutter loop).
+          if (isOutgoingHoldClip(layer.clip, playheadTicks, proj)) {
+            if (Math.abs(video.currentTime - target) > 0.08) {
+              const now = performance.now();
+              if (now - lastSeekAtRef.current >= 40) {
+                lastSeekAtRef.current = now;
+                safeSeek(video, target);
+              }
+            }
+            try {
+              video.pause();
+            } catch {
+              /* ignore */
+            }
+            return;
+          }
           // Incoming clip often mounts mid-transition with a cold currentTime —
           // one catch-up seek so it doesn't stay on the wrong frame under clip 1.
+          // Never pile onto a pending seek: competing seeks abort each other
+          // and the decoder shows nothing (black). A guard entry older than
+          // SEEK_STUCK_MS means that seek will never resolve — re-issue.
           if (transitioning && Math.abs(video.currentTime - target) > 0.12) {
             const now = performance.now();
-            if (now - lastSeekAtRef.current >= 16) {
+            const started = seekStartRef.current.get(layer.clip.id);
+            if (started != null && now - started >= SEEK_STUCK_MS) {
+              seekStartRef.current.delete(layer.clip.id);
+            }
+            if (!video.seeking && now - lastSeekAtRef.current >= 16) {
               lastSeekAtRef.current = now;
+              seekStartRef.current.set(layer.clip.id, now);
               safeSeek(video, target);
             }
           }
-          ensurePlaying(video);
+          ensurePlaying(video, layer.clip.id);
           return;
         }
 
@@ -697,15 +960,103 @@ export function CompositeLayers({
         // so the next Play leaves a stuck frame while the timeline runs.
         // Only scrub / reverse shuttle need to re-anchor the decoder.
         if (!scrubbing && !reverse) return;
+        // Reverse/scrub seeks are expensive (backward = decode from keyframe).
+        // Piling a new seek onto a pending one aborts both and yields black
+        // frames: hold the last good frame instead, with an escape hatch for
+        // seeks stuck so long they will never resolve.
         const now = performance.now();
-        const minGap = transitioning ? 16 : 40;
+        // A seek issued elsewhere (mount prime, transition catch-up) also
+        // deserves a grace period before we consider it stuck.
+        if (video.seeking) {
+          const started = seekStartRef.current.get(layer.clip.id);
+          if (started == null) {
+            seekStartRef.current.set(layer.clip.id, now);
+            return;
+          }
+          if (now - started < SEEK_STUCK_MS) return;
+        } else {
+          seekStartRef.current.delete(layer.clip.id);
+        }
+        // Sustainable cadence in reverse; normal cadence otherwise.
+        const minGap = reverse ? REVERSE_SEEK_MIN_GAP_MS : transitioning ? 16 : 40;
         if (now - lastSeekAtRef.current < minGap) return;
         if (Math.abs(video.currentTime - target) < (transitioning ? 0.02 : 0.04)) {
           return;
         }
         lastSeekAtRef.current = now;
+        seekStartRef.current.set(layer.clip.id, now);
         safeSeek(video, target);
       });
+
+      // Transition look-ahead: warm the incoming decoder shortly BEFORE its
+      // window so dissolve/fade doesn't start on a cold (black) element and
+      // pop in late (perceived as cutting early). Warming = acquire (no DOM)
+      // + one seek to the window-start frame, paused; the mount adopts the
+      // warm element via the pool. Forward play only.
+      const warmed = warmedRef.current;
+      for (const id of [...warmed]) {
+        if (videoRefs.current.has(id)) {
+          warmed.delete(id); // adopted on mount
+          continue;
+        }
+        const clip = proj.clips.find((c) => c.id === id);
+        const tin = clip ? normalizeClipTransition(clip.transitionIn) : null;
+        const windowStart =
+          clip && tin && tin.type !== "none"
+            ? clip.startTicks - transitionHalfTicks(tin)
+            : null;
+        // Missed (paused, stopped, scrubbed away): release the decoder.
+        // Warmed elements are only useful while playing forward — pause and
+        // scrub paths seek on their own, so don't hoard decoder slots idle.
+        if (
+          !playing ||
+          windowStart == null ||
+          playheadTicks > windowStart + 1_000_000
+        ) {
+          warmed.delete(id);
+          releaseMediaVideo(id);
+        }
+      }
+      if (playing && !scrubbing && !reverse) {
+        const nowWarm = performance.now();
+        if (nowWarm - lastWarmRef.current >= 300) {
+          lastWarmRef.current = nowWarm;
+          for (const clip of proj.clips) {
+            if (clip.kind !== "media" || !clip.assetId) continue;
+            const tin = normalizeClipTransition(clip.transitionIn);
+            if (tin.type === "none") continue;
+            const half = transitionHalfTicks(tin);
+            const windowStart = clip.startTicks - half;
+            // Warm only shortly before the window; inside it, mount+prime
+            // takes over. Covers dissolve/fade (opacity) and wipe/slide.
+            if (playheadTicks < windowStart - 750_000 || playheadTicks >= windowStart) {
+              continue;
+            }
+            if (live.has(clip.id) || warmed.has(clip.id)) continue;
+            const asset = proj.assets.find((a) => a.id === clip.assetId);
+            if (!asset || asset.missing || asset.kind !== "video") continue;
+            const url = resolveMediaUrl(asset.path, asset.id);
+            if (!url) continue;
+            try {
+              const video = acquireMediaVideo(url, clip.id);
+              video.className = styles.layerMedia;
+              video.playsInline = true;
+              video.muted = true;
+              const target = transitionAwareMediaTimeSec(clip, windowStart);
+              if (Math.abs(video.currentTime - target) > 0.15) {
+                try {
+                  video.currentTime = Math.max(0, target);
+                } catch {
+                  /* ignore */
+                }
+              }
+              warmed.add(clip.id);
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
     };
 
     syncRef.current = sync;
@@ -741,13 +1092,25 @@ export function CompositeLayers({
       applyMediaStyle(video, project, layer.clip, layer.asset, cw, ch, ticks, z);
       const target = transitionAwareMediaTimeSec(layer.clip, ticks);
       if (playing) {
+        if (isOutgoingHoldClip(layer.clip, ticks, project)) {
+          if (Math.abs(video.currentTime - target) > 0.08) {
+            safeSeek(video, target);
+          }
+          try {
+            video.pause();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
         if (
+          !video.seeking &&
           inTransitionWindow(project, layer.clip, ticks) &&
           Math.abs(video.currentTime - target) > 0.12
         ) {
           safeSeek(video, target);
         }
-        ensurePlaying(video);
+        ensurePlaying(video, layer.clip.id);
         return;
       }
       safeSeek(video, target);
@@ -793,32 +1156,56 @@ export function CompositeLayers({
           transform: style.transform,
           opacity: style.opacity,
           filter: style.filter,
+          // Explicit "none" so React clears a prior wipe clip-path on remount.
+          clipPath: style.clipPath ?? "none",
         } as const;
         if (layer.asset.kind === "image") {
           return (
-            <img
+            <div
               key={layer.clip.id}
-              ref={(el) => {
-                if (el) imageRefs.current.set(layer.clip.id, el);
-                else imageRefs.current.delete(layer.clip.id);
-              }}
-              className={styles.layerMedia}
-              src={url}
-              alt=""
+              className={styles.layerHost}
+              data-layer-host
               style={boxStyle}
-            />
+            >
+              <img
+                ref={(el) => {
+                  if (el) imageRefs.current.set(layer.clip.id, el);
+                  else imageRefs.current.delete(layer.clip.id);
+                }}
+                className={styles.layerMedia}
+                src={url}
+                alt=""
+              />
+              {style.vignetteOpacity > 0.01 ? (
+                <div
+                  className={styles.vignetteOverlay}
+                  data-vignette
+                  style={{ opacity: style.vignetteOpacity }}
+                />
+              ) : null}
+              {style.strobeFlash ? (
+                <div
+                  className={styles.strobeFlash}
+                  data-strobe
+                  style={{ background: style.strobeFlash }}
+                />
+              ) : null}
+            </div>
           );
         }
         if (layer.asset.kind !== "video") return null;
         // Host mounts a pooled <video> warmed at media-bin import — same element,
         // so Play after add-to-timeline does not wait for a cold UHD decode.
+        // The ref callback is cached per clip (stable identity): an inline ref
+        // would detach/re-attach — pausing and yanking the decoder — on every
+        // transition frame. Key includes url so replacing media still remounts.
         return (
           <div
-            key={`${layer.asset.id}:${layer.clip.id}`}
+            key={`${layer.asset.id}:${layer.clip.id}:${url}`}
             className={styles.layerHost}
             data-layer-host
             style={boxStyle}
-            ref={(host) => mountPooledVideo(host, layer.clip.id, url)}
+            ref={videoHostRef(layer.clip.id, url)}
           />
         );
       })}

@@ -314,8 +314,8 @@
 
 /* -------------------------------------------------------------------- body */
 
-.body,
-.bodyWithProps {
+.body {
+  position: relative;
   display: grid;
   grid-template-columns: var(--rail-w) var(--side-w) minmax(0, 1fr);
   min-height: 0;
@@ -323,8 +323,9 @@
   overflow: hidden;
 }
 
-.bodyWithProps {
-  grid-template-columns: var(--rail-w) var(--side-w) minmax(0, 1fr) var(--props-w);
+/* Properties as a real column so preview + transport never sit under it. */
+.bodyPropsOpen {
+  grid-template-columns: var(--rail-w) var(--side-w) minmax(0, 1fr) minmax(240px, var(--props-w));
 }
 
 .rail {
@@ -383,6 +384,9 @@
 }
 
 .props {
+  position: relative;
+  z-index: 1;
+  width: 100%;
   min-width: 0;
   min-height: 0;
   overflow: hidden;

@@ -10,6 +10,8 @@ import {
   moveClip,
   moveClipLayer,
   moveRampPoint,
+  pruneEmptyTrack,
+  relockClipDuration,
   removeRampPoint,
   removeTrack,
   setClipRamp,
@@ -18,6 +20,8 @@ import {
   trimClip,
   updateCanvas,
   updateClipSpeed,
+  updateRampPoint,
+  updateRampPointLocked,
   updateTrack,
 } from "../../src/domain/timelineCommands";
 import { addTextClip, createEmptyProject, type MediaAsset } from "../../src/domain";
@@ -41,13 +45,42 @@ function withAsset(kind: MediaAsset["kind"] = "video"): ReturnType<typeof create
 }
 
 describe("timelineCommands", () => {
-  it("adds a media clip onto a compatible track", () => {
+  it("reuses an empty video track instead of creating V2", () => {
     const project = withAsset("video");
+    const baseVideo = project.tracks.find((t) => t.kind === "video")!;
     const next = addMediaClip(project, "asset-1", { startTicks: 2_000_000 });
     expect(next.clips).toHaveLength(1);
     expect(next.clips[0].startTicks).toBe(2_000_000);
     expect(next.clips[0].sourceOutTicks).toBe(10_000_000);
-    expect(next.clips[0].trackId).toBe(project.tracks.find((t) => t.kind === "video")!.id);
+    expect(next.clips[0].trackId).toBe(baseVideo.id);
+    expect(next.tracks.filter((t) => t.kind === "video")).toHaveLength(1);
+  });
+
+  it("creates a new top track when V1 already has a clip", () => {
+    let project = withAsset("video");
+    const baseVideo = project.tracks.find((t) => t.kind === "video")!;
+    project = addMediaClip(project, "asset-1", { trackId: baseVideo.id, startTicks: 0 });
+    const next = addMediaClip(project, "asset-1", { startTicks: 10_000_000 });
+    expect(next.clips).toHaveLength(2);
+    const created = next.tracks.find((t) => t.id === next.clips[1].trackId)!;
+    expect(created.kind).toBe("video");
+    expect(created.id).not.toBe(baseVideo.id);
+    expect(project.tracks.some((t) => t.id === created.id)).toBe(false);
+    const baseAfter = next.tracks.find((t) => t.id === baseVideo.id)!;
+    expect(created.order).toBeLessThan(baseAfter.order);
+  });
+
+  it("adds a media clip onto an explicit track without creating another", () => {
+    const project = withAsset("video");
+    const videoTrack = project.tracks.find((t) => t.kind === "video")!;
+    const next = addMediaClip(project, "asset-1", {
+      trackId: videoTrack.id,
+      startTicks: 1_000_000,
+    });
+    expect(next.tracks.filter((t) => t.kind === "video")).toHaveLength(
+      project.tracks.filter((t) => t.kind === "video").length,
+    );
+    expect(next.clips[0].trackId).toBe(videoTrack.id);
   });
 
   it("centres a new media clip transform", () => {
@@ -58,6 +91,19 @@ describe("timelineCommands", () => {
     const withText = addTextClip(media, { text: { content: "Hi" } });
     const textClip = withText.clips.find((c) => c.kind === "text")!;
     expect(textClip.text?.content).toBe("Hi");
+  });
+
+  it("places text on a new top track instead of sharing V1 with media", () => {
+    let project = withAsset();
+    const v1 = project.tracks.find((t) => t.kind === "video")!;
+    project = addMediaClip(project, "asset-1", { trackId: v1.id, startTicks: 0 });
+    project = addTextClip(project, { text: { content: "Title" } });
+    const media = project.clips.find((c) => c.kind === "media")!;
+    const text = project.clips.find((c) => c.kind === "text")!;
+    expect(text.trackId).not.toBe(media.trackId);
+    const textTrack = project.tracks.find((t) => t.id === text.trackId)!;
+    const mediaTrack = project.tracks.find((t) => t.id === media.trackId)!;
+    expect(textTrack.order).toBeLessThan(mediaTrack.order);
   });
 
   it("updates canvas settings", () => {
@@ -105,21 +151,51 @@ describe("timelineCommands", () => {
     expect(same.clips).toHaveLength(1);
   });
 
+  it("prunes empty tracks after moving a clip away", () => {
+    let project = withAsset();
+    const baseVideo = project.tracks.find((t) => t.kind === "video")!;
+    // Overlapping add → new overlay track.
+    project = addMediaClip(project, "asset-1", { trackId: baseVideo.id, startTicks: 0 });
+    project = addMediaClip(project, "asset-1", { startTicks: 0 });
+    const clipId = project.clips[1].id;
+    const createdTrackId = project.clips[1].trackId;
+    expect(createdTrackId).not.toBe(baseVideo.id);
+    expect(project.tracks.filter((t) => t.kind === "video").length).toBeGreaterThan(1);
+
+    project = moveClip(project, clipId, 12_000_000, baseVideo.id, {
+      pruneEmptySource: true,
+    });
+    expect(project.clips.find((c) => c.id === clipId)?.trackId).toBe(baseVideo.id);
+    expect(project.tracks.some((t) => t.id === createdTrackId)).toBe(false);
+  });
+
+  it("does not prune the last track of a kind", () => {
+    const project = createEmptyProject();
+    const video = project.tracks.find((t) => t.kind === "video")!;
+    const same = pruneEmptyTrack(project, video.id);
+    expect(same.tracks.some((t) => t.id === video.id)).toBe(true);
+  });
+
   it("adds and removes tracks with safeguards", () => {
     let project = createEmptyProject();
     expect(project.tracks).toHaveLength(2);
+    const v1 = project.tracks.find((t) => t.kind === "video")!;
     project = addTrack(project, "video");
     expect(project.tracks.filter((t) => t.kind === "video")).toHaveLength(2);
-    const videoId = project.tracks.find((t) => t.name === "V2")!.id;
-    project = removeTrack(project, videoId);
+    const v2 = project.tracks.find((t) => t.name === "V2")!;
+    const v1After = project.tracks.find((t) => t.id === v1.id)!;
+    expect(v2.order).toBeLessThan(v1After.order);
+    project = removeTrack(project, v2.id);
     expect(project.tracks.filter((t) => t.kind === "video")).toHaveLength(1);
     const lastVideo = project.tracks.find((t) => t.kind === "video")!;
     expect(() => removeTrack(project, lastVideo.id)).toThrow(/last video/);
   });
 
   it("moveClipLayer down puts video under text on a new track", () => {
-    let project = addMediaClip(withAsset(), "asset-1", { startTicks: 0 });
-    project = addTextClip(project, { startTicks: 0 });
+    const base = withAsset();
+    const v1 = base.tracks.find((t) => t.kind === "video")!;
+    let project = addMediaClip(base, "asset-1", { trackId: v1.id, startTicks: 0 });
+    project = addTextClip(project, { trackId: v1.id, startTicks: 0 });
     const videoClip = project.clips.find((c) => c.kind === "media")!;
     const textClip = project.clips.find((c) => c.kind === "text")!;
     expect(videoClip.trackId).toBe(textClip.trackId);
@@ -249,6 +325,138 @@ describe("speed ramp commands", () => {
     const firstId = project.clips[0].speedRamp!.points[0].id;
     project = removeRampPoint(project, clipId, firstId);
     expect(project.clips[0].speedRamp ?? null).toBeNull();
+  });
+
+  it("updateRampPoint moves and retunes an anchor in one pass", () => {
+    let { project, clipId } = clipProject();
+    project = setClipRamp(project, clipId, {
+      points: [
+        createSpeedPoint(0.2, 1),
+        createSpeedPoint(0.5, 1.5),
+        createSpeedPoint(0.8, 2),
+      ],
+    });
+    const midId = project.clips[0].speedRamp!.points[1].id;
+
+    project = updateRampPoint(project, clipId, midId, {
+      atProgress: 0.6,
+      speed: 3,
+    });
+    const points = project.clips[0].speedRamp!.points;
+    expect(points[1].atProgress).toBeCloseTo(0.6, 5);
+    expect(points[1].speed).toBe(3);
+
+    // Same clamping as the single-purpose commands.
+    project = updateRampPoint(project, clipId, midId, {
+      atProgress: 0.99,
+      speed: 99,
+    });
+    const clamped = project.clips[0].speedRamp!.points;
+    expect(clamped[1].atProgress).toBeLessThan(clamped[2].atProgress);
+    expect(clamped[1].speed).toBe(8);
+  });
+
+  it("relockClipDuration holds timeline duration by adjusting the source range", () => {
+    let { project, clipId } = clipProject();
+    const before = clipDurationTicks(project.clips[0]);
+    expect(before).toBe(10_000_000);
+
+    // Slow the tail: unconstrained, the clip would lengthen.
+    project = enableSpeedRamp(project, clipId, 5_000_000, 1, 0.5);
+    expect(clipDurationTicks(project.clips[0])).toBeGreaterThan(before);
+
+    project = relockClipDuration(project, clipId, before);
+    const clip = project.clips[0];
+    expect(Math.abs(clipDurationTicks(clip) - before)).toBeLessThanOrEqual(1);
+    // Same 10s on the timeline, but less source is consumed (start anchored).
+    expect(clip.startTicks).toBe(0);
+    expect(clip.sourceOutTicks - clip.sourceInTicks).toBeLessThan(10_000_000);
+  });
+
+  it("relockClipDuration caps extension at the media end", () => {
+    let { project, clipId } = clipProject();
+    const before = clipDurationTicks(project.clips[0]);
+    // 2× everywhere already needs the full 10s of media; restoring 10s of
+    // timeline is impossible, so the source range (and clip) stays put.
+    project = enableSpeedRamp(project, clipId, 5_000_000, 2, 2);
+    expect(clipDurationTicks(project.clips[0])).toBeLessThan(before);
+
+    project = relockClipDuration(project, clipId, before);
+    expect(project.clips[0].sourceOutTicks).toBe(10_000_000);
+    expect(clipDurationTicks(project.clips[0])).toBeLessThan(before);
+  });
+
+  it("updateRampPointLocked never changes the timeline duration", () => {
+    let { project, clipId } = clipProject();
+    project = setClipRamp(project, clipId, {
+      points: [
+        createSpeedPoint(0.2, 1),
+        createSpeedPoint(0.5, 1.5),
+        createSpeedPoint(0.8, 1),
+      ],
+    });
+    const locked = clipDurationTicks(project.clips[0]);
+    const midId = project.clips[0].speedRamp!.points[1].id;
+
+    // Slowing down fits: duration preserved, full patch applied.
+    const slowed = updateRampPointLocked(project, clipId, midId, { speed: 0.5 }, locked);
+    expect(slowed.constrained).toBe(false);
+    expect(
+      Math.abs(clipDurationTicks(slowed.project.clips[0]) - locked),
+    ).toBeLessThanOrEqual(1);
+    expect(
+      slowed.project.clips[0].speedRamp!.points[1].speed,
+    ).toBeCloseTo(0.5, 5);
+  });
+
+  it("updateRampPointLocked blocks the patch at the media wall", () => {
+    // Trimmed clip: 8s of source used, 2s of headroom in the 10s asset.
+    let { project, clipId } = clipProject();
+    project = trimClip(project, clipId, 0, 8_000_000);
+    project = setClipRamp(project, clipId, {
+      points: [
+        createSpeedPoint(0.2, 1),
+        createSpeedPoint(0.5, 1.5),
+        createSpeedPoint(0.8, 1),
+      ],
+    });
+    const locked = clipDurationTicks(project.clips[0]);
+    const midId = project.clips[0].speedRamp!.points[1].id;
+
+    // 8× on the middle would need more source than the asset holds: the
+    // point stops partway at the wall instead of shrinking the track.
+    const pushed = updateRampPointLocked(project, clipId, midId, { speed: 8 }, locked);
+    expect(pushed.constrained).toBe(true);
+    expect(
+      Math.abs(clipDurationTicks(pushed.project.clips[0]) - locked),
+    ).toBeLessThanOrEqual(1);
+    const after = pushed.project.clips[0];
+    const speed = after.speedRamp!.points[1].speed;
+    expect(speed).toBeGreaterThan(1.5);
+    expect(speed).toBeLessThan(8);
+    // Source extended into the headroom, never past the media end.
+    const span = after.sourceOutTicks - after.sourceInTicks;
+    expect(span).toBeGreaterThan(8_000_000);
+    expect(span).toBeLessThanOrEqual(10_000_000);
+  });
+
+  it("updateRampPointLocked returns the identical project when fully blocked", () => {
+    // Full-media clip: no headroom, so pushing faster is fully resisted.
+    let { project, clipId } = clipProject();
+    project = setClipRamp(project, clipId, {
+      points: [
+        createSpeedPoint(0.2, 1),
+        createSpeedPoint(0.5, 1.5),
+        createSpeedPoint(0.8, 1),
+      ],
+    });
+    const locked = clipDurationTicks(project.clips[0]);
+    const midId = project.clips[0].speedRamp!.points[1].id;
+    const stuck = updateRampPointLocked(project, clipId, midId, { speed: 8 }, locked);
+    expect(stuck.constrained).toBe(true);
+    // Same reference → zustand skips notifying (no re-render storm).
+    expect(stuck.project).toBe(project);
+    expect(stuck.project.clips[0].speedRamp!.points[1].speed).toBe(1.5);
   });
 
   it("clears a ramp with setClipRamp(null)", () => {
