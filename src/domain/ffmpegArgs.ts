@@ -624,18 +624,20 @@ export function drawtextXExpr(text: {
   x: number;
   timelineStartSec: number;
   timelineEndSec: number;
+  slideDist?: number;
   textAnimation?: { in: string; out: string; inDurationSec: number; outDurationSec: number } | null;
 }): string {
   const base = drawtextBaseX(text);
   const dur = Math.max(0, text.timelineEndSec - text.timelineStartSec);
   const anim = text.textAnimation;
   if (!anim || dur <= 0.01) return base;
+  const dist = Number.isFinite(text.slideDist) ? (text.slideDist as number) : 48;
   const start = Math.max(0, text.timelineStartSec);
   const inDur = Math.min(anim.inDurationSec, dur);
   const outDur = Math.min(anim.outDurationSec, dur);
   const outStart = start + Math.max(0, dur - outDur);
-  const offIn = slideOffsetExpr(anim.in, "x", start, inDur, outStart, 0, 48);
-  const offOut = slideOffsetExpr(anim.out, "x", start, 0, outStart, outDur, 48);
+  const offIn = slideOffsetExpr(anim.in, "x", start, inDur, outStart, 0, dist);
+  const offOut = slideOffsetExpr(anim.out, "x", start, 0, outStart, outDur, dist);
   const off = [offIn, offOut].filter(Boolean).join("+");
   return off ? `(${base}+${off})` : base;
 }
@@ -644,18 +646,20 @@ export function drawtextYExpr(text: {
   y: number;
   timelineStartSec: number;
   timelineEndSec: number;
+  slideDist?: number;
   textAnimation?: { in: string; out: string; inDurationSec: number; outDurationSec: number } | null;
 }): string {
   const base = drawtextBaseY(text);
   const dur = Math.max(0, text.timelineEndSec - text.timelineStartSec);
   const anim = text.textAnimation;
   if (!anim || dur <= 0.01) return base;
+  const dist = Number.isFinite(text.slideDist) ? (text.slideDist as number) : 48;
   const start = Math.max(0, text.timelineStartSec);
   const inDur = Math.min(anim.inDurationSec, dur);
   const outDur = Math.min(anim.outDurationSec, dur);
   const outStart = start + Math.max(0, dur - outDur);
-  const offIn = slideOffsetExpr(anim.in, "y", start, inDur, outStart, 0, 48);
-  const offOut = slideOffsetExpr(anim.out, "y", start, 0, outStart, outDur, 48);
+  const offIn = slideOffsetExpr(anim.in, "y", start, inDur, outStart, 0, dist);
+  const offOut = slideOffsetExpr(anim.out, "y", start, 0, outStart, outDur, dist);
   const off = [offIn, offOut].filter(Boolean).join("+");
   return off ? `(${base}+${off})` : base;
 }

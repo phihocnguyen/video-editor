@@ -768,11 +768,19 @@ export function CompositeLayers({
         );
         const speed = profile.speedAtProgress(progress);
         const rate = Math.min(16, Math.max(0.0625, speed * Math.abs(shuttle)));
-        // Track the curve tightly: small frequent rate updates glide, while
-        // coarse steps make the decoder lurch between speeds.
-        if (Math.abs(video.playbackRate - rate) > 0.004) {
-          video.playbackRate = rate;
-          lastRateByClipRef.current.set(layer.clip.id, rate);
+        // Points clustered close together make the curve near-vertical there:
+        // currentTime quantization swings the lookup between extremes every
+        // frame, and slamming playbackRate between them thrashes the decoder
+        // (visible lag). Ease toward big jumps over a few frames instead.
+        const prev = lastRateByClipRef.current.get(layer.clip.id) ?? rate;
+        let applied = rate;
+        const jump = Math.abs(rate - prev) / Math.max(0.25, Math.abs(prev));
+        if (jump > 0.3) {
+          applied = prev + (rate - prev) * 0.35;
+        }
+        if (Math.abs(video.playbackRate - applied) > 0.004) {
+          video.playbackRate = applied;
+          lastRateByClipRef.current.set(layer.clip.id, applied);
         }
 
         ensurePlaying(video, layer.clip.id);

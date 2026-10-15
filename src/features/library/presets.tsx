@@ -103,6 +103,18 @@ export const SHAPE_PRESETS: {
       </svg>
     ),
   },
+  {
+    id: "logo",
+    label: "Logo",
+    src: "/examples/shapes/logo.svg",
+    draw: ({ className }) => (
+      <svg viewBox="0 0 48 48" className={className} aria-hidden>
+        <rect x="6" y="6" width="36" height="36" rx="9" fill="#111318" />
+        <path d="M20 16 L32 24 L20 32 Z" fill="#5B8DEF" />
+        <rect x="13" y="36" width="22" height="2.4" rx="1.2" fill="#FFE566" />
+      </svg>
+    ),
+  },
 ];
 
 export const PHOTO_PRESETS = [

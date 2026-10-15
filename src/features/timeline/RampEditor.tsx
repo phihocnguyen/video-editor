@@ -1,23 +1,22 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useMemo, useRef } from "react";
 import {
   MAX_RAMP_SPEED,
   MIN_RAMP_SPEED,
+  createSpeedPoint,
   getRampProfile,
   rampSpeedRangeLabel,
   type SpeedPoint,
 } from "../../domain/speedRamp";
 import { clampRampSpeed } from "../../domain/speedRamp";
 import type { Clip, ProjectDocument } from "../../domain/project";
-import type { Tick } from "../../domain/time";
-import { clipDurationTicks } from "../../domain/timelineCommands";
 import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import {
   addRampPointAtPlayhead,
-  relockClipDuration,
   removeRampPoint,
-  updateRampPointLocked,
+  setClipRamp,
+  updateRampPoint,
 } from "../../domain/timelineCommands";
 import { PlusIcon, RampIcon, TrashIcon } from "../../components/icons";
 import styles from "./RampEditor.module.css";
@@ -46,10 +45,6 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     [clip.speedRamp],
   );
   const dragRef = useRef<RampGesture | null>(null);
-  /** Points currently blocked at the media wall (amber) — mutated during
-      drags, read at render; the drag's own setProject drives re-renders. */
-  const blockedRef = useRef<Set<string>>(new Set());
-  const playheadLineRef = useRef<SVGLineElement>(null);
 
   const plotW = Math.max(1, widthPx - PAD_X * 2);
   const plotH = Math.max(1, heightPx - PAD_Y * 2);
@@ -92,32 +87,21 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
   const lo = ramp.points[0].atProgress;
   const hi = ramp.points[ramp.points.length - 1].atProgress;
 
-  /** True when the duration lock hit the media end (duration had to change). */
-  function lockWasClamped(locked: Tick): boolean {
-    const after = useProjectStore
-      .getState()
-      .project.clips.find((c) => c.id === clip.id);
-    return !!after && Math.abs(clipDurationTicks(after) - locked) > 1;
+  /** Common speeds the drag snaps to (within 6%) so 0.5×/1×/2× land exactly. */
+  const SNAP_SPEEDS = [0.25, 0.5, 1, 1.5, 2, 4];
+
+  function snapSpeed(speed: number): number {
+    for (const s of SNAP_SPEEDS) {
+      if (Math.abs(speed - s) / Math.max(0.2, s) < 0.06) return s;
+    }
+    return speed;
   }
 
   function handleAddPoint() {
     const playhead = useEditorUiStore.getState().playheadTicks;
     try {
-      let locked: Tick = 0;
-      commitProjectChange((p) => {
-        const cur = p.clips.find((c) => c.id === clip.id);
-        locked = clipDurationTicks(cur ?? clip);
-        const added = addRampPointAtPlayhead(p, clip.id, playhead, 1.5).project;
-        // New anchors must not stretch the track either.
-        return relockClipDuration(added, clip.id, locked);
-      });
-      useEditorUiStore
-        .getState()
-        .setStatusMessage(
-          lockWasClamped(locked)
-            ? "Reached end of media — clip shortened"
-            : "Ramp point added at playhead",
-        );
+      commitProjectChange((p) => addRampPointAtPlayhead(p, clip.id, playhead, 1.5).project);
+      useEditorUiStore.getState().setStatusMessage("Ramp point added at playhead");
     } catch (error) {
       useEditorUiStore
         .getState()
@@ -125,18 +109,57 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     }
   }
 
+  /** One-tap curves: replace anchors, keep the same source range. Duration follows speed. */
+  function applyPreset(kind: "slow" | "normal" | "fast" | "up" | "down") {
+    try {
+      commitProjectChange((p) => {
+        const cur = p.clips.find((c) => c.id === clip.id);
+        if (!cur) return p;
+        switch (kind) {
+          case "slow":
+            return setClipRamp(p, clip.id, {
+              points: [createSpeedPoint(0, 0.5), createSpeedPoint(1, 0.5)],
+            });
+          case "fast":
+            return setClipRamp(p, clip.id, {
+              points: [createSpeedPoint(0, 2), createSpeedPoint(1, 2)],
+            });
+          case "up":
+            return setClipRamp(p, clip.id, {
+              points: [
+                createSpeedPoint(0, 0.5),
+                createSpeedPoint(0.5, 1),
+                createSpeedPoint(1, 2),
+              ],
+            });
+          case "down":
+            return setClipRamp(p, clip.id, {
+              points: [
+                createSpeedPoint(0, 2),
+                createSpeedPoint(0.5, 1),
+                createSpeedPoint(1, 0.5),
+              ],
+            });
+          default:
+            return setClipRamp(p, clip.id, null);
+        }
+      });
+      useEditorUiStore.getState().setStatusMessage(
+        kind === "normal" ? "Speed reset to 1×" : `Ramp preset: ${kind}`,
+      );
+    } catch (error) {
+      useEditorUiStore
+        .getState()
+        .setStatusMessage(error instanceof Error ? error.message : "Preset failed");
+    }
+  }
+
   interface RampGesture {
     pointId: string;
-    /** Timeline duration locked at dragstart — the track never stretches. */
-    lockedDuration: Tick;
     plotW: number;
     rect: DOMRect;
-    /** The anchor button (pointer-captured) for live blocked feedback. */
-    btn: HTMLElement;
     pending: { progress: number; speed: number } | null;
     raf: number;
-    /** Latched when the media wall blocked the patch (status on release). */
-    hitWall: boolean;
   }
 
   function applyGesturePatch(
@@ -144,25 +167,12 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     g: RampGesture,
     patch: { progress: number; speed: number },
   ) {
-    // Duration-locked edit: the point is blocked at the media wall instead
-    // of stretching the track (Premiere behavior).
-    const { project: next, constrained } = updateRampPointLocked(
-      project,
-      clip.id,
-      g.pointId,
-      {
-        atProgress: Number(patch.progress.toFixed(4)),
-        speed: Number(patch.speed.toFixed(3)),
-      },
-      g.lockedDuration,
-    );
-    if (constrained) {
-      g.hitWall = true;
-      blockedRef.current.add(g.pointId);
-    } else {
-      blockedRef.current.delete(g.pointId);
-    }
-    return next;
+    // Free-duration edit: speed changes stretch/shrink the clip on the
+    // timeline (source range untouched, so nothing ever "blocks at a wall").
+    return updateRampPoint(project, clip.id, g.pointId, {
+      atProgress: Number(patch.progress.toFixed(4)),
+      speed: Number(snapSpeed(patch.speed).toFixed(3)),
+    });
   }
 
   /**
@@ -194,17 +204,13 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     // gesture: with the duration locked the overlay never resizes mid-drag,
     // so the cursor mapping stays exact (no grab drift / jitter).
     const store = useProjectStore.getState();
-    const live = store.project.clips.find((c) => c.id === clip.id) ?? clip;
     useHistoryStore.getState().pushHistory(store.project);
     const gesture: RampGesture = {
       pointId: point.id,
-      lockedDuration: clipDurationTicks(live),
       plotW,
       rect: surface.getBoundingClientRect(),
-      btn: event.currentTarget as HTMLElement,
       pending: null,
       raf: 0,
-      hitWall: false,
     };
     dragRef.current = gesture;
     document.body.style.cursor = "grabbing";
@@ -246,16 +252,7 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
           st.setProject(next, { dirty: true });
         }
       }
-      if (gesture.hitWall) {
-        useEditorUiStore
-          .getState()
-          .setStatusMessage("Reached end of media — release to continue");
-      }
       if (dragRef.current === gesture) dragRef.current = null;
-      blockedRef.current.delete(gesture.pointId);
-      // No re-render follows when the last flush was a no-op — clean the
-      // amber state off the DOM node directly.
-      gesture.btn.classList.remove(styles.anchorBlocked);
       document.body.style.cursor = "";
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", endGesture);
@@ -267,46 +264,14 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
   }
 
   function handleRemovePoint(point: SpeedPoint) {
-    commitProjectChange((p) => {
-      const cur = p.clips.find((c) => c.id === clip.id);
-      const locked = clipDurationTicks(cur ?? clip);
-      const next = removeRampPoint(p, clip.id, point.id);
-      const after = next.clips.find((c) => c.id === clip.id);
-      // Clearing the ramp restores natural speed (duration may change);
-      // otherwise keep the track stable.
-      if (!after?.speedRamp) return next;
-      return relockClipDuration(next, clip.id, locked);
-    });
+    commitProjectChange((p) => removeRampPoint(p, clip.id, point.id));
   }
 
-  // Drive the playhead hairline via DOM — do NOT React-subscribe to playheadTicks
-  // (that re-rendered this overlay at 60fps and tanked preview).
-  useEffect(() => {
-    if (!ramp) return;
-    const profile = getRampProfile(ramp);
-    if (!profile) return;
-    const span = Math.max(1, clip.sourceOutTicks - clip.sourceInTicks);
-    const paint = (ticks: number) => {
-      const line = playheadLineRef.current;
-      if (!line) return;
-      const local = Math.max(0, ticks - clip.startTicks);
-      const total = span * profile.durationFactor;
-      const progress =
-        local >= total
-          ? 1
-          : Math.min(1, Math.max(0, profile.progressAtIntegralFactor(local / span)));
-      const x = PAD_X + progress * plotW;
-      line.setAttribute("x1", String(x));
-      line.setAttribute("x2", String(x));
-    };
-    paint(useEditorUiStore.getState().playheadTicks);
-    return useEditorUiStore.subscribe((s, prev) => {
-      if (s.playheadTicks !== prev.playheadTicks) paint(s.playheadTicks);
-    });
-  }, [ramp, clip.startTicks, clip.sourceInTicks, clip.sourceOutTicks, plotW]);
-
   return (
-    <div className={styles.overlay} style={{ width: widthPx, height: heightPx }}>
+    <div
+      className={styles.overlay}
+      style={{ width: widthPx, height: heightPx }}
+    >
       <svg className={styles.svg} width={widthPx} height={heightPx}>
         <rect
           x={PAD_X}
@@ -344,14 +309,6 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
           />
         ) : null}
         <path d={curvePath} className={styles.curve} />
-        <line
-          ref={playheadLineRef}
-          x1={PAD_X}
-          x2={PAD_X}
-          y1={PAD_Y}
-          y2={PAD_Y + plotH}
-          className={styles.playheadLine}
-        />
       </svg>
 
       {ramp.points.map((point) => (
@@ -362,7 +319,6 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
           className={[
             styles.anchor,
             interactive ? "" : styles.anchorReadOnly,
-            blockedRef.current.has(point.id) ? styles.anchorBlocked : "",
           ]
             .filter(Boolean)
             .join(" ")}
@@ -398,6 +354,36 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
             <RampIcon size={12} />
             {speedRange ?? "ramp"}
           </span>
+          {(
+            [
+              ["slow", "½×"],
+              ["normal", "1×"],
+              ["fast", "2×"],
+              ["up", "↗"],
+              ["down", "↘"],
+            ] as const
+          ).map(([kind, label]) => (
+            <button
+              key={kind}
+              type="button"
+              className={styles.toolBtn}
+              title={
+                kind === "slow"
+                  ? "Slow motion 0.5× (clip gets longer)"
+                  : kind === "fast"
+                    ? "Fast 2× (clip gets shorter)"
+                    : kind === "normal"
+                      ? "Reset to normal speed"
+                      : kind === "up"
+                        ? "Ramp up: slow → fast"
+                        : "Ramp down: fast → slow"
+              }
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => applyPreset(kind)}
+            >
+              {label}
+            </button>
+          ))}
           <button
             type="button"
             className={styles.toolBtn}

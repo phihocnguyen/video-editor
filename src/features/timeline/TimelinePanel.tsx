@@ -30,7 +30,6 @@ import {
   normalizeEffectKeyframes,
   projectDurationTicks,
   pruneEmptyTrack,
-  relockClipDuration,
   removeTrack,
   setClipRamp,
   snapTicks,
@@ -201,6 +200,9 @@ export function TimelinePanel() {
   }, [clips, setDurationTicks]);
 
   // Drive playhead + timecode via DOM — no React re-render of the lane/clips.
+  // While playing, also auto-scroll the lanes so the blue line stays in view
+  // and matches the transport progress (only when it leaves the viewport —
+  // never fights a manual scroll inside the view).
   useEffect(() => {
     const paint = (ticks: number) => {
       pendingTicksRef.current = ticks;
@@ -210,6 +212,20 @@ export function TimelinePanel() {
       }
       if (timecodeRef.current) {
         timecodeRef.current.textContent = formatClock(ticksToSeconds(ticks));
+      }
+      const ui = useEditorUiStore.getState();
+      if (ui.isPlaying && !ui.isScrubbing && !scrubbingRef.current) {
+        let scroller: HTMLElement | null | undefined = lanesRef.current?.parentElement;
+        while (scroller && scroller.scrollWidth <= scroller.clientWidth + 1) {
+          scroller = scroller.parentElement;
+        }
+        if (scroller) {
+          const leftVisible = scroller.scrollLeft;
+          const rightVisible = leftVisible + scroller.clientWidth;
+          if (x < leftVisible + 24 || x > rightVisible - 80) {
+            scroller.scrollLeft = Math.max(0, x - 80);
+          }
+        }
       }
     };
     paint(useEditorUiStore.getState().playheadTicks);
@@ -1373,41 +1389,26 @@ export function TimelinePanel() {
               if (!id) return;
               try {
                 let added = false;
-                let locked = 0;
                 commitProjectChange((p) => {
                   const clip = p.clips.find((c) => c.id === id);
                   const already = hasActiveRamp(clip?.speedRamp);
                   // First time: 2 points centered on playhead. Otherwise clear.
+                  // Free duration: the clip stretches/shrinks with speed.
                   if (already) return setClipRamp(p, id, null);
                   added = true;
                   if (!clip) throw new Error("Unknown clipId");
-                  locked = clipDurationTicks(clip);
-                  const enabled = enableSpeedRamp(
+                  return enableSpeedRamp(
                     p,
                     id,
                     useEditorUiStore.getState().playheadTicks,
                     1,
                     2,
                   );
-                  // Enabling must not stretch the track either.
-                  return relockClipDuration(enabled, id, locked);
                 });
-                const clamped =
-                  added &&
-                  (() => {
-                    const after = useProjectStore
-                      .getState()
-                      .project.clips.find((c) => c.id === id);
-                    return (
-                      !!after && Math.abs(clipDurationTicks(after) - locked) > 1
-                    );
-                  })();
                 setStatusMessage(
-                  clamped
-                    ? "Reached end of media — clip shortened"
-                    : added
-                      ? "Speed ramp at playhead — drag points to move / change speed"
-                      : "Speed ramp removed",
+                  added
+                    ? "Speed ramp at playhead — drag points vertically for speed, horizontally for timing"
+                    : "Speed ramp removed",
                 );
               } catch (error) {
                 setStatusMessage(
@@ -1427,12 +1428,10 @@ export function TimelinePanel() {
               const id = useEditorUiStore.getState().selectedClipIds[0];
               if (!id) return;
               try {
-                let locked = 0;
                 commitProjectChange((p) => {
                   const clip = p.clips.find((c) => c.id === id);
                   if (!clip) throw new Error("Unknown clipId");
-                  locked = clipDurationTicks(clip);
-                  const addedRamp = addRampPointAtPlayhead(
+                  return addRampPointAtPlayhead(
                     p,
                     id,
                     useEditorUiStore.getState().playheadTicks,
@@ -1441,16 +1440,8 @@ export function TimelinePanel() {
                         ?.speedRamp,
                     )?.speedAtProgress(0.5) ?? 1,
                   ).project;
-                  return relockClipDuration(addedRamp, id, locked);
                 });
-                const after = useProjectStore
-                  .getState()
-                  .project.clips.find((c) => c.id === id);
-                setStatusMessage(
-                  after && Math.abs(clipDurationTicks(after) - locked) > 1
-                    ? "Reached end of media — clip shortened"
-                    : "Ramp point added — drag vertically to change speed",
-                );
+                setStatusMessage("Ramp point added — drag vertically to change speed");
               } catch (error) {
                 setStatusMessage(
                   error instanceof Error ? error.message : "Add point failed",

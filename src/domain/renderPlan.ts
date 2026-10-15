@@ -65,6 +65,8 @@ export interface RenderTextPlan {
   backgroundColor: string | null;
   backgroundPadding: number;
   backgroundRadius: number;
+  /** Slide distance in output px (preview 48 canvas px * fontScale). */
+  slideDist: number;
   x: number;
   y: number;
   opacity: number;
@@ -114,6 +116,10 @@ export function buildRenderPlan(
     if (clip.kind === "text" && clip.text) {
       if (track && !track.visible) continue;
       const fx = normalizeClipEffects(clip.effects ?? DEFAULT_CLIP_EFFECTS);
+      const textScaleX =
+        Number.isFinite(clip.transform.scaleX) && clip.transform.scaleX !== 0
+          ? Math.abs(clip.transform.scaleX)
+          : 1;
       texts.push({
         clipId: clip.id,
         trackId: clip.trackId,
@@ -121,12 +127,13 @@ export function buildRenderPlan(
         content: clip.text.content,
         fontFamily: clip.text.fontFamily,
         fontPath: clip.text.fontPath,
-        fontSize: clip.text.fontSize * fontScale,
+        fontSize: clip.text.fontSize * fontScale * textScaleX,
         color: clip.text.color,
         align: clip.text.align,
         backgroundColor: clip.text.backgroundColor ?? null,
         backgroundPadding: (clip.text.backgroundPadding ?? 12) * fontScale,
         backgroundRadius: (clip.text.backgroundRadius ?? 10) * fontScale,
+        slideDist: 48 * fontScale,
         x: clip.transform.x * scaleX,
         y: clip.transform.y * scaleY,
         opacity: clip.transform.opacity,

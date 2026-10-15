@@ -26,6 +26,8 @@ pub struct RenderClipPlan {
     #[serde(default)]
     pub effects: RenderClipEffects,
     #[serde(default)]
+    pub effect_keyframes: Option<EffectKeyframes>,
+    #[serde(default)]
     pub transition_in: RenderClipTransition,
     #[serde(default)]
     pub transition_overlap_sec: f64,
@@ -118,9 +120,21 @@ pub struct RenderClipEffects {
     #[serde(default)]
     pub grayscale: bool,
     #[serde(default)]
+    pub vignette: f64,
+    #[serde(default)]
+    pub sharpen: f64,
+    #[serde(default)]
+    pub strobe_frames: f64,
+    #[serde(default = "default_strobe_color")]
+    pub strobe_color: String,
+    #[serde(default)]
     pub fade_in_sec: f64,
     #[serde(default)]
     pub fade_out_sec: f64,
+}
+
+fn default_strobe_color() -> String {
+    "#000000".into()
 }
 
 fn default_one() -> f64 {
@@ -154,6 +168,39 @@ fn default_half() -> f64 {
     0.5
 }
 
+fn default_slide_dist() -> f64 {
+    48.0
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectKeyframePoint {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub at_progress: f64,
+    #[serde(default)]
+    pub value: f64,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectParamTrack {
+    #[serde(default)]
+    pub param: String,
+    #[serde(default)]
+    pub tracks: Vec<EffectKeyframePoint>,
+    #[serde(default)]
+    pub points: Vec<EffectKeyframePoint>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectKeyframes {
+    #[serde(default)]
+    pub tracks: Vec<EffectParamTrack>,
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderTextPlan {
@@ -180,6 +227,13 @@ pub struct RenderTextPlan {
     /// layerStackZ and the TS builder). Defaults to 0 for older plans.
     #[serde(default)]
     pub track_order: i32,
+    /// Instagram-style highlight behind glyphs (None = no background).
+    #[serde(default)]
+    pub background_color: Option<String>,
+    #[serde(default)]
+    pub background_padding: f64,
+    #[serde(default = "default_slide_dist")]
+    pub slide_dist: f64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -540,6 +594,50 @@ fn ramp_setpts(profile: &RampProfile, source_span_sec: f64) -> String {
     format!("setpts=({expr})/TB")
 }
 
+/// SVG stickers preview fine in the browser but most FFmpeg builds ship
+/// without an SVG decoder. Pre-rasterize `.svg` inputs to a cached PNG with
+/// the bundled ffmpeg so export never goes black on shapes/logo overlays.
+/// Returns the replacement path, or the original when conversion fails
+/// (caller keeps the original input as a best-effort fallback).
+fn rasterized_svg_path(source: &str) -> String {
+    if !source.to_lowercase().ends_with(".svg") {
+        return source.to_string();
+    }
+    if !Path::new(source).is_file() {
+        return source.to_string();
+    }
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in source.bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    if let Ok(meta) = std::fs::metadata(source) {
+        hash ^= meta.len().wrapping_add(meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0));
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let out = std::env::temp_dir().join(format!("cutline-svg-{hash:x}.png"));
+    if out.is_file() {
+        return out.to_string_lossy().to_string();
+    }
+    let status = silent_command(ffmpeg_program())
+        .args([
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            source,
+            "-frames:v",
+            "1",
+            out.to_string_lossy().as_ref(),
+        ])
+        .status();
+    match status {
+        Ok(s) if s.success() && out.is_file() => out.to_string_lossy().to_string(),
+        _ => source.to_string(),
+    }
+}
+
 pub struct BuiltCommand {
     pub program: String,
     pub args: Vec<String>,
@@ -564,11 +662,15 @@ pub fn build_export_command(plan: &RenderPlan, output: &Path) -> Result<BuiltCom
     let duration = plan.duration_sec;
 
     // Drop include_audio when the file has no audio stream (avoids `[n:a] matches no streams`).
+    // Pre-rasterize SVG stickers/logo (ffmpeg often lacks an SVG decoder).
     let clips: Vec<RenderClipPlan> = plan
         .clips
         .iter()
         .cloned()
         .map(|mut clip| {
+            if clip.kind == "image" && clip.asset_path.to_lowercase().ends_with(".svg") {
+                clip.asset_path = rasterized_svg_path(&clip.asset_path);
+            }
             if clip.include_audio
                 && (clip.kind == "video" || clip.kind == "audio")
                 && !media_has_audio_stream(&clip.asset_path)
@@ -865,7 +967,7 @@ fn build_filter_complex(
             0.0
         };
         let hold = out_half;
-        let fx = ffmpeg_video_effects_chain(&clip.effects, clip_dur, overlap);
+        let fx = ffmpeg_video_effects_chain_animated(&clip.effects, &clip.effect_keyframes, clip_dur, overlap);
         let mut extras: Vec<String> = Vec::new();
         if !fx.is_empty() {
             extras.push(fx);
@@ -901,8 +1003,17 @@ fn build_filter_complex(
             format!(",{}", extras.join(","))
         };
         let placement = media_placement_filters(clip, width, height);
+        // Shift PTS so stream local 0 lands at timeline `overlay_start`.
+        // Without this, `overlay` syncs by PTS: clip 2 (start 5s) would be
+        // sampled at PTS 5s (near EOF) during the transition -> black/frozen.
+        // The delay goes AFTER fades/tpad so geq `T` windows stay local.
+        let delay_part = if overlay_start > 0.0005 {
+            format!(",setpts=PTS-STARTPTS+{overlay_start:.3}/TB")
+        } else {
+            String::new()
+        };
         parts.push(format!(
-            "[{input_index}:v]{placement},{setpts},format=rgba{extra_part},colorchannelmixer=aa={opacity:.3}[v{index}]"
+            "[{input_index}:v]{placement},{setpts},format=rgba{extra_part}{delay_part},colorchannelmixer=aa={opacity:.3}[v{index}]"
         ));
         prepared.push(Prepared {
             vlabel: format!("[v{index}]"),
@@ -1153,30 +1264,180 @@ fn ffmpeg_smooth_fade_out_alpha(start_sec: f64, duration_sec: f64) -> String {
     ))
 }
 
-fn ffmpeg_video_effects_chain(
+/// Resolve a hold-style value at clip-local time `t` from keyframe points
+/// (progress 0..1 mapped onto [delay, delay+dur]). Before the first keyframe
+/// falls back to `before`.
+fn kf_hold_at(points: &[EffectKeyframePoint], delay: f64, dur: f64, t: f64, before: f64) -> f64 {
+    let mut sorted: Vec<(f64, f64)> = points
+        .iter()
+        .filter(|p| p.at_progress.is_finite() && p.value.is_finite())
+        .map(|p| {
+            (
+                delay + p.at_progress.clamp(0.0, 1.0) * dur,
+                p.value,
+            )
+        })
+        .collect();
+    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+    let mut v = before;
+    for (pt, pv) in sorted {
+        if t >= pt {
+            v = pv;
+        } else {
+            break;
+        }
+    }
+    v
+}
+
+fn kf_track<'a>(kf: &'a Option<EffectKeyframes>, param: &str) -> Option<Vec<EffectKeyframePoint>> {
+    let tracks = kf.as_ref()?.tracks.as_slice();
+    for t in tracks {
+        if t.param == param {
+            let pts = if !t.points.is_empty() { &t.points } else { &t.tracks };
+            if !pts.is_empty() {
+                return Some(pts.to_vec());
+            }
+        }
+    }
+    None
+}
+
+/// Step windows where a hold-style param exceeds `threshold`, for filters
+/// (gblur/hue/unsharp/vignette/strobe) that cannot take per-frame exprs.
+fn kf_windows(
+    points: &[EffectKeyframePoint],
+    delay: f64,
+    dur: f64,
+    threshold: f64,
+) -> Vec<(f64, f64, f64)> {
+    let mut sorted: Vec<(f64, f64)> = points
+        .iter()
+        .filter(|p| p.at_progress.is_finite() && p.value.is_finite())
+        .map(|p| (delay + p.at_progress.clamp(0.0, 1.0) * dur, p.value))
+        .collect();
+    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+    if sorted.is_empty() {
+        return Vec::new();
+    }
+    let mut edge: Vec<(f64, f64)> = Vec::with_capacity(sorted.len() + 2);
+    edge.push((delay, sorted[0].1));
+    edge.extend(sorted);
+    edge.push((delay + dur, edge.last().map(|e| e.1).unwrap_or(0.0)));
+    let mut windows: Vec<(f64, f64, f64)> = Vec::new();
+    for w in edge.windows(2) {
+        let (a_t, a_v) = w[0];
+        let (b_t, _) = w[1];
+        if a_v <= threshold || b_t - a_t < 0.005 {
+            continue;
+        }
+        if let Some(last) = windows.last_mut() {
+            if (last.2 - a_v).abs() < 0.05 && (last.1 - a_t).abs() < 0.02 {
+                last.1 = b_t;
+                continue;
+            }
+        }
+        windows.push((a_t, b_t, a_v));
+    }
+    windows
+}
+
+fn ffmpeg_video_effects_chain_animated(
     effects: &RenderClipEffects,
+    keyframes: &Option<EffectKeyframes>,
     clip_duration_sec: f64,
     delay_sec: f64,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
     let delay = delay_sec.max(0.0);
+    let dur = clip_duration_sec.max(0.01);
     let eq_bright = (effects.brightness - 1.0).clamp(-1.0, 1.0);
-    let need_eq = eq_bright.abs() > 0.001
-        || (effects.contrast - 1.0).abs() > 0.001
-        || (effects.saturation - 1.0).abs() > 0.001;
-    if need_eq {
-        parts.push(format!(
-            "eq=brightness={:.3}:contrast={:.3}:saturation={:.3}",
-            eq_bright, effects.contrast, effects.saturation
-        ));
+    // eq supports per-frame expressions; keyframed brightness/contrast/
+    // saturation glide via a hold-style `if(lt(t,...))` ladder like TS.
+    let b_track = kf_track(keyframes, "brightness");
+    let c_track = kf_track(keyframes, "contrast");
+    let s_track = kf_track(keyframes, "saturation");
+    if b_track.is_some() || c_track.is_some() || s_track.is_some() {
+        let b = b_track
+            .as_deref()
+            .map(|p| kf_hold_at(p, delay, dur, 0.0, 0.0))
+            .map(|_| kf_expr_ladder(b_track.as_deref().unwrap(), delay, dur, |v| (v - 1.0).clamp(-1.0, 1.0), eq_bright))
+            .unwrap_or_else(|| format!("{eq_bright:.3}"));
+        let c = c_track
+            .as_deref()
+            .map(|p| kf_expr_ladder(p, delay, dur, |v| v, effects.contrast))
+            .unwrap_or_else(|| format!("{:.3}", effects.contrast));
+        let s = s_track
+            .as_deref()
+            .map(|p| kf_expr_ladder(p, delay, dur, |v| v, effects.saturation))
+            .unwrap_or_else(|| format!("{:.3}", effects.saturation));
+        parts.push(format!("eq=brightness='{b}':contrast='{c}':saturation='{s}':eval=frame"));
+    } else {
+        let need_eq = eq_bright.abs() > 0.001
+            || (effects.contrast - 1.0).abs() > 0.001
+            || (effects.saturation - 1.0).abs() > 0.001;
+        if need_eq {
+            parts.push(format!(
+                "eq=brightness={eq_bright:.3}:contrast={:.3}:saturation={:.3}",
+                effects.contrast, effects.saturation
+            ));
+        }
     }
-    if effects.blur > 0.05 {
+    if let Some(p) = kf_track(keyframes, "blur") {
+        for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.05) {
+            parts.push(format!(
+                "gblur=sigma={:.2}:enable='between(t\\,{t0:.3}\\,{t1:.3})'",
+                sigma.min(40.0)
+            ));
+        }
+    } else if effects.blur > 0.05 {
         parts.push(format!("gblur=sigma={:.2}", effects.blur.min(40.0)));
     }
-    if effects.grayscale {
+    if let Some(p) = kf_track(keyframes, "grayscale") {
+        for (t0, t1, _) in kf_windows(&p, delay, dur, 0.5) {
+            parts.push(format!("hue=s=0:enable='between(t\\,{t0:.3}\\,{t1:.3})'"));
+        }
+    } else if effects.grayscale {
         parts.push("hue=s=0".into());
     }
-    let dur = clip_duration_sec.max(0.01);
+    if let Some(p) = kf_track(keyframes, "sharpen") {
+        for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.02) {
+            let amount = (0.5 + sigma).clamp(0.5, 2.5);
+            parts.push(format!(
+                "unsharp=5:5:{amount:.2}:5:5:0.0:enable='between(t\\,{t0:.3}\\,{t1:.3})'"
+            ));
+        }
+    } else if effects.sharpen > 0.02 {
+        let amount = (0.5 + effects.sharpen).clamp(0.5, 2.5);
+        parts.push(format!("unsharp=5:5:{amount:.2}:5:5:0.0"));
+    }
+    if let Some(p) = kf_track(keyframes, "vignette") {
+        for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.02) {
+            let angle = std::f64::consts::PI / 5.0 + (1.0 - sigma.clamp(0.0, 1.0)) * (std::f64::consts::PI / 4.0);
+            parts.push(format!(
+                "vignette=angle={angle:.4}:mode=backward:enable='between(t\\,{t0:.3}\\,{t1:.3})'"
+            ));
+        }
+    } else if effects.vignette > 0.02 {
+        let angle = std::f64::consts::PI / 5.0 + (1.0 - effects.vignette) * (std::f64::consts::PI / 4.0);
+        parts.push(format!("vignette=angle={angle:.4}:mode=backward"));
+    }
+    let strobe_color = effects.strobe_color.trim_start_matches('#');
+    if let Some(p) = kf_track(keyframes, "strobeFrames") {
+        for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.5) {
+            let period = (sigma.round() as i64).max(1);
+            parts.push(format!(
+                "drawbox=x=0:y=0:w=iw:h=ih:color={strobe_color}@1:t=fill:enable='between(t\\,{t0:.3}\\,{t1:.3})*eq(mod(n\\,{period})\\,{})'",
+                period - 1
+            ));
+        }
+    } else if effects.strobe_frames.round() > 0.0 {
+        let period = (effects.strobe_frames.round() as i64).max(1);
+        parts.push(format!(
+            "drawbox=x=0:y=0:w=iw:h=ih:color={strobe_color}@1:t=fill:enable='eq(mod(n\\,{period})\\,{})'",
+            period - 1
+        ));
+    }
     let fade_in = effects.fade_in_sec.min(dur);
     if fade_in > 0.001 {
         parts.push(format!("fade=t=in:st={delay:.3}:d={fade_in:.3}:alpha=1"));
@@ -1187,6 +1448,41 @@ fn ffmpeg_video_effects_chain(
         parts.push(format!("fade=t=out:st={st:.3}:d={fade_out:.3}:alpha=1"));
     }
     parts.join(",")
+}
+
+/// Hold-style `if(lt(t,...))` ladder for eq params (mirrors TS ffmpegKeyframeExpr).
+fn kf_expr_ladder(
+    points: &[EffectKeyframePoint],
+    delay: f64,
+    dur: f64,
+    map: fn(f64) -> f64,
+    before: f64,
+) -> String {
+    let mut mapped: Vec<(f64, f64)> = points
+        .iter()
+        .filter(|p| p.at_progress.is_finite() && p.value.is_finite())
+        .map(|p| (delay + p.at_progress.clamp(0.0, 1.0) * dur, map(p.value)))
+        .collect();
+    mapped.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+    if mapped.is_empty() {
+        return format!("{before:.4}");
+    }
+    if mapped.len() == 1 {
+        let (t, v) = mapped[0];
+        if (before - v).abs() < 1e-6 {
+            return format!("{v:.4}");
+        }
+        return format!("if(lt(t\\,{t:.4})\\,{before:.4}\\,{v:.4})");
+    }
+    let mut expr = format!("{:.4}", mapped.last().unwrap().1);
+    for w in mapped.windows(2).rev() {
+        let (bt, _) = w[1];
+        let (at, av) = w[0];
+        let _ = at;
+        expr = format!("if(lt(t\\,{bt:.4})\\,{av:.4}\\,{expr})");
+    }
+    let (first_t, _) = mapped[0];
+    format!("if(lt(t\\,{first_t:.4})\\,{before:.4}\\,{expr})")
 }
 
 fn drawtext_filter(text: &RenderTextPlan, current: &str, next: String) -> String {
@@ -1200,8 +1496,8 @@ fn drawtext_filter(text: &RenderTextPlan, current: &str, next: String) -> String
     let base_size = text.font_size.max(8.0).round();
     let color = normalize_color(&text.color);
     let base_alpha = text.opacity.clamp(0.0, 1.0);
-    let x_expr = drawtext_x_expr(&text.align, text.x, start, dur, &text.text_animation);
-    let y_expr = drawtext_y_expr(text.y, start, dur, &text.text_animation);
+    let x_expr = drawtext_x_expr(&text.align, text.x, start, dur, text.slide_dist, &text.text_animation);
+    let y_expr = drawtext_y_expr(text.y, start, dur, text.slide_dist, &text.text_animation);
     let alpha_expr = drawtext_alpha_expr(
         base_alpha,
         start,
@@ -1210,8 +1506,16 @@ fn drawtext_filter(text: &RenderTextPlan, current: &str, next: String) -> String
         text.fade_out_sec,
         &text.text_animation,
     );
+    // drawtext has square corners (no radius); keep padding parity with preview.
+    let background = match text.background_color.as_deref() {
+        Some(c) if !c.trim().is_empty() => {
+            let bw = (text.background_padding.max(0.0).round() as i64).max(2);
+            format!(":box=1:boxcolor={}@1:boxborderw={bw}", normalize_color(c))
+        }
+        _ => String::new(),
+    };
     format!(
-        "{current}drawtext=text='{escaped}'{fontfile}:fontsize={base_size}:fontcolor={color}@1:x='{x_expr}':y='{y_expr}':alpha='{alpha_expr}':enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
+        "{current}drawtext=text='{escaped}'{fontfile}:fontsize={base_size}:fontcolor={color}@1:x='{x_expr}':y='{y_expr}':alpha='{alpha_expr}'{background}:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
     )
 }
 
@@ -1222,6 +1526,7 @@ fn slide_axis_offset(
     dur: f64,
     out_start: f64,
     out_dur: f64,
+    dist: f64,
 ) -> Option<String> {
     let wants = (axis == 'x' && (anim == "slideLeft" || anim == "slideRight"))
         || (axis == 'y' && (anim == "slideUp" || anim == "slideDown"));
@@ -1233,17 +1538,18 @@ fn slide_axis_offset(
     } else {
         -1.0
     };
+    let d = if dist.is_finite() && dist > 0.0 { dist } else { 48.0 };
     let mut terms: Vec<String> = Vec::new();
     if dur > 0.001 {
         terms.push(format!(
             "{:.1}*(1-min(1\\,max(0\\,(t-{start:.3})/{dur:.3})))",
-            sign * 48.0
+            sign * d
         ));
     }
     if out_dur > 0.001 {
         terms.push(format!(
             "{:.1}*(min(1\\,max(0\\,(t-{out_start:.3})/{out_dur:.3})))",
-            sign * 48.0
+            sign * d
         ));
     }
     if terms.is_empty() {
@@ -1258,6 +1564,7 @@ fn drawtext_x_expr(
     x: f64,
     start: f64,
     dur: f64,
+    slide_dist: f64,
     anim: &RenderTextAnimation,
 ) -> String {
     let base = match align {
@@ -1269,10 +1576,10 @@ fn drawtext_x_expr(
     let out_dur = anim.out_duration_sec.min(dur);
     let out_start = start + (dur - out_dur).max(0.0);
     let mut off: Vec<String> = Vec::new();
-    if let Some(e) = slide_axis_offset(&anim.r#in, 'x', start, in_dur, out_start, 0.0) {
+    if let Some(e) = slide_axis_offset(&anim.r#in, 'x', start, in_dur, out_start, 0.0, slide_dist) {
         off.push(e);
     }
-    if let Some(e) = slide_axis_offset(&anim.out, 'x', start, 0.0, out_start, out_dur) {
+    if let Some(e) = slide_axis_offset(&anim.out, 'x', start, 0.0, out_start, out_dur, slide_dist) {
         off.push(e);
     }
     if off.is_empty() {
@@ -1282,16 +1589,16 @@ fn drawtext_x_expr(
     }
 }
 
-fn drawtext_y_expr(y: f64, start: f64, dur: f64, anim: &RenderTextAnimation) -> String {
+fn drawtext_y_expr(y: f64, start: f64, dur: f64, slide_dist: f64, anim: &RenderTextAnimation) -> String {
     let base = format!("{}-(text_h/2)", y.max(0.0) as i64);
     let in_dur = anim.in_duration_sec.min(dur);
     let out_dur = anim.out_duration_sec.min(dur);
     let out_start = start + (dur - out_dur).max(0.0);
     let mut off: Vec<String> = Vec::new();
-    if let Some(e) = slide_axis_offset(&anim.r#in, 'y', start, in_dur, out_start, 0.0) {
+    if let Some(e) = slide_axis_offset(&anim.r#in, 'y', start, in_dur, out_start, 0.0, slide_dist) {
         off.push(e);
     }
-    if let Some(e) = slide_axis_offset(&anim.out, 'y', start, 0.0, out_start, out_dur) {
+    if let Some(e) = slide_axis_offset(&anim.out, 'y', start, 0.0, out_start, out_dur, slide_dist) {
         off.push(e);
     }
     if off.is_empty() {
