@@ -7,7 +7,7 @@ export interface RecentProjectEntry {
 }
 
 const STORAGE_KEY = "cutline.recentProjects";
-const MAX_RECENT = 8;
+const MAX_RECENT = 12;
 
 function loadRecent(): RecentProjectEntry[] {
   try {
@@ -31,6 +31,7 @@ function saveRecent(entries: RecentProjectEntry[]) {
 interface RecentProjectsState {
   recent: RecentProjectEntry[];
   remember: (path: string, name: string) => void;
+  remove: (path: string) => void;
   clear: () => void;
 }
 
@@ -41,6 +42,11 @@ export const useRecentProjectsStore = create<RecentProjectsState>((set, get) => 
       { path, name, openedAt: new Date().toISOString() },
       ...get().recent.filter((e) => e.path !== path),
     ].slice(0, MAX_RECENT);
+    saveRecent(next);
+    set({ recent: next });
+  },
+  remove: (path) => {
+    const next = get().recent.filter((e) => e.path !== path);
     saveRecent(next);
     set({ recent: next });
   },

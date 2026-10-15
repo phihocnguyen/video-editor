@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Cutline logo">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1A1033"/>
+      <stop offset="1" stop-color="#09060F"/>
+    </linearGradient>
+    <linearGradient id="top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22E1FF"/>
+      <stop offset="1" stop-color="#3B82F6"/>
+    </linearGradient>
+    <linearGradient id="bottom" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#A855F7"/>
+      <stop offset="1" stop-color="#FF3D9A"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+
+  <g transform="translate(-26 0)" stroke-linejoin="round" stroke-width="26">
+    <path d="M190 146 L390 240 L190 240 Z" transform="translate(0 -4)" fill="url(#top)" stroke="url(#top)"/>
+    <path d="M190 272 L390 272 L190 366 Z" transform="translate(0 4)" fill="url(#bottom)" stroke="url(#bottom)"/>
+  </g>
+</svg>

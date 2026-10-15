@@ -2,9 +2,12 @@ import { create } from "zustand";
 import {
   createEmptyProject,
   normalizeProjectDocument,
+  updateCanvas,
   type MediaAsset,
   type ProjectDocument,
 } from "../domain";
+
+type CanvasPreset = Partial<ProjectDocument["canvas"]>;
 
 interface ProjectState {
   project: ProjectDocument;
@@ -13,7 +16,7 @@ interface ProjectState {
   setProject: (project: ProjectDocument, options?: { dirty?: boolean }) => void;
   setProjectPath: (path: string | null) => void;
   addAssets: (assets: MediaAsset[]) => void;
-  newProject: (name?: string) => void;
+  newProject: (name?: string, canvas?: CanvasPreset) => void;
   markClean: () => void;
 }
 
@@ -46,11 +49,14 @@ export const useProjectStore = create<ProjectState>((set) => ({
         updatedAt: new Date().toISOString(),
       },
     })),
-  newProject: (name) =>
+  newProject: (name, canvas) => {
+    const base = createEmptyProject(name);
+    const project = canvas ? updateCanvas(base, canvas) : base;
     set({
-      project: createEmptyProject(name),
+      project,
       projectPath: null,
       dirty: false,
-    }),
+    });
+  },
   markClean: () => set({ dirty: false }),
 }));

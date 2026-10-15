@@ -13,10 +13,12 @@
     "windows": [
       {
         "title": "Cutline",
-        "width": 1440,
-        "height": 900,
-        "minWidth": 1024,
-        "minHeight": 700
+        "width": 420,
+        "height": 640,
+        "minWidth": 360,
+        "minHeight": 520,
+        "center": true,
+        "resizable": true
       }
     ],
     "security": {

@@ -23,6 +23,7 @@ import {
   type EditorPanel,
 } from "../../stores/editorUiStore";
 import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
+import { useAppShellStore } from "../../stores/appShellStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { useRecentProjectsStore } from "../../stores/recentProjectsStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -154,6 +155,7 @@ export function EditorShell() {
   const recent = useRecentProjectsStore((s) => s.recent);
   const rememberRecent = useRecentProjectsStore((s) => s.remember);
   const hydrateSettings = useSettingsStore((s) => s.hydrate);
+  const goHome = useAppShellStore((s) => s.goHome);
 
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [appInfo, setAppInfo] = useState<{ name: string; version: string } | null>(null);
@@ -403,6 +405,17 @@ export function EditorShell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleOpen, handleSave, redo, setSelectedClipIds, setStatusMessage, undo]);
 
+  const handleProjectsHome = useCallback(() => {
+    if (dirty) {
+      const ok = window.confirm(
+        "Leave editor and return to Projects home?\nUnsaved changes may be lost unless you Save first.",
+      );
+      if (!ok) return;
+    }
+    setPlaying(false);
+    goHome();
+  }, [dirty, goHome, setPlaying]);
+
   const fileMenu: MenuItem[] = [
     { label: "New project", shortcut: "Ctrl+N", onSelect: handleNew },
     { label: "Open…", shortcut: "Ctrl+O", onSelect: () => void handleOpen() },
@@ -416,7 +429,12 @@ export function EditorShell() {
           },
         ]
       : []),
-    { label: "Export…", onSelect: () => setActivePanel("export"), separatorBefore: true },
+    {
+      label: "Projects home",
+      onSelect: handleProjectsHome,
+      separatorBefore: true,
+    },
+    { label: "Export…", onSelect: () => setActivePanel("export") },
   ];
 
   const editMenu: MenuItem[] = [
