@@ -2,7 +2,7 @@
 
 Maps `implementation_plan.md` milestones into executable phases. Keep the app buildable after each phase.
 
-## Status (2026-10-14)
+## Status (2026-10-15)
 
 **MVP business logic: done** (Phases 0–5 code complete in browser/`pnpm dev` path).
 
@@ -19,9 +19,10 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 
 **Still open:**
 
-1. **Machine verify / packaging** — MSVC; `pnpm tauri:dev`; NSIS install; offline QA.
-2. **Phase 6 Pro** — Slice A effects (below); then transitions → keyframes → captions…
-3. **Optional polish** — export with the exact custom `.ttf` (else Arial/Segoe fallback).
+1. **URGENT — Detach audio from video + audio trim** — On import/open of a video with an audio stream: extract soundtrack to a linked audio asset (or linked A/V pair), place mute-able video + editable audio on separate tracks; support cutting/trimming the detached audio independently. FFmpeg: `ffmpeg -i in.mp4 -vn -acodec copy out.m4a` (or AAC re-encode) + keep video stream; timeline commands for split/trim on audio clips. Preview + export must stay in sync when either side is cut.
+2. **Machine verify / packaging** — MSVC; `pnpm tauri:dev`; NSIS install; offline QA.
+3. **Phase 6 Pro** — remaining polish (opacity/transform keyframes, captions…).
+4. **Optional polish** — export with the exact custom `.ttf` (else Arial/Segoe fallback).
 
 ---
 
@@ -172,9 +173,10 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 
 ### Later slices (ordered)
 
+0. **URGENT — Detach A/V + cut audio** — Extract music/dialogue from imported video into a separate audio clip (linked to source); trim/split audio on the timeline without forcing the video cut to match (optional relink/lock). See Status item 1.
 1. **Captions** — SRT import + burn-in (drawtext / ass)
-3. **Color grading** — curves / LUTs (beyond simple eq)
-4. **Proxy / GPU compositor** — smoother multi-track preview
-5. **Templates** — starter timelines
-6. **Platforms** — macOS / Linux packaging
-7. **Optional** — AI assist, licensing hooks
+2. **Color grading** — curves / LUTs (beyond simple eq)
+3. **Proxy / GPU compositor** — smoother multi-track preview
+4. **Templates** — starter timelines
+5. **Platforms** — macOS / Linux packaging
+6. **Optional** — AI assist, licensing hooks

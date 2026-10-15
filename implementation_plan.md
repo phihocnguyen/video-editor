@@ -447,6 +447,12 @@ Acceptance criteria:
 ### Later milestones — Pro features
 
 Implement only after the MVP pipeline is reliable:
+
+- **URGENT — Detach audio from video + cut audio**
+  - When reading/importing a video that has an audio stream, extract the soundtrack into a separate audio asset (FFmpeg `-vn` copy/re-encode) while keeping the video usable muted or linked.
+  - Place video and audio on separate timeline tracks so the user can mute, move, trim, and split the music/dialogue independently (“cắt nhạc”).
+  - Optional link/lock so A/V stay tied until the user explicitly unlinks; preview and export must stay in sync for linked pairs and correct when only audio is cut.
+  - Acceptance: import a sample MP4 with audio → get an audio clip (or linked pair) → trim/split audio without requiring a matching video cut → export keeps intended A/V relationship.
 - Keyframes and animation curves.
 - Transitions and effect stack.
 - Color correction and LUT support.
