@@ -426,12 +426,16 @@ function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
 
-/** Hold-style on-ranges from keyframes for filters that cannot take exprs. */
+/** Hold-style on-ranges from keyframes for filters that cannot take exprs.
+ * `before` is the base effect value applied before the first keyframe
+ * (mirrors `interpolateParam` fallback) — without it the first keyframe's
+ * value would wrongly cover the clip head. */
 export function steppedOnWindows(
   points: { atProgress: number; value: number }[],
   clipDurationSec: number,
   t0: number,
   threshold: number,
+  before = 0,
 ): { t0: number; t1: number; sigma: number }[] {
   const dur = Math.max(0.01, clipDurationSec);
   const sorted = [...points].sort((a, b) => a.atProgress - b.atProgress);
@@ -441,7 +445,7 @@ export function steppedOnWindows(
     v: p.value,
   }));
   const edge = [
-    { t: t0, v: samples[0]!.v },
+    { t: t0, v: before },
     ...samples,
     { t: t0 + dur, v: samples[samples.length - 1]!.v },
   ];
@@ -524,7 +528,7 @@ export function ffmpegVideoEffectsChainAnimated(
 
   const blurTrack = getParamTrack(kf, "blur");
   if (blurTrack && blurTrack.points.some((p) => p.value > 0.05)) {
-    for (const w of steppedOnWindows(blurTrack.points, dur, delay, 0.05)) {
+    for (const w of steppedOnWindows(blurTrack.points, dur, delay, 0.05, e.blur)) {
       parts.push(
         `gblur=sigma=${Math.min(40, w.sigma).toFixed(2)}:enable='between(t\\,${w.t0.toFixed(3)}\\,${w.t1.toFixed(3)})'`,
       );
@@ -535,7 +539,7 @@ export function ffmpegVideoEffectsChainAnimated(
 
   const grayTrack = getParamTrack(kf, "grayscale");
   if (grayTrack) {
-    for (const w of steppedOnWindows(grayTrack.points, dur, delay, 0.5)) {
+    for (const w of steppedOnWindows(grayTrack.points, dur, delay, 0.5, e.grayscale ? 1 : 0)) {
       parts.push(
         `hue=s=0:enable='between(t\\,${w.t0.toFixed(3)}\\,${w.t1.toFixed(3)})'`,
       );
@@ -546,7 +550,7 @@ export function ffmpegVideoEffectsChainAnimated(
 
   const sharpenTrack = getParamTrack(kf, "sharpen");
   if (sharpenTrack && sharpenTrack.points.some((p) => p.value > 0.02)) {
-    for (const w of steppedOnWindows(sharpenTrack.points, dur, delay, 0.02)) {
+    for (const w of steppedOnWindows(sharpenTrack.points, dur, delay, 0.02, e.sharpen)) {
       const amount = clamp(0.5 + w.sigma, 0.5, 2.5);
       parts.push(
         `unsharp=5:5:${amount.toFixed(2)}:5:5:0.0:enable='between(t\\,${w.t0.toFixed(3)}\\,${w.t1.toFixed(3)})'`,
@@ -559,7 +563,7 @@ export function ffmpegVideoEffectsChainAnimated(
 
   const vigTrack = getParamTrack(kf, "vignette");
   if (vigTrack && vigTrack.points.some((p) => p.value > 0.02)) {
-    for (const w of steppedOnWindows(vigTrack.points, dur, delay, 0.02)) {
+    for (const w of steppedOnWindows(vigTrack.points, dur, delay, 0.02, e.vignette)) {
       const angle = Math.PI / 5 + (1 - clamp(w.sigma, 0, 1)) * (Math.PI / 4);
       parts.push(
         `vignette=angle=${angle.toFixed(4)}:mode=backward:enable='between(t\\,${w.t0.toFixed(3)}\\,${w.t1.toFixed(3)})'`,
@@ -573,7 +577,7 @@ export function ffmpegVideoEffectsChainAnimated(
   const color = e.strobeColor.replace("#", "");
   const strobeTrack = getParamTrack(kf, "strobeFrames");
   if (strobeTrack && strobeTrack.points.some((p) => p.value >= 0.5)) {
-    for (const w of steppedOnWindows(strobeTrack.points, dur, delay, 0.5)) {
+    for (const w of steppedOnWindows(strobeTrack.points, dur, delay, 0.5, e.strobeFrames)) {
       const period = Math.max(1, Math.round(w.sigma));
       parts.push(
         `drawbox=x=0:y=0:w=iw:h=ih:color=${color}@1:t=fill:enable='between(t\\,${w.t0.toFixed(3)}\\,${w.t1.toFixed(3)})*eq(mod(n\\,${period})\\,${period - 1})'`,

@@ -37,3 +37,6 @@ tools/ffmpeg-extract/
 
 # Bundled FFmpeg sidecars (large, machine-local — see src-tauri/binaries/README.md)
 src-tauri/binaries/*.exe
+
+# Marketing installer (copy from tauri NSIS bundle — too large for git)
+public/downloads/*.exe

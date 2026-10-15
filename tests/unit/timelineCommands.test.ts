@@ -15,8 +15,10 @@ import {
   removeRampPoint,
   removeTrack,
   setClipRamp,
+  setEffectParamAtPlayhead,
   setRampPointSpeed,
   splitClipAt,
+  toggleEffectKeyframeAtPlayhead,
   trimClip,
   updateCanvas,
   updateClipSpeed,
@@ -486,5 +488,27 @@ describe("speed ramp commands", () => {
     expect(right.speedRamp!.points[0].speed).toBeGreaterThan(1.5);
     // Concatenated timeline durations roughly match the original.
     expect(clipDurationTicks(left) + clipDurationTicks(right)).toBeCloseTo(total, -4);
+  });
+});
+
+describe("effect keyframe toggle", () => {
+  function clipProject() {
+    const project = addMediaClip(withAsset(), "asset-1", { startTicks: 0 });
+    return { project, clipId: project.clips[0].id };
+  }
+
+  it("seeds a new keyframe from the neutral default, not the held value", () => {
+    let { project, clipId } = clipProject();
+    // First keyframe: blur 8 at 20%.
+    project = toggleEffectKeyframeAtPlayhead(project, clipId, "blur", 2_000_000);
+    project = setEffectParamAtPlayhead(project, clipId, "blur", 8, 2_000_000);
+    expect(
+      project.clips[0].effectKeyframes!.tracks[0]!.points[0]!.value,
+    ).toBeCloseTo(8, 5);
+    // New keyframe at 60%: must reset to default 0, not inherit held 8.
+    project = toggleEffectKeyframeAtPlayhead(project, clipId, "blur", 6_000_000);
+    const points = project.clips[0].effectKeyframes!.tracks[0]!.points;
+    expect(points).toHaveLength(2);
+    expect(points[1]!.value).toBeCloseTo(0, 5);
   });
 });

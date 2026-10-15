@@ -112,7 +112,7 @@ describe("buildFfmpegArgs", () => {
     expect(filter).toContain("setsar=1");
   });
 
-  it("quotes Windows fontfile paths for drawtext", () => {
+  it("prefers bundled OFL faces over system fallback for drawtext", () => {
     let project = createEmptyProject();
     project = addTextClip(project, { text: { content: "Hi" } });
     const plan = buildRenderPlan(project, "source", "draft");
@@ -122,7 +122,20 @@ describe("buildFfmpegArgs", () => {
     });
     const filter = built.args[built.args.indexOf("-filter_complex") + 1];
     expect(filter).toContain("drawtext=text='Hi'");
-    expect(filter).toContain("fontfile='C\\:/Windows/Fonts/arial.ttf'");
+    // Default family is Manrope Variable (preview weight 700) → shipped Bold TTF, not Arial.
+    expect(filter).toContain("fontfile='public/fonts/Manrope-Bold.ttf'");
+  });
+
+  it("honors an explicit custom fontfile when the file exists", () => {
+    let project = createEmptyProject();
+    project = addTextClip(project, { text: { content: "Hi" } });
+    const plan = buildRenderPlan(project, "source", "draft");
+    plan.texts[0]!.fontPath = "C:/fonts/Custom.ttf";
+    const built = buildFfmpegArgs(plan, "C:/out/export.mp4", {
+      fileExists: () => true,
+    });
+    const filter = built.args[built.args.indexOf("-filter_complex") + 1];
+    expect(filter).toContain("fontfile='C\\:/fonts/Custom.ttf'");
   });
 
   it("emits drawtext box for Instagram-style text background", () => {

@@ -2,6 +2,7 @@ use crate::media::probe::probe_path;
 use crate::project::{read_project_file, validate_project_value, write_project_file};
 use crate::storage::{
     autosave_path, project_file_path, project_media_dir, projects_root, safe_media_file_name,
+    sanitize_project_id,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -181,4 +182,22 @@ pub fn is_library_project_path(app: AppHandle, path: String) -> Result<bool, Str
     let root_canon = fs::canonicalize(&root).unwrap_or(root);
     let cand_canon = fs::canonicalize(&candidate).unwrap_or(candidate);
     Ok(cand_canon.starts_with(&root_canon))
+}
+
+/// Permanently delete an AppData library project folder (JSON + copied media).
+#[tauri::command]
+pub fn delete_library_project(app: AppHandle, project_id: String) -> Result<(), String> {
+    let id = sanitize_project_id(&project_id)?;
+    let root = projects_root(&app)?;
+    let dir = root.join(&id);
+    if !dir.exists() {
+        return Ok(());
+    }
+    let root_canon = fs::canonicalize(&root).unwrap_or(root);
+    let dir_canon = fs::canonicalize(&dir).unwrap_or(dir.clone());
+    if !dir_canon.starts_with(&root_canon) || dir_canon == root_canon {
+        return Err("Invalid project path".into());
+    }
+    fs::remove_dir_all(&dir).map_err(|e| format!("Failed to delete project: {e}"))?;
+    Ok(())
 }

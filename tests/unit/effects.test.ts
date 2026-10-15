@@ -30,6 +30,12 @@ describe("clip effects", () => {
     expect(css).toContain("grayscale(1)");
   });
 
+  it("scales CSS blur px to the stage so preview matches export sigma", () => {
+    // blur 12 canvas-px on a stage at 1/3 scale → 4.0 stage px.
+    const css = cssFilterFromEffects(normalizeClipEffects({ blur: 12 }), 1 / 3);
+    expect(css).toContain("blur(4.0px)");
+  });
+
   it("boosts contrast in CSS when sharpen is set", () => {
     const css = cssFilterFromEffects(normalizeClipEffects({ sharpen: 1 }));
     expect(css).toMatch(/contrast\(/);

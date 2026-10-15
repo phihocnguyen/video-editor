@@ -1,4 +1,6 @@
+import { blendModeToFfmpeg, normalizeBlendMode } from "./blendModes";
 import { ffmpegVideoEffectsChainAnimated } from "./effectKeyframes";
+import { bundledFontFileForFamily } from "../lib/fonts";
 import { mediaGeometry } from "./mediaTransform";
 import type { RenderClipPlan, RenderPlan } from "./renderPlan";
 import {
@@ -231,8 +233,12 @@ function buildFilterComplex(
       );
       const next = `[mix${mixCount}]`;
       mixCount += 1;
+      const trackBlend = resolveGroupBlendMode(group);
+      const ffmpegBlend = blendModeToFfmpeg(trackBlend);
       parts.push(
-        `${current}${trackLabel}overlay=x=0:y=0:format=rgb:eof_action=pass${next}`,
+        ffmpegBlend
+          ? `${current}${trackLabel}blend=all_mode=${ffmpegBlend}:all_opacity=1:shortest=0${next}`
+          : `${current}${trackLabel}overlay=x=0:y=0:format=rgb:eof_action=pass${next}`,
       );
       current = next;
       continue;
@@ -242,7 +248,7 @@ function buildFilterComplex(
     const start = Math.max(0, text.timelineStartSec);
     const end = Math.max(start + 0.01, text.timelineEndSec);
     const escaped = escapeDrawtext(text.content);
-    const resolvedFont = resolveDrawtextFont(text.fontPath, fileExists);
+    const resolvedFont = resolveDrawtextFont(text.fontPath, fileExists, text.fontFamily, text.fontWeight);
     const fontfile = resolvedFont
       ? `:fontfile=${quoteFilterPath(resolvedFont)}`
       : "";
@@ -257,9 +263,21 @@ function buildFilterComplex(
         ? `:box=1:boxcolor=${normalizeColor(text.backgroundColor)}@1:boxborderw=${Math.max(2, Math.round(text.backgroundPadding || 12))}`
         : "";
     const next = `[txt${step.textIndex}]`;
-    parts.push(
-      `${current}drawtext=text='${escaped}'${fontfile}:fontsize=${baseSize}:fontcolor=${color}@1:x='${xExpr}':y='${yExpr}':alpha='${alphaExpr}'${box}:enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'${next}`,
-    );
+    const textBlend = blendModeToFfmpeg(text.blendMode);
+    const drawtext =
+      `drawtext=text='${escaped}'${fontfile}:fontsize=${baseSize}:fontcolor=${color}@1:x='${xExpr}':y='${yExpr}':alpha='${alphaExpr}'${box}:enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'`;
+    if (textBlend) {
+      // Rasterize text onto a transparent frame, then blend onto the mix.
+      const layer = `[txtL${step.textIndex}]`;
+      parts.push(
+        `color=c=black@0:s=${width}x${height}:d=${Math.max(end, 0.01).toFixed(3)},format=rgba,${drawtext}${layer}`,
+      );
+      parts.push(
+        `${current}${layer}blend=all_mode=${textBlend}:all_opacity=1:enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'${next}`,
+      );
+    } else {
+      parts.push(`${current}${drawtext}${next}`);
+    }
     current = next;
   }
 
@@ -359,6 +377,19 @@ export function mediaPlacementFilters(
  * Build one video track: prepare clips, chain with xfade (matches preview transitions).
  * Returns a label like `[trk0]` whose PTS starts at timeline 0 (leading black pad if needed).
  */
+function resolveGroupBlendMode(
+  group: { clip: RenderClipPlan }[],
+): ReturnType<typeof normalizeBlendMode> {
+  if (group.length === 0) return "normal";
+  const first = normalizeBlendMode(group[0]!.clip.transform.blendMode);
+  for (let i = 1; i < group.length; i += 1) {
+    if (normalizeBlendMode(group[i]!.clip.transform.blendMode) !== first) {
+      return "normal";
+    }
+  }
+  return first;
+}
+
 function buildTrackChain(
   parts: string[],
   group: { clip: RenderClipPlan; inputIndex: number }[],
@@ -718,8 +749,19 @@ export function drawtextAlphaExpr(
 function resolveDrawtextFont(
   fontPath: string | null,
   fileExists: (path: string) => boolean,
+  fontFamily?: string,
+  fontWeight?: number,
 ): string | null {
   if (fontPath && fileExists(fontPath)) return fontPath;
+  // Bundled OFL faces in public/fonts/ — same files the desktop app ships
+  // as Tauri resources, so CLI/helper exports never fall back for them.
+  if (fontFamily) {
+    const bundled = bundledFontFileForFamily(fontFamily, fontWeight ?? 700);
+    if (bundled) {
+      const candidate = `public/fonts/${bundled}`;
+      if (fileExists(candidate)) return candidate;
+    }
+  }
   const fallbacks = [
     "C:/Windows/Fonts/arial.ttf",
     "C:/Windows/Fonts/segoeui.ttf",

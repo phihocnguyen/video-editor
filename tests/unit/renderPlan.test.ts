@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addMediaClip,
   addTextClip,
+  buildFfmpegArgs,
   buildRenderPlan,
   createEmptyProject,
   updateClipTransform,
@@ -56,5 +57,21 @@ describe("buildRenderPlan", () => {
     expect(plan.texts[0].x).toBeCloseTo(640);
     expect(plan.texts[0].y).toBeCloseTo(600);
     expect(plan.texts[0].fontSize).toBeCloseTo(48);
+    expect(plan.texts[0].fontWeight).toBe(700);
+    expect(plan.texts[0].slideDist).toBeCloseTo(32);
+  });
+
+  it("passes font weight through and snaps export faces by weight", () => {
+    let project = createEmptyProject();
+    project = addTextClip(project, {
+      text: { content: "Light", fontSize: 48, fontWeight: 400 },
+    });
+    const plan = buildRenderPlan(project, "source", "draft");
+    expect(plan.texts[0].fontWeight).toBe(400);
+    const built = buildFfmpegArgs(plan, "C:/out/export.mp4", {
+      fileExists: () => true,
+    });
+    const filter = built.args[built.args.indexOf("-filter_complex") + 1];
+    expect(filter).toContain("fontfile='public/fonts/Manrope-Variable.ttf'");
   });
 });

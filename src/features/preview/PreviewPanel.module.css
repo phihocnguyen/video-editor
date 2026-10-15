@@ -27,6 +27,8 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  /* Keep mix-blend-mode within the canvas (not the chrome around it). */
+  isolation: isolate;
 }
 
 .textBox,

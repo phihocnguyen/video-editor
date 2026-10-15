@@ -119,8 +119,12 @@ function normalizeHexColor(value: unknown, fallback: string): string {
  * CSS filter string for preview layers (empty if neutral aside from fades).
  * Vignette is applied separately as a radial overlay in CompositeLayers.
  * Sharpen uses a contrast bump as a lightweight approximation of unsharp.
+ *
+ * `pxScale` = stage px per canvas px (stageWidth / canvasWidth). CSS blur px
+ * are stage px, so the value is scaled to match canvas-px semantics in export
+ * (`gblur` sigma). Without this, preview on a small stage over-blurs ~3×.
  */
-export function cssFilterFromEffects(effects: ClipEffects): string {
+export function cssFilterFromEffects(effects: ClipEffects, pxScale = 1): string {
   const parts: string[] = [];
   if (!near(effects.brightness, 1)) parts.push(`brightness(${effects.brightness})`);
   let contrast = effects.contrast;
@@ -130,7 +134,10 @@ export function cssFilterFromEffects(effects: ClipEffects): string {
   }
   if (!near(contrast, 1)) parts.push(`contrast(${contrast})`);
   if (!near(effects.saturation, 1)) parts.push(`saturate(${effects.saturation})`);
-  if (effects.blur > 0.05) parts.push(`blur(${effects.blur.toFixed(1)}px)`);
+  if (effects.blur > 0.05) {
+    const px = Math.max(0.1, effects.blur * (Number.isFinite(pxScale) && pxScale > 0 ? pxScale : 1));
+    parts.push(`blur(${px.toFixed(1)}px)`);
+  }
   if (effects.grayscale) parts.push("grayscale(1)");
   return parts.join(" ");
 }

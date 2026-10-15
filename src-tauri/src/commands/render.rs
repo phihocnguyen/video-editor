@@ -1,6 +1,6 @@
 use crate::render::ffmpeg::{
-    build_export_command, parse_progress_time, spawn_ffmpeg, validate_output_with_ffprobe,
-    RenderPlan,
+    build_export_command, parse_progress_time, resolve_plan_fonts, spawn_ffmpeg,
+    validate_output_with_ffprobe, RenderPlan,
 };
 use crate::render::job::{new_job_id, ExportJobStatus, JobState, SharedJobs};
 use std::fs;
@@ -13,7 +13,7 @@ use tauri::{AppHandle, Manager, State};
 #[tauri::command]
 pub fn start_export(
     app: AppHandle,
-    plan: RenderPlan,
+    mut plan: RenderPlan,
     output_path: String,
 ) -> Result<ExportJobStatus, String> {
     let jobs = app.state::<SharedJobs>();
@@ -35,6 +35,11 @@ pub fn start_export(
             fs::create_dir_all(parent).map_err(|e| format!("Cannot create output folder: {e}"))?;
         }
     }
+
+    // Bundled OFL faces (Manrope / JetBrains Mono) resolve to Tauri
+    // resources so drawtext renders the exact preview face.
+    let resource_dir = app.path().resource_dir().ok();
+    resolve_plan_fonts(&mut plan, resource_dir.as_deref());
 
     let built = build_export_command(&plan, &output)?;
     let job_id = new_job_id();

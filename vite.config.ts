@@ -28,6 +28,14 @@ export default defineConfig(() => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        marketing: path.resolve(__dirname, "marketing.html"),
+      },
+    },
+  },
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts"],

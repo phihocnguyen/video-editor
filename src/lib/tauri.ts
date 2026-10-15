@@ -100,6 +100,11 @@ export async function isLibraryProjectPath(path: string): Promise<boolean> {
   return invoke<boolean>("is_library_project_path", { path });
 }
 
+/** Delete AppData projects/<id>/ (draft JSON + media copies). */
+export async function deleteLibraryProject(projectId: string): Promise<void> {
+  await invoke("delete_library_project", { projectId });
+}
+
 export async function pickOpenProjectPath(): Promise<string | null> {
   const selected = await open({
     multiple: false,

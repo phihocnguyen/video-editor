@@ -66,6 +66,8 @@ pub struct RenderClipTransform {
     pub rotation: f64,
     #[serde(default = "default_one")]
     pub opacity: f64,
+    #[serde(default = "default_blend_normal")]
+    pub blend_mode: String,
 }
 
 impl Default for RenderClipTransform {
@@ -77,7 +79,31 @@ impl Default for RenderClipTransform {
             scale_y: 1.0,
             rotation: 0.0,
             opacity: 1.0,
+            blend_mode: "normal".into(),
         }
+    }
+}
+
+fn default_blend_normal() -> String {
+    "normal".into()
+}
+
+/// Map CapCut-style blend ids to FFmpeg `blend=all_mode=`. None → plain overlay.
+fn ffmpeg_blend_mode(mode: &str) -> Option<&'static str> {
+    match mode {
+        "darken" => Some("darken"),
+        "multiply" => Some("multiply"),
+        "colorBurn" | "linearBurn" => Some("burn"),
+        "lighten" => Some("lighten"),
+        "screen" => Some("screen"),
+        "colorDodge" => Some("dodge"),
+        "linearDodge" => Some("addition"),
+        "overlay" => Some("overlay"),
+        "softLight" => Some("softlight"),
+        "hardLight" => Some("hardlight"),
+        "difference" => Some("difference"),
+        "exclusion" => Some("exclusion"),
+        _ => None,
     }
 }
 
@@ -172,6 +198,10 @@ fn default_slide_dist() -> f64 {
     48.0
 }
 
+fn default_font_weight() -> f64 {
+    700.0
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectKeyframePoint {
@@ -209,12 +239,17 @@ pub struct RenderTextPlan {
     pub font_family: String,
     pub font_path: Option<String>,
     pub font_size: f64,
+    /// 100…900 (see TS TextStyle). Export snaps to the closest bundled face.
+    #[serde(default = "default_font_weight")]
+    pub font_weight: f64,
     pub color: String,
     pub align: String,
     pub x: f64,
     pub y: f64,
     #[serde(default = "default_opacity")]
     pub opacity: f64,
+    #[serde(default = "default_blend_normal")]
+    pub blend_mode: String,
     pub timeline_start_sec: f64,
     pub timeline_end_sec: f64,
     #[serde(default)]
@@ -921,6 +956,7 @@ fn build_filter_complex(
         start: f64,
         overlay_start: f64,
         overlay_end: f64,
+        blend_mode: String,
     }
     let mut prepared: Vec<Prepared> = Vec::with_capacity(visuals.len());
 
@@ -1021,6 +1057,7 @@ fn build_filter_complex(
             start,
             overlay_start,
             overlay_end: end + hold,
+            blend_mode: clip.transform.blend_mode.clone(),
         });
     }
 
@@ -1075,17 +1112,34 @@ fn build_filter_complex(
                 let p = &prepared[i];
                 let next = format!("[mix{mix_count}]");
                 mix_count += 1;
-                parts.push(format!(
-                    "{current}{}overlay=x=0:y=0:format=rgb:eof_action=pass:enable='between(t\\,{:.3}\\,{:.3})'{next}",
-                    p.vlabel, p.overlay_start, p.overlay_end
-                ));
+                if let Some(mode) = ffmpeg_blend_mode(&p.blend_mode) {
+                    parts.push(format!(
+                        "{current}{}blend=all_mode={mode}:all_opacity=1:enable='between(t\\,{:.3}\\,{:.3})'{next}",
+                        p.vlabel, p.overlay_start, p.overlay_end
+                    ));
+                } else {
+                    parts.push(format!(
+                        "{current}{}overlay=x=0:y=0:format=rgb:eof_action=pass:enable='between(t\\,{:.3}\\,{:.3})'{next}",
+                        p.vlabel, p.overlay_start, p.overlay_end
+                    ));
+                }
                 current = next;
             }
             PaintStep::Text(ti) => {
                 let text = &plan.texts[ti];
-                let part = drawtext_filter(text, &current, format!("[txt{ti}]"));
-                parts.push(part);
-                current = format!("[txt{ti}]");
+                let next = format!("[txt{ti}]");
+                if let Some(mode) = ffmpeg_blend_mode(&text.blend_mode) {
+                    let start = text.timeline_start_sec.max(0.0);
+                    let end = text.timeline_end_sec.max(start + 0.01);
+                    let layer = format!("[txtL{ti}]");
+                    parts.push(drawtext_on_transparent(text, width, height, &layer));
+                    parts.push(format!(
+                        "{current}{layer}blend=all_mode={mode}:all_opacity=1:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
+                    ));
+                } else {
+                    parts.push(drawtext_filter(text, &current, next.clone()));
+                }
+                current = next;
             }
         }
     }
@@ -1305,11 +1359,14 @@ fn kf_track<'a>(kf: &'a Option<EffectKeyframes>, param: &str) -> Option<Vec<Effe
 
 /// Step windows where a hold-style param exceeds `threshold`, for filters
 /// (gblur/hue/unsharp/vignette/strobe) that cannot take per-frame exprs.
+/// `before` is the base effect value applied before the first keyframe
+/// (mirrors TS `interpolateParam` fallback).
 fn kf_windows(
     points: &[EffectKeyframePoint],
     delay: f64,
     dur: f64,
     threshold: f64,
+    before: f64,
 ) -> Vec<(f64, f64, f64)> {
     let mut sorted: Vec<(f64, f64)> = points
         .iter()
@@ -1321,7 +1378,7 @@ fn kf_windows(
         return Vec::new();
     }
     let mut edge: Vec<(f64, f64)> = Vec::with_capacity(sorted.len() + 2);
-    edge.push((delay, sorted[0].1));
+    edge.push((delay, before));
     edge.extend(sorted);
     edge.push((delay + dur, edge.last().map(|e| e.1).unwrap_or(0.0)));
     let mut windows: Vec<(f64, f64, f64)> = Vec::new();
@@ -1384,7 +1441,7 @@ fn ffmpeg_video_effects_chain_animated(
         }
     }
     if let Some(p) = kf_track(keyframes, "blur") {
-        for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.05) {
+        for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.05, effects.blur) {
             parts.push(format!(
                 "gblur=sigma={:.2}:enable='between(t\\,{t0:.3}\\,{t1:.3})'",
                 sigma.min(40.0)
@@ -1394,14 +1451,14 @@ fn ffmpeg_video_effects_chain_animated(
         parts.push(format!("gblur=sigma={:.2}", effects.blur.min(40.0)));
     }
     if let Some(p) = kf_track(keyframes, "grayscale") {
-        for (t0, t1, _) in kf_windows(&p, delay, dur, 0.5) {
+        for (t0, t1, _) in kf_windows(&p, delay, dur, 0.5, if effects.grayscale { 1.0 } else { 0.0 }) {
             parts.push(format!("hue=s=0:enable='between(t\\,{t0:.3}\\,{t1:.3})'"));
         }
     } else if effects.grayscale {
         parts.push("hue=s=0".into());
     }
     if let Some(p) = kf_track(keyframes, "sharpen") {
-        for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.02) {
+        for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.02, effects.sharpen) {
             let amount = (0.5 + sigma).clamp(0.5, 2.5);
             parts.push(format!(
                 "unsharp=5:5:{amount:.2}:5:5:0.0:enable='between(t\\,{t0:.3}\\,{t1:.3})'"
@@ -1412,7 +1469,7 @@ fn ffmpeg_video_effects_chain_animated(
         parts.push(format!("unsharp=5:5:{amount:.2}:5:5:0.0"));
     }
     if let Some(p) = kf_track(keyframes, "vignette") {
-        for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.02) {
+        for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.02, effects.vignette) {
             let angle = std::f64::consts::PI / 5.0 + (1.0 - sigma.clamp(0.0, 1.0)) * (std::f64::consts::PI / 4.0);
             parts.push(format!(
                 "vignette=angle={angle:.4}:mode=backward:enable='between(t\\,{t0:.3}\\,{t1:.3})'"
@@ -1424,7 +1481,7 @@ fn ffmpeg_video_effects_chain_animated(
     }
     let strobe_color = effects.strobe_color.trim_start_matches('#');
     if let Some(p) = kf_track(keyframes, "strobeFrames") {
-        for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.5) {
+        for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.5, effects.strobe_frames) {
             let period = (sigma.round() as i64).max(1);
             parts.push(format!(
                 "drawbox=x=0:y=0:w=iw:h=ih:color={strobe_color}@1:t=fill:enable='between(t\\,{t0:.3}\\,{t1:.3})*eq(mod(n\\,{period})\\,{})'",
@@ -1485,7 +1542,7 @@ fn kf_expr_ladder(
     format!("if(lt(t\\,{first_t:.4})\\,{before:.4}\\,{expr})")
 }
 
-fn drawtext_filter(text: &RenderTextPlan, current: &str, next: String) -> String {
+fn drawtext_core(text: &RenderTextPlan) -> (String, f64, f64) {
     let start = text.timeline_start_sec.max(0.0);
     let end = text.timeline_end_sec.max(start + 0.01);
     let dur = (end - start).max(0.01);
@@ -1506,7 +1563,6 @@ fn drawtext_filter(text: &RenderTextPlan, current: &str, next: String) -> String
         text.fade_out_sec,
         &text.text_animation,
     );
-    // drawtext has square corners (no radius); keep padding parity with preview.
     let background = match text.background_color.as_deref() {
         Some(c) if !c.trim().is_empty() => {
             let bw = (text.background_padding.max(0.0).round() as i64).max(2);
@@ -1514,8 +1570,28 @@ fn drawtext_filter(text: &RenderTextPlan, current: &str, next: String) -> String
         }
         _ => String::new(),
     };
+    let filter = format!(
+        "drawtext=text='{escaped}'{fontfile}:fontsize={base_size}:fontcolor={color}@1:x='{x_expr}':y='{y_expr}':alpha='{alpha_expr}'{background}:enable='between(t\\,{start:.3}\\,{end:.3})'"
+    );
+    (filter, start, end)
+}
+
+fn drawtext_filter(text: &RenderTextPlan, current: &str, next: String) -> String {
+    let (filter, _, _) = drawtext_core(text);
+    format!("{current}{filter}{next}")
+}
+
+/// Transparent full-frame layer with text drawn on it (for non-normal blend modes).
+fn drawtext_on_transparent(
+    text: &RenderTextPlan,
+    width: u32,
+    height: u32,
+    next: &str,
+) -> String {
+    let (filter, _, end) = drawtext_core(text);
+    let dur = end.max(0.01);
     format!(
-        "{current}drawtext=text='{escaped}'{fontfile}:fontsize={base_size}:fontcolor={color}@1:x='{x_expr}':y='{y_expr}':alpha='{alpha_expr}'{background}:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
+        "color=c=black@0:s={width}x{height}:d={dur:.3},format=rgba,{filter}{next}"
     )
 }
 
@@ -1692,6 +1768,58 @@ fn normalize_color(color: &str) -> String {
         return format!("0x{}", &trimmed[1..]);
     }
     "white".into()
+}
+
+/// Bundled OFL faces shipped in `public/fonts/` (Tauri `resources`).
+/// Same files the frontend lists in `src/lib/fonts.ts` — matched by family
+/// name so builtin text never falls back to Arial on export. Weight snaps
+/// to the closest shipped face: Bold (700) at ≥ 650, else Regular.
+fn bundled_font_file(family: &str, weight: f64) -> Option<&'static str> {
+    let f = family.to_lowercase();
+    let bold = weight >= 650.0;
+    if f.contains("manrope") {
+        Some(if bold { "Manrope-Bold.ttf" } else { "Manrope-Variable.ttf" })
+    } else if f.contains("jetbrains") {
+        Some(if bold {
+            "JetBrainsMono-Bold.ttf"
+        } else {
+            "JetBrainsMono-Variable.ttf"
+        })
+    } else {
+        None
+    }
+}
+
+/// Resolve a bundled font to a real filesystem path for `drawtext`.
+/// Installed app → `<resource_dir>/fonts/<file>`;
+/// `tauri dev` → `<cwd>/../public/fonts/<file>` (CWD is `src-tauri`).
+fn resolve_bundled_font_path(file: &str, resource_dir: Option<&Path>) -> Option<String> {
+    let mut candidates: Vec<PathBuf> = Vec::with_capacity(2);
+    if let Some(dir) = resource_dir {
+        candidates.push(dir.join("fonts").join(file));
+    }
+    candidates.push(PathBuf::from("../public/fonts").join(file));
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+/// Point builtin-family texts without a usable `font_path` at the bundled
+/// TTF so export renders the exact preview face (no Arial fallback).
+pub fn resolve_plan_fonts(plan: &mut RenderPlan, resource_dir: Option<&Path>) {
+    for text in &mut plan.texts {
+        if let Some(p) = text.font_path.as_deref() {
+            if Path::new(p).is_file() {
+                continue;
+            }
+        }
+        if let Some(file) = bundled_font_file(&text.font_family, text.font_weight) {
+            if let Some(resolved) = resolve_bundled_font_path(file, resource_dir) {
+                text.font_path = Some(resolved);
+            }
+        }
+    }
 }
 
 pub fn spawn_ffmpeg(program: &str, args: &[String]) -> Result<std::process::Child, String> {

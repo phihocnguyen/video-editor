@@ -1,4 +1,8 @@
 import {
+  normalizeBlendMode,
+  type BlendMode,
+} from "./blendModes";
+import {
   DEFAULT_CLIP_EFFECTS,
   normalizeClipEffects,
   type ClipEffects,
@@ -60,6 +64,8 @@ export interface RenderTextPlan {
   fontFamily: string;
   fontPath: string | null;
   fontSize: number;
+  /** 100…900 (see TextStyle). Export snaps to the closest bundled face. */
+  fontWeight: number;
   color: string;
   align: "left" | "center" | "right";
   backgroundColor: string | null;
@@ -70,6 +76,7 @@ export interface RenderTextPlan {
   x: number;
   y: number;
   opacity: number;
+  blendMode: BlendMode;
   timelineStartSec: number;
   timelineEndSec: number;
   fadeInSec: number;
@@ -128,6 +135,7 @@ export function buildRenderPlan(
         fontFamily: clip.text.fontFamily,
         fontPath: clip.text.fontPath,
         fontSize: clip.text.fontSize * fontScale * textScaleX,
+        fontWeight: clip.text.fontWeight,
         color: clip.text.color,
         align: clip.text.align,
         backgroundColor: clip.text.backgroundColor ?? null,
@@ -137,6 +145,7 @@ export function buildRenderPlan(
         x: clip.transform.x * scaleX,
         y: clip.transform.y * scaleY,
         opacity: clip.transform.opacity,
+        blendMode: normalizeBlendMode(clip.transform.blendMode),
         timelineStartSec: ticksToSeconds(clip.startTicks),
         timelineEndSec: ticksToSeconds(end),
         fadeInSec: fx.fadeInSec,
@@ -172,7 +181,10 @@ export function buildRenderPlan(
       effectKeyframes: normalizeEffectKeyframes(clip.effectKeyframes ?? null),
       transitionIn: normalizeClipTransition(clip.transitionIn),
       transitionOverlapSec: 0,
-      transform: clip.transform,
+      transform: {
+        ...clip.transform,
+        blendMode: normalizeBlendMode(clip.transform.blendMode),
+      },
       canvasWidth: project.canvas.width,
       canvasHeight: project.canvas.height,
       mediaWidth: asset.width,

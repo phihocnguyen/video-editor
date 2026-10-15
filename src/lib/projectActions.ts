@@ -9,8 +9,10 @@ import {
 import { toAppError } from "./errors";
 import {
   checkMediaPaths,
+  deleteLibraryProject,
   importMediaIntoProject,
   importMediaPaths,
+  isLibraryProjectPath,
   isTauriRuntime,
   listLibraryProjects,
   openProjectFile,
@@ -133,6 +135,43 @@ export async function actionEnsureLibraryProject(
 export async function actionListLibraryProjects(): Promise<LibraryProjectInfo[]> {
   if (!isTauriRuntime()) return [];
   return listLibraryProjects();
+}
+
+/** Delete a local library draft (folder + media). Falls back to path→id when needed. */
+export async function actionDeleteLibraryProject(options: {
+  projectId?: string | null;
+  path?: string | null;
+  name?: string | null;
+}): Promise<void> {
+  if (!isTauriRuntime()) {
+    throw new Error("Delete project requires the desktop app");
+  }
+  const label = options.name?.trim() || "this project";
+  if (
+    !window.confirm(
+      `Delete “${label}”?\n\nThis permanently removes the draft and copied media from this PC. Original source files are not touched.`,
+    )
+  ) {
+    throw new Error("Delete cancelled");
+  }
+
+  let id = options.projectId?.trim() || "";
+  if (!id && options.path) {
+    // …/projects/<id>/project.cutline.json
+    const parts = options.path.split(/[/\\]/).filter(Boolean);
+    const fileIdx = parts.findIndex((p) => p === "project.cutline.json");
+    if (fileIdx > 0) id = parts[fileIdx - 1]!;
+  }
+  if (!id) {
+    throw new Error("Cannot resolve project id to delete");
+  }
+
+  await deleteLibraryProject(id);
+}
+
+export async function actionIsLibraryProjectPath(path: string): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  return isLibraryProjectPath(path);
 }
 
 export async function actionImportMedia(projectId?: string): Promise<MediaAsset[]> {

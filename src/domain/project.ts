@@ -1,3 +1,4 @@
+import type { BlendMode } from "./blendModes";
 import type { ClipEffects } from "./effects";
 import type { EffectKeyframes } from "./effectKeyframes";
 import type { ClipTransition } from "./transitions";
@@ -41,6 +42,8 @@ export interface ClipTransform {
   scaleY: number;
   rotation: number;
   opacity: number;
+  /** How this layer composites over layers below (CapCut-style). Defaults to normal. */
+  blendMode?: BlendMode;
 }
 
 export type TextAnimType =
@@ -100,6 +103,9 @@ export interface TextStyle {
   /** Optional absolute path to a .ttf/.otf file (custom font). */
   fontPath: string | null;
   fontSize: number;
+  /** 100 (thin) … 900 (black). Preview renders it directly; export snaps to
+   * the closest bundled face (Regular < 650, Bold ≥ 650). */
+  fontWeight: number;
   color: string;
   align: "left" | "center" | "right";
   /**
@@ -120,6 +126,7 @@ export function createDefaultTextStyle(content = "Title text"): TextStyle {
     fontFamily: "Manrope Variable",
     fontPath: null,
     fontSize: 48,
+    fontWeight: 700,
     color: "#FFE566",
     align: "center",
     backgroundColor: null,
@@ -144,6 +151,10 @@ export function normalizeTextStyle(input?: Partial<TextStyle> | null): TextStyle
       typeof src.fontSize === "number" && Number.isFinite(src.fontSize)
         ? Math.min(400, Math.max(8, src.fontSize))
         : base.fontSize,
+    fontWeight:
+      typeof src.fontWeight === "number" && Number.isFinite(src.fontWeight)
+        ? Math.min(900, Math.max(100, Math.round(src.fontWeight)))
+        : base.fontWeight,
     color: typeof src.color === "string" ? src.color : base.color,
     align:
       src.align === "left" || src.align === "center" || src.align === "right"

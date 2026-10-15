@@ -6,7 +6,6 @@ import {
 } from "./effects";
 import {
   cloneEffectKeyframes,
-  effectsAtProgress,
   findKeyframeNear,
   getParamTrack,
   normalizeEffectKeyframes,
@@ -55,6 +54,7 @@ const DEFAULT_TRANSFORM = {
   scaleY: 1,
   rotation: 0,
   opacity: 1,
+  blendMode: "normal" as const,
 };
 
 /**
@@ -694,8 +694,9 @@ export function toggleEffectKeyframeAtPlayhead(
         ),
       };
     }
-    const resolved = effectsAtProgress(clip.effects, clip.effectKeyframes, progress);
-    const value = readBaseParam(resolved, param);
+    // New keyframes always start from the neutral default — never inherit
+    // the previous keyframe's held value.
+    const value = readBaseParam(DEFAULT_CLIP_EFFECTS, param);
     // First keyframe mid-clip: reset base to default so the look applies
     // *from* this keyframe onward (before = neutral / base default).
     const isFirstForParam = !track?.points.length;

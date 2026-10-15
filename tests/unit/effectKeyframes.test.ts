@@ -3,9 +3,11 @@ import {
   DEFAULT_CLIP_EFFECTS,
   effectsAtProgress,
   ffmpegKeyframeExpr,
+  ffmpegVideoEffectsChainAnimated,
   normalizeEffectKeyframes,
   progressFromTicks,
   removeParamKeyframeNear,
+  steppedOnWindows,
   upsertParamKeyframe,
   type EffectKeyframes,
 } from "../../src/domain";
@@ -125,6 +127,42 @@ describe("effect keyframes", () => {
     expect(effectsAtProgress(DEFAULT_CLIP_EFFECTS, kf, 0).strobeFrames).toBe(0);
     expect(effectsAtProgress(DEFAULT_CLIP_EFFECTS, kf, 0.5).strobeFrames).toBe(0);
     expect(effectsAtProgress(DEFAULT_CLIP_EFFECTS, kf, 1).strobeFrames).toBe(10);
+  });
+
+  it("gates stepped filters to the keyframe window (no head coverage)", () => {
+    // Blur keyframe at 50%: export must not blur the clip head like preview.
+    const points = [
+      { atProgress: 0.5, value: 10 },
+      { atProgress: 1, value: 10 },
+    ];
+    const windows = steppedOnWindows(points, 4, 0, 0.05, 0);
+    expect(windows.length).toBe(1);
+    expect(windows[0]!.t0).toBeCloseTo(2, 3);
+    expect(windows[0]!.t1).toBeCloseTo(4, 3);
+  });
+
+  it("keeps base-value head when the first keyframe is mid-clip", () => {
+    // Base blur 0, keyframes turn blur on at 25% and off at 75%.
+    const kf = normalizeEffectKeyframes({
+      tracks: [
+        {
+          param: "blur",
+          points: [
+            { id: "a", atProgress: 0.25, value: 8 },
+            { id: "b", atProgress: 0.75, value: 0 },
+          ],
+        },
+      ],
+    });
+    const chain = ffmpegVideoEffectsChainAnimated(
+      DEFAULT_CLIP_EFFECTS,
+      4,
+      { delaySec: 0, keyframes: kf },
+    );
+    expect(chain).toContain("gblur=");
+    // Blur window starts at 1.0s (25% of 4s), not at 0.
+    expect(chain).toContain("between(t\\,1.000\\,3.000)");
+    expect(chain).not.toContain("between(t\\,0.000\\,");
   });
 });
 

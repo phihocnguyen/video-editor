@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
 import {
+  blendModeToCss,
   clipDurationTicks,
   cssFilterFromEffects,
   effectsAtProgress,
@@ -146,6 +147,7 @@ interface LayerStyle {
   strobeFlash: string | null;
   /** CSS transform for the whole layer (centring + scale + rotation). */
   transform: string;
+  mixBlendMode: string;
 }
 
 function layerVisualStyle(
@@ -156,6 +158,8 @@ function layerVisualStyle(
   canvasHeight: number,
   playheadTicks: number,
   zIndex: number,
+  /** Stage px per canvas px — keeps CSS blur px canvas-true like export. */
+  pxScale = 1,
 ): LayerStyle {
   const durationTicks = clipDurationTicks(clip);
   const durationSec = ticksToSeconds(durationTicks);
@@ -169,7 +173,7 @@ function layerVisualStyle(
   const flash = strobeIsFlashFrame(effects, localSec, project.canvas.frameRate);
   const txVisual = transitionVisualMul(project, clip, playheadTicks);
   const opacityMul = txVisual.opacity;
-  const filter = cssFilterFromEffects(effects) || undefined;
+  const filter = cssFilterFromEffects(effects, pxScale) || undefined;
 
   const geom = clipMediaGeometry(clip, canvasWidth, canvasHeight, asset);
   const parts = [
@@ -190,6 +194,7 @@ function layerVisualStyle(
     vignetteOpacity: vignetteOverlayOpacity(effects),
     strobeFlash: flash ? effects.strobeColor : null,
     transform: parts.join(" "),
+    mixBlendMode: blendModeToCss(clip.transform.blendMode),
   };
 }
 
@@ -235,6 +240,7 @@ type StyleCache = {
   height: string;
   vignetteOpacity: number;
   strobeFlash: string | null;
+  mixBlendMode: string;
 };
 
 const styleCache = new WeakMap<HTMLElement, StyleCache>();
@@ -255,6 +261,7 @@ function clearPooledVideoLayoutStyles(video: HTMLElement) {
   video.style.width = "";
   video.style.height = "";
   video.style.transform = "";
+  video.style.mixBlendMode = "";
 }
 
 function applyMediaStyle(
@@ -267,6 +274,15 @@ function applyMediaStyle(
   playheadTicks: number,
   zIndex: number,
 ) {
+  // CSS blur px are stage px: measure the stage so the blur matches the
+  // canvas-px sigma used by export (`gblur`). Falls back to 1:1 when the
+  // host isn't mounted yet (seed style, corrected on mount).
+  const stageEl = el.closest("[data-stage]");
+  const stageW = stageEl instanceof HTMLElement ? stageEl.clientWidth : 0;
+  const pxScale =
+    stageW > 0
+      ? Math.min(4, Math.max(0.05, stageW / Math.max(1, canvasWidth)))
+      : 1;
   const style = layerVisualStyle(
     project,
     clip,
@@ -275,6 +291,7 @@ function applyMediaStyle(
     canvasHeight,
     playheadTicks,
     zIndex,
+    pxScale,
   );
   // Geometry always lives on the layer host. Never fall back to styling the
   // pooled <video> — orphan frames during remount would bake % size onto it.
@@ -296,6 +313,7 @@ function applyMediaStyle(
   const transform = style.transform;
   const vignetteOpacity = style.vignetteOpacity;
   const strobeFlash = style.strobeFlash;
+  const mixBlendMode = style.mixBlendMode;
   const prev = styleCache.get(target);
   if (
     prev &&
@@ -309,7 +327,8 @@ function applyMediaStyle(
     prev.width === width &&
     prev.height === height &&
     prev.vignetteOpacity === vignetteOpacity &&
-    prev.strobeFlash === strobeFlash
+    prev.strobeFlash === strobeFlash &&
+    prev.mixBlendMode === mixBlendMode
   ) {
     return;
   }
@@ -325,6 +344,7 @@ function applyMediaStyle(
     height,
     vignetteOpacity,
     strobeFlash,
+    mixBlendMode,
   });
   target.style.zIndex = String(style.zIndex);
   target.style.opacity = String(style.opacity);
@@ -335,6 +355,7 @@ function applyMediaStyle(
   target.style.width = width;
   target.style.height = height;
   target.style.transform = transform;
+  target.style.mixBlendMode = mixBlendMode;
   syncVignetteOverlay(target, vignetteOpacity);
   syncStrobeFlash(target, strobeFlash);
 }
@@ -1166,7 +1187,8 @@ export function CompositeLayers({
           filter: style.filter,
           // Explicit "none" so React clears a prior wipe clip-path on remount.
           clipPath: style.clipPath ?? "none",
-        } as const;
+          mixBlendMode: style.mixBlendMode as CSSProperties["mixBlendMode"],
+        };
         if (layer.asset.kind === "image") {
           return (
             <div

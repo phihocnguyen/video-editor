@@ -1,3 +1,4 @@
+import { normalizeBlendMode } from "./blendModes";
 import { normalizeClipEffects } from "./effects";
 import { normalizeEffectKeyframes } from "./effectKeyframes";
 import {
@@ -272,6 +273,7 @@ const DEFAULT_TRANSFORM: Clip["transform"] = {
   scaleY: 1,
   rotation: 0,
   opacity: 1,
+  blendMode: "normal",
 };
 
 /** Fill missing clip fields + canvas defaults for older project JSON. */
@@ -322,7 +324,13 @@ export function normalizeProjectDocument(project: ProjectDocument): ProjectDocum
       return {
         ...rest,
         text: text as Clip["text"],
-        transform: { ...DEFAULT_TRANSFORM, ...(raw.transform ?? {}) },
+        transform: {
+          ...DEFAULT_TRANSFORM,
+          ...(raw.transform ?? {}),
+          blendMode: normalizeBlendMode(
+            (raw.transform as { blendMode?: unknown } | null | undefined)?.blendMode,
+          ),
+        },
         effects: normalizeClipEffects(raw.effects),
         effectKeyframes: normalizedEffectKf,
         transitionIn: normalizeClipTransition(raw.transitionIn),

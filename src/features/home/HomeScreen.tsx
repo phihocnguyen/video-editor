@@ -11,6 +11,7 @@ import {
   TrashIcon,
 } from "@/components/icons";
 import {
+  actionDeleteLibraryProject,
   actionEnsureLibraryProject,
   actionListLibraryProjects,
   actionOpenProject,
@@ -175,14 +176,57 @@ export function HomeScreen() {
     [loadOpened, removeRecent],
   );
 
-  const drafts: Array<{ path: string; name: string; openedAt: string }> =
+  const drafts: Array<{
+    path: string;
+    name: string;
+    openedAt: string;
+    projectId?: string;
+    canDeleteDisk: boolean;
+  }> =
     library.length > 0
       ? library.map((e) => ({
           path: e.path,
           name: e.name,
           openedAt: e.updatedAt || new Date().toISOString(),
+          projectId: e.id,
+          canDeleteDisk: true,
         }))
-      : recent;
+      : recent.map((e) => ({
+          ...e,
+          canDeleteDisk: false,
+        }));
+
+  const handleDeleteDraft = useCallback(
+    async (entry: (typeof drafts)[number]) => {
+      try {
+        if (entry.canDeleteDisk || entry.projectId) {
+          setStatus(`Deleting “${entry.name || shortPath(entry.path)}”…`);
+          setStatusError(false);
+          await actionDeleteLibraryProject({
+            projectId: entry.projectId,
+            path: entry.path,
+            name: entry.name,
+          });
+          removeRecent(entry.path);
+          await refreshLibrary();
+          setStatus(`Deleted “${entry.name || shortPath(entry.path)}”`);
+          setStatusError(false);
+        } else {
+          removeRecent(entry.path);
+          setStatus(null);
+        }
+      } catch (error) {
+        const msg = formatActionError(error);
+        if (msg === "Delete cancelled") {
+          setStatus(null);
+          return;
+        }
+        setStatus(msg);
+        setStatusError(true);
+      }
+    },
+    [refreshLibrary, removeRecent],
+  );
 
   const showTip = !homeTipDismissed && drafts.length === 0;
 
@@ -418,19 +462,28 @@ export function HomeScreen() {
                       {library.length === 0 ? ` · ${entry.path}` : ""}
                     </span>
                   </button>
-                  {library.length === 0 ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-xs"
-                      className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-                      title="Remove from list"
-                      aria-label={`Remove ${entry.name || shortPath(entry.path)}`}
-                      onClick={() => removeRecent(entry.path)}
-                    >
-                      <TrashIcon size={13} />
-                    </Button>
-                  ) : null}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100"
+                    title={
+                      entry.canDeleteDisk
+                        ? "Delete project permanently"
+                        : "Remove from recent list"
+                    }
+                    aria-label={
+                      entry.canDeleteDisk
+                        ? `Delete ${entry.name || shortPath(entry.path)}`
+                        : `Remove ${entry.name || shortPath(entry.path)}`
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleDeleteDraft(entry);
+                    }}
+                  >
+                    <TrashIcon size={13} />
+                  </Button>
                 </li>
               ))}
             </ul>

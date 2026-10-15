@@ -269,6 +269,7 @@ export function PreviewPanel() {
         <div
           ref={stageRef}
           className={styles.stage}
+          data-stage
           style={{
             aspectRatio: `${canvas.width} / ${canvas.height}`,
             background: canvas.backgroundColor,

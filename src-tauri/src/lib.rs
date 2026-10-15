@@ -31,6 +31,7 @@ pub fn run() {
             commands::project::list_library_projects,
             commands::project::import_media_into_project,
             commands::project::is_library_project_path,
+            commands::project::delete_library_project,
             commands::render::start_export,
             commands::render::get_export_status,
             commands::render::cancel_export,

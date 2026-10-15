@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  BLEND_MODE_OPTIONS,
   clipDisplayTitle,
   clipDurationTicks,
   effectsAtProgress,
@@ -14,6 +15,7 @@ import {
   getParamTrack,
   mediaGeometry,
   mediaCenter,
+  normalizeBlendMode,
   normalizeClipTransition,
   normalizeTextAnimation,
   normalizeTextStyle,
@@ -36,6 +38,7 @@ import {
   updateClipTransform,
   updateClipTransition,
   updateClipVolume,
+  type BlendMode,
   type Clip,
   type EffectParamKey,
   type TextAnimType,
@@ -637,8 +640,17 @@ export function PropertiesPanel() {
               />
 
               <label className={styles.blendSelect} title="Blend mode">
-                <select defaultValue="normal" disabled>
-                  <option value="normal">Normal</option>
+                <select
+                  value={normalizeBlendMode(selected.transform.blendMode)}
+                  onChange={(e) =>
+                    patchTransform({ blendMode: e.target.value as BlendMode })
+                  }
+                >
+                  {BLEND_MODE_OPTIONS.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
                 </select>
               </label>
 
@@ -813,6 +825,21 @@ export function PropertiesPanel() {
                       <option value="center">Center</option>
                       <option value="right">Right</option>
                     </select>
+                  </label>
+                </div>
+                <div className={styles.row}>
+                  <label className={styles.field}>
+                    <span>Weight · {text.fontWeight}</span>
+                    <input
+                      type="range"
+                      min={100}
+                      max={900}
+                      step={50}
+                      value={text.fontWeight}
+                      onChange={(e) =>
+                        applyText({ ...text, fontWeight: Number(e.target.value) || 700 })
+                      }
+                    />
                   </label>
                 </div>
               </Section>

@@ -1,11 +1,13 @@
 import {
   useEffect,
   useRef,
+  type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react";
 import {
+  blendModeToCss,
   clipDurationTicks,
   deleteClips,
   layerStackZ,
@@ -110,6 +112,7 @@ export function TextOverlayLayer({
           dur,
         );
         el.style.opacity = String(clip.transform.opacity * anim.opacity);
+        el.style.mixBlendMode = blendModeToCss(clip.transform.blendMode);
         el.style.transform =
           `translate(-50%, -50%) translate(${(anim.offsetX * stageScale).toFixed(2)}px, ` +
           `${(anim.offsetY * stageScale).toFixed(2)}px) scale(${anim.scale.toFixed(4)})`;
@@ -255,6 +258,9 @@ export function TextOverlayLayer({
               left: `${(clip.transform.x / canvasWidth) * 100}%`,
               top: `${(clip.transform.y / canvasHeight) * 100}%`,
               opacity: clip.transform.opacity * anim.opacity,
+              mixBlendMode: blendModeToCss(
+                clip.transform.blendMode,
+              ) as CSSProperties["mixBlendMode"],
               transform: `translate(-50%, -50%) translate(${anim.offsetX * stageScale}px, ${anim.offsetY * stageScale}px) scale(${anim.scale})`,
               zIndex: layerStackZ(trackOrder, "text"),
             }}
@@ -268,7 +274,7 @@ export function TextOverlayLayer({
               style={{
                 fontFamily: `"${style.fontFamily}", "Manrope Variable", sans-serif`,
                 fontSize: `${fontPx}px`,
-                fontWeight: 700,
+                fontWeight: style.fontWeight,
                 color: style.color,
                 textAlign: style.align,
                 ...(style.backgroundColor
