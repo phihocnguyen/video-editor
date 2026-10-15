@@ -1,5 +1,7 @@
-/* Tailwind (utilities only — skip preflight so CSS modules keep working) */
-@layer theme, components, utilities;
+/* Tailwind (utilities only — skip preflight so CSS modules keep working).
+   Put resets in @layer base so utility classes (bg-primary, etc.) can win —
+   unlayered `button { background: transparent }` was painting every Button white. */
+@layer theme, base, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
 @import "tw-animate-css";
@@ -142,124 +144,126 @@
   --color-ring: var(--ring);
 }
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
 
-html,
-body,
-#root {
-  margin: 0;
-  height: 100%;
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
-  overflow: hidden;
-  background: var(--bg-app);
-  color: var(--text);
-  font-family: var(--font-ui);
-  font-size: var(--fs-md);
-  line-height: 1.4;
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-}
+  html,
+  body,
+  #root {
+    margin: 0;
+    height: 100%;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    background: var(--bg-app);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: var(--fs-md);
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
 
-h1,
-h2,
-h3,
-p {
-  margin: 0;
-}
+  h1,
+  h2,
+  h3,
+  p {
+    margin: 0;
+  }
 
-button,
-input,
-textarea,
-select {
-  font: inherit;
-  color: inherit;
-}
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
 
-button {
-  cursor: pointer;
-  border: none;
-  background: transparent;
-  padding: 0;
-  transition:
-    background var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease),
-    opacity var(--dur-fast) var(--ease);
-}
+  button {
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    padding: 0;
+    transition:
+      background var(--dur-fast) var(--ease),
+      color var(--dur-fast) var(--ease),
+      border-color var(--dur-fast) var(--ease),
+      opacity var(--dur-fast) var(--ease);
+  }
 
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.4;
-}
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
 
-button:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
-select:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
 
-input,
-textarea,
-select {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 6px 8px;
-  outline: none;
-  transition: border-color var(--dur-fast) var(--ease);
-}
+  input,
+  textarea,
+  select {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 6px 8px;
+    outline: none;
+    transition: border-color var(--dur-fast) var(--ease);
+  }
 
-input:hover,
-textarea:hover,
-select:hover {
-  border-color: var(--border-strong);
-}
+  input:hover,
+  textarea:hover,
+  select:hover {
+    border-color: var(--border-strong);
+  }
 
-input:focus,
-textarea:focus,
-select:focus {
-  border-color: var(--accent);
-}
+  input:focus,
+  textarea:focus,
+  select:focus {
+    border-color: var(--accent);
+  }
 
-::selection {
-  background: var(--accent-soft);
-}
+  ::selection {
+    background: var(--accent-soft);
+  }
 
-/* Slim, unobtrusive scrollbars that match the chrome. */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
-}
+  /* Slim, unobtrusive scrollbars that match the chrome. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
 
-*::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
 
-*::-webkit-scrollbar-track {
-  background: transparent;
-}
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
 
-*::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: var(--radius-pill);
-  border: 3px solid transparent;
-  background-clip: content-box;
-}
+  *::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: var(--radius-pill);
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
 
-*::-webkit-scrollbar-thumb:hover {
-  background: var(--border-focus);
-  background-clip: content-box;
-}
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--border-focus);
+    background-clip: content-box;
+  }
 
-*::-webkit-scrollbar-corner {
-  background: transparent;
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
 }
