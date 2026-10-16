@@ -6,6 +6,7 @@ import {
   createEmptyProject,
   FILTER_TEMPLATES,
   findMatchingFilterTemplate,
+  fitFilterFull,
   normalizeClipEffects,
   recolorFilterClip,
   removeFilterClips,
@@ -96,5 +97,22 @@ describe("filter templates", () => {
     expect(project.clips.some((clip) => clip.kind === "filter")).toBe(false);
     expect(project.tracks.some((track) => track.name === "Filter")).toBe(false);
     expect(removeFilterClips(added.project, [added.clipId]).clips).toHaveLength(0);
+  });
+
+  it("full stretches a filter to the media clip underneath", () => {
+    let project = createEmptyProject();
+    project = { ...project, assets: [...project.assets, videoAsset()] };
+    project = addMediaClip(project, "vid", { startTicks: 1_000_000 });
+    const media = project.clips[project.clips.length - 1]!;
+    const added = addFilterOverlay(project, "rio", 1_500_000, 500_000);
+    const fitted = fitFilterFull(added.project, added.clipId);
+    const wash = fitted.clips.find((clip) => clip.id === added.clipId)!;
+    expect(wash.startTicks).toBe(media.startTicks);
+    expect(clipDurationTicks(wash)).toBe(clipDurationTicks(media));
+
+    const fromMedia = fitFilterFull(added.project, media.id);
+    const washFromMedia = fromMedia.clips.find((clip) => clip.id === added.clipId)!;
+    expect(washFromMedia.startTicks).toBe(media.startTicks);
+    expect(clipDurationTicks(washFromMedia)).toBe(clipDurationTicks(media));
   });
 });

@@ -4,7 +4,7 @@ import {
   pasteClips,
   snapshotClipsForClipboard,
 } from "../domain";
-import { useEditorUiStore } from "../stores/editorUiStore";
+import { useEditorUiStore, editFollowsLink } from "../stores/editorUiStore";
 import { commitProjectChange } from "../stores/historyStore";
 import { useProjectStore } from "../stores/projectStore";
 
@@ -27,7 +27,9 @@ export function cutSelectedClips(): boolean {
   const ids = useEditorUiStore.getState().selectedClipIds;
   if (ids.length === 0) return false;
   if (!copySelectedClips()) return false;
-  commitProjectChange((p) => deleteClips(p, ids));
+  commitProjectChange((p) =>
+    deleteClips(p, ids, { followLink: editFollowsLink(ids) }),
+  );
   useEditorUiStore.getState().setSelectedClipIds([]);
   useEditorUiStore.getState().setStatusMessage("Cut clip(s)");
   return true;

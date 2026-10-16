@@ -20,6 +20,7 @@ import { getAppInfo, isTauriRuntime } from "../../lib/tauri";
 import { requestPlay, togglePlay } from "../../lib/playback";
 import {
   nudgePlaybackRate,
+  editFollowsLink,
   useEditorUiStore,
   type EditorPanel,
 } from "../../stores/editorUiStore";
@@ -434,7 +435,9 @@ export function EditorShell() {
         const ids = useEditorUiStore.getState().selectedClipIds;
         if (ids.length === 0) return;
         event.preventDefault();
-        commitProjectChange((p) => deleteClips(p, ids));
+        commitProjectChange((p) =>
+          deleteClips(p, ids, { followLink: editFollowsLink(ids) }),
+        );
         setSelectedClipIds([]);
         setStatusMessage("Deleted selected clip(s)");
       }
@@ -490,7 +493,9 @@ export function EditorShell() {
       onSelect: () => {
         const ids = useEditorUiStore.getState().selectedClipIds;
         if (ids.length === 0) return;
-        commitProjectChange((p) => deleteClips(p, ids));
+        commitProjectChange((p) =>
+          deleteClips(p, ids, { followLink: editFollowsLink(ids) }),
+        );
         setSelectedClipIds([]);
         setStatusMessage("Deleted selected clip(s)");
       },

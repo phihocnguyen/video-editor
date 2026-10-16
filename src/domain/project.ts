@@ -303,10 +303,13 @@ export interface Clip {
   transformKeyframes?: TransformKeyframes | null;
   /**
    * Partner clip created when a video soundtrack is detached. Missing → no link.
-   * `linkLocked` makes trim / split / move / delete follow the partner.
+   * A mutual link trims, splits, moves, and deletes together.
+   * `linkFollow: false` is an explicit unlock from the properties checkbox.
+   * Older clips stored `linkLocked: false` as the default and still follow.
    */
   linkedClipId?: string | null;
   linkLocked?: boolean;
+  linkFollow?: boolean;
   /**
    * Video clip whose soundtrack plays from the linked audio clip. Missing or
    * false keeps today's embedded-audio playback.

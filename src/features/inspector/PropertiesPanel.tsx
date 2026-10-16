@@ -1245,7 +1245,7 @@ export function PropertiesPanel() {
                 <span>Link audio and video</span>
                 <input
                   type="checkbox"
-                  checked={Boolean(selected.linkLocked)}
+                  checked={selected.linkFollow !== false}
                   onChange={(e) =>
                     commitProjectChange((p) =>
                       setClipLinkLocked(p, selected.id, e.target.checked),
@@ -1253,6 +1253,10 @@ export function PropertiesPanel() {
                   }
                 />
               </label>
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                Cuts, trims, and moves follow both sides. Right-click Unlink to
+                separate them. Alt-click edits one side.
+              </p>
             </Section>
           ) : null}
 

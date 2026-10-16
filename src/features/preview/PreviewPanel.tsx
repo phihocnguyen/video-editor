@@ -131,7 +131,7 @@ export function PreviewPanel() {
       }),
     );
     setStatusMessage(
-      enabled ? "Đã thêm viền điện ảnh · giữ Ctrl + kéo mép đen" : "Đã gỡ viền điện ảnh",
+      enabled ? "Cinematic bars added · hold Ctrl + drag a black edge" : "Cinematic bars removed",
     );
     setCineMenu(null);
   }
@@ -293,7 +293,7 @@ export function PreviewPanel() {
 
   // Wall-clock playhead. Intentionally NOT dependent on `durationTicks` — a
   // duration store update mid-Play used to cancel+restart this effect after one
-  // tiny step (exactly the "giật rồi dừng" symptom).
+  // tiny step (the play-then-freeze symptom).
   useEffect(() => {
     if (!isPlaying || isScrubbing) return;
     let frame = 0;

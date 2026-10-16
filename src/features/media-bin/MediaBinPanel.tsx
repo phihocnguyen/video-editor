@@ -27,7 +27,15 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
   const setProject = useProjectStore((s) => s.setProject);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const [busy, setBusy] = useState(false);
-  const visible = filter ? assets.filter((a) => a.kind === filter) : assets;
+  const extractedAudioIds = new Set(
+    assets.flatMap((asset) =>
+      asset.extractedAudioAssetId ? [asset.extractedAudioAssetId] : [],
+    ),
+  );
+  const visible = assets.filter(
+    (asset) =>
+      !extractedAudioIds.has(asset.id) && (!filter || asset.kind === filter),
+  );
   const title =
     filter === "audio" ? "Audio" : filter === "image" ? "Photos" : "Media";
 

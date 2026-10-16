@@ -487,7 +487,10 @@ const TRANSITION_RESEEK_MS = 320;
 /** After one catch-up, accept keyframe snap within this delta (don't reseek). */
 const TRANSITION_ACCEPT_SEC = 0.28;
 /** Sustainable reverse cadence: backward seeks decode from the keyframe. */
-const REVERSE_SEEK_MIN_GAP_MS = 110;
+const REVERSE_SEEK_MIN_GAP_MS = 150;
+/** Scrub cadence for long files: each seek on a long-GOP source can take
+ * 100ms+ to resolve — firing faster piles seeks that abort each other. */
+const SCRUB_SEEK_MIN_GAP_MS = 120;
 
 function safeSeek(video: HTMLVideoElement, timeSec: number) {
   if (!Number.isFinite(timeSec) || timeSec < 0) return;
@@ -523,6 +526,8 @@ export function CompositeLayers({
   const lastSeekAtByClipRef = useRef(new Map<string, number>());
   /** After scrub, Play must re-anchor once (resume-without-seek leaves wrong frames). */
   const needsResyncAfterScrubRef = useRef(false);
+  /** Previous sync's scrubbing flag — detects scrub end for one precise settle seek. */
+  const prevScrubbingRef = useRef(false);
   /** Per-clip last applied playbackRate — avoid resetting the decoder every frame. */
   const lastRateByClipRef = useRef(new Map<string, number>());
   /** Was live-visual last frame — force one clean style pass after transition ends. */
@@ -1031,6 +1036,11 @@ export function CompositeLayers({
         : 1;
       const reverse = shuttle < 0;
       const { width: cw, height: ch } = proj.canvas;
+      const nowSync = performance.now();
+      // True on the first sync ticks after a scrub ends — settle the exact
+      // frame once (scrubbing itself uses fastSeek keyframe snaps).
+      const wasScrubbing = prevScrubbingRef.current && !scrubbing;
+      prevScrubbingRef.current = scrubbing;
 
       const live = new Set(liveLayers.map((l) => l.clip.id));
       for (const [id, el] of videoRefs.current) {
@@ -1087,10 +1097,15 @@ export function CompositeLayers({
         }
         liveVisualByClipRef.current.set(layer.clip.id, liveVisual);
 
+        // NOTE: intentionally NOT gated on `asset.hasAudio` — that flag was
+        // mis-detected at import for many files (Chrome reports no audio
+        // tracks from metadata alone). An unmuted element with no audio track
+        // plays silently anyway, so unmuting is harmless; muting on a wrong
+        // flag is the "picture plays, no sound" bug. Detached soundtracks
+        // (suppressEmbeddedAudio) still stay muted to avoid double audio.
         const muted =
           !layer.isTopVideo ||
           layer.track.muted ||
-          !layer.asset.hasAudio ||
           Boolean(layer.clip.suppressEmbeddedAudio);
         if (video.muted !== muted) video.muted = muted;
         const durSec = Math.max(
@@ -1210,7 +1225,20 @@ export function CompositeLayers({
         // Plain pause: never seek. Pause-time seeks on UHD often never finish,
         // so the next Play leaves a stuck frame while the timeline runs.
         // Only scrub / reverse shuttle need to re-anchor the decoder.
-        if (!scrubbing && !reverse) return;
+        // Exception: right when a scrub ends, settle one precise seek —
+        // scrubbing uses fastSeek (keyframe snap), so the held frame can sit
+        // up to a GOP away from the playhead.
+        if (!scrubbing && !reverse) {
+          if (
+            wasScrubbing &&
+            !video.seeking &&
+            Math.abs(video.currentTime - target) > 0.04
+          ) {
+            seekStartRef.current.set(layer.clip.id, nowSync);
+            safeSeek(video, target);
+          }
+          return;
+        }
         // Reverse/scrub seeks are expensive (backward = decode from keyframe).
         // Piling a new seek onto a pending one aborts both and yields black
         // frames: hold the last good frame instead, with an escape hatch for
@@ -1228,16 +1256,38 @@ export function CompositeLayers({
         } else {
           seekStartRef.current.delete(layer.clip.id);
         }
-        // Per-clip cadence so both transition sides can seek; reverse stays slower.
-        const minGap = reverse ? REVERSE_SEEK_MIN_GAP_MS : transitioning ? 16 : 40;
+        // Per-clip cadence so both transition sides can seek; scrub and
+        // reverse stay slower (long-GOP seeks take 100ms+ to resolve).
+        const minGap = reverse
+          ? REVERSE_SEEK_MIN_GAP_MS
+          : transitioning
+            ? 60
+            : SCRUB_SEEK_MIN_GAP_MS;
         const lastClipSeek = lastSeekAtByClipRef.current.get(layer.clip.id) ?? 0;
         if (now - lastClipSeek < minGap) return;
-        if (Math.abs(video.currentTime - target) < (transitioning ? 0.02 : 0.04)) {
+        if (Math.abs(video.currentTime - target) < (transitioning ? 0.02 : 0.08)) {
           return;
         }
         lastSeekAtByClipRef.current.set(layer.clip.id, now);
         lastSeekAtRef.current = now;
         seekStartRef.current.set(layer.clip.id, now);
+        // Scrub: prefer fastSeek (keyframe snap, resolves in ms) over a full
+        // precise seek (long-GOP sources decode hundreds of frames per seek —
+        // that pile-up is the scrub judder). The exact frame settles once via
+        // the scrub-end seek above. Falls back to safeSeek where unsupported.
+        if (!reverse) {
+          const fastSeekFn = (
+            video as HTMLVideoElement & { fastSeek?: (t: number) => void }
+          ).fastSeek;
+          if (typeof fastSeekFn === "function") {
+            try {
+              fastSeekFn.call(video, target);
+              return;
+            } catch {
+              /* fall through to precise seek */
+            }
+          }
+        }
         safeSeek(video, target);
       });
 

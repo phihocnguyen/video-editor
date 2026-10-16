@@ -43,6 +43,11 @@ interface EditorUiState {
    */
   playbackRate: number;
   selectedClipIds: string[];
+  /**
+   * Clips chosen with Alt so a linked partner stays put for this selection.
+   * Cleared by a normal click.
+   */
+  linkBypassClipIds: string[];
   /** Floating text quick-access toolbar state (null = hidden). */
   textQuickUi: TextQuickUi | null;
   /** In-app clip clipboard (Ctrl+C / Ctrl+V). */
@@ -65,6 +70,7 @@ interface EditorUiState {
   setSnapEnabled: (enabled: boolean) => void;
   setPlaybackRate: (rate: number) => void;
   setSelectedClipIds: (ids: string[]) => void;
+  setLinkBypassClipIds: (ids: string[]) => void;
   setTextQuickUi: (ui: TextQuickUi | null) => void;
   patchTextQuickUi: (patch: Partial<TextQuickUi>) => void;
   setClipClipboard: (clips: Clip[] | null) => void;
@@ -116,6 +122,7 @@ export const useEditorUiStore = create<EditorUiState>((set) => ({
   snapEnabled: true,
   playbackRate: 1,
   selectedClipIds: [],
+  linkBypassClipIds: [],
   textQuickUi: null,
   clipClipboard: null,
   markInTicks: null,
@@ -127,7 +134,7 @@ export const useEditorUiStore = create<EditorUiState>((set) => ({
     set((s) => (s.playheadTicks === playheadTicks ? s : { playheadTicks })),
   setDurationTicks: (durationTicks) => set({ durationTicks }),
   setTimelineZoom: (timelineZoom) =>
-    set({ timelineZoom: Math.min(4, Math.max(0.4, timelineZoom)) }),
+    set({ timelineZoom: Math.min(8, Math.max(0.25, timelineZoom)) }),
   setTimelineHeightPx: (timelineHeightPx) =>
     set({
       timelineHeightPx: Math.min(560, Math.max(160, Math.round(timelineHeightPx))),
@@ -176,9 +183,11 @@ export const useEditorUiStore = create<EditorUiState>((set) => ({
         selectedClipIds[0] === s.textQuickUi.clipId;
       return {
         selectedClipIds,
+        linkBypassClipIds: [],
         textQuickUi: keep ? s.textQuickUi : null,
       };
     }),
+  setLinkBypassClipIds: (linkBypassClipIds) => set({ linkBypassClipIds }),
   setTextQuickUi: (textQuickUi) => set({ textQuickUi }),
   patchTextQuickUi: (patch) =>
     set((s) =>
@@ -191,3 +200,9 @@ export const useEditorUiStore = create<EditorUiState>((set) => ({
   setMarkOutTicks: (markOutTicks) => set({ markOutTicks }),
   setStatusMessage: (statusMessage) => set({ statusMessage }),
 }));
+
+/** True unless this selection was made with Alt on a linked clip. */
+export function editFollowsLink(clipIds: string[]): boolean {
+  const bypass = useEditorUiStore.getState().linkBypassClipIds;
+  return !clipIds.some((id) => bypass.includes(id));
+}

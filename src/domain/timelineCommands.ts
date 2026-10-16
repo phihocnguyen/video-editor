@@ -254,9 +254,12 @@ export function addMediaClip(
 }
 
 function mutualLockedPartner(project: ProjectDocument, clip: Clip): Clip | null {
-  if (!clip.linkLocked || !clip.linkedClipId) return null;
+  if (!clip.linkedClipId) return null;
   const partner = project.clips.find((c) => c.id === clip.linkedClipId);
-  if (!partner?.linkLocked || partner.linkedClipId !== clip.id) return null;
+  if (!partner || partner.linkedClipId !== clip.id) return null;
+  // Only an explicit unlock stops the pair. Clips saved before link-by-default
+  // have linkLocked false and no linkFollow, and still move together.
+  if (clip.linkFollow === false || partner.linkFollow === false) return null;
   return partner;
 }
 
@@ -273,8 +276,12 @@ function linkPair(
   return {
     ...project,
     clips: project.clips.map((clip) => {
-      if (clip.id === aId) return { ...clip, linkedClipId: bId, linkLocked: locked };
-      if (clip.id === bId) return { ...clip, linkedClipId: aId, linkLocked: locked };
+      if (clip.id === aId) {
+        return { ...clip, linkedClipId: bId, linkLocked: locked, linkFollow: locked };
+      }
+      if (clip.id === bId) {
+        return { ...clip, linkedClipId: aId, linkLocked: locked, linkFollow: locked };
+      }
       return clip;
     }),
   };
@@ -283,7 +290,8 @@ function linkPair(
 /**
  * Place the extracted soundtrack on an audio track, linked to the video clip.
  * The video clip stops playing its embedded stream so preview and export
- * don't double the sound. Unlocked by default.
+ * don't double the sound. Locked by default, so trim, split, move, and
+ * delete follow both sides until Unlink or an Alt-click edit.
  */
 export function detachVideoAudio(
   project: ProjectDocument,
@@ -313,7 +321,7 @@ export function detachVideoAudio(
         },
         video.id,
         existing.id,
-        Boolean(video.linkLocked && existing.linkLocked),
+        video.linkFollow !== false && existing.linkFollow !== false,
       );
     }
   }
@@ -360,7 +368,7 @@ export function detachVideoAudio(
       ? { points: video.speedRamp.points.map((p) => ({ ...p })) }
       : null,
     linkedClipId: video.id,
-    linkLocked: false,
+    linkLocked: true,
   };
 
   working = {
@@ -371,7 +379,7 @@ export function detachVideoAudio(
     clips: [
       ...working.clips.map((c) =>
         c.id === video.id
-          ? { ...c, linkedClipId: audioClip.id, linkLocked: false, suppressEmbeddedAudio: true }
+          ? { ...c, linkedClipId: audioClip.id, linkLocked: true, suppressEmbeddedAudio: true }
           : c,
       ),
       audioClip,
@@ -393,11 +401,48 @@ export function setClipLinkLocked(
   return linkPair(project, clip.id, partner.id, locked);
 }
 
-export function deleteClips(project: ProjectDocument, clipIds: string[]): ProjectDocument {
+/** The clip plus its locked partner, for selection that should move together. */
+export function linkedClipIds(project: ProjectDocument, clipId: string): string[] {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip) return [];
+  const partner = mutualLockedPartner(project, clip);
+  return partner ? [clip.id, partner.id] : [clip.id];
+}
+
+/** Break a linked pair so each side can be edited on its own. */
+export function unlinkClip(project: ProjectDocument, clipId: string): ProjectDocument {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip?.linkedClipId) return project;
+  const partnerId = clip.linkedClipId;
+  return withUpdatedClips(
+    project,
+    project.clips.map((c) =>
+      c.id === clip.id || c.id === partnerId
+        ? { ...c, linkedClipId: null, linkLocked: false }
+        : c,
+    ),
+  );
+}
+
+/** Link two clips and lock them so later edits follow both. */
+export function linkClips(
+  project: ProjectDocument,
+  clipId: string,
+  partnerId: string,
+): ProjectDocument {
+  return linkPair(project, clipId, partnerId, true);
+}
+
+export function deleteClips(
+  project: ProjectDocument,
+  clipIds: string[],
+  options?: { followLink?: boolean },
+): ProjectDocument {
   const idSet = new Set(clipIds);
+  const followLink = options?.followLink !== false;
   for (const id of clipIds) {
     const clip = project.clips.find((c) => c.id === id);
-    const partner = clip ? mutualLockedPartner(project, clip) : null;
+    const partner = followLink && clip ? mutualLockedPartner(project, clip) : null;
     if (partner) idSet.add(partner.id);
   }
   return withUpdatedClips(
@@ -531,9 +576,16 @@ export function moveClip(
   clipId: string,
   startTicks: Tick,
   trackId?: string,
-  options?: { pruneEmptySource?: boolean },
+  options?: { pruneEmptySource?: boolean; followLink?: boolean },
 ): ProjectDocument {
-  return moveClipInner(project, clipId, startTicks, trackId, options, true);
+  return moveClipInner(
+    project,
+    clipId,
+    startTicks,
+    trackId,
+    options,
+    options?.followLink !== false,
+  );
 }
 
 function moveClipInner(
@@ -604,6 +656,7 @@ export function trimClip(
   clipId: string,
   sourceInTicks: Tick,
   sourceOutTicks: Tick,
+  options?: { followLink?: boolean },
 ): ProjectDocument {
   if (sourceOutTicks <= sourceInTicks) {
     throw new Error("Invalid trim range");
@@ -621,7 +674,8 @@ export function trimClip(
     sourceInTicks,
     sourceOutTicks,
   }));
-  const partner = mutualLockedPartner(project, clip);
+  const partner =
+    options?.followLink === false ? null : mutualLockedPartner(project, clip);
   if (partner && (dIn !== 0 || dOut !== 0)) {
     const pIn = partner.sourceInTicks + dIn;
     const pOut = partner.sourceOutTicks + dOut;
@@ -641,10 +695,12 @@ export function splitClipAt(
   project: ProjectDocument,
   clipId: string,
   timelineTicks: Tick,
+  options?: { followLink?: boolean },
 ): ProjectDocument {
   const clip = project.clips.find((c) => c.id === clipId);
   if (!clip) throw new Error("Unknown clipId");
-  const partner = mutualLockedPartner(project, clip);
+  const partner =
+    options?.followLink === false ? null : mutualLockedPartner(project, clip);
   const split = splitClipCore(project, clipId, timelineTicks);
   if (!split.rightId) return project;
 

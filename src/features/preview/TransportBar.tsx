@@ -43,6 +43,7 @@ export function TransportBar() {
   const setMarkInTicks = useEditorUiStore((s) => s.setMarkInTicks);
   const setMarkOutTicks = useEditorUiStore((s) => s.setMarkOutTicks);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
+  const setScrubbing = useEditorUiStore((s) => s.setScrubbing);
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
 
   const clockRef = useRef<HTMLSpanElement>(null);
@@ -125,6 +126,11 @@ export function TransportBar() {
           className={styles.scrubTrack}
           onPointerDown={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
+            // Same scrub session as the timeline ruler: while dragging, the
+            // decoder seeks (fastSeek) and settles on release. Without the
+            // flag the paused decoder never follows the thumb.
+            pausePlayback();
+            setScrubbing(true);
             const ratio = (e.clientX - rect.left) / Math.max(1, rect.width);
             seekRatio(ratio);
             const move = (ev: PointerEvent) => {
@@ -132,11 +138,14 @@ export function TransportBar() {
               seekRatio(r);
             };
             const up = () => {
+              setScrubbing(false);
               window.removeEventListener("pointermove", move);
               window.removeEventListener("pointerup", up);
+              window.removeEventListener("pointercancel", up);
             };
             window.addEventListener("pointermove", move);
             window.addEventListener("pointerup", up);
+            window.addEventListener("pointercancel", up);
           }}
         >
           <div ref={fillRef} className={styles.scrubFill} style={{ width: "0%" }} />

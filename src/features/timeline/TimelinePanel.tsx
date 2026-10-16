@@ -20,9 +20,13 @@ import {
   deleteClips,
   enableSpeedRamp,
   findMatchingFilterTemplate,
+  fitFilterFull,
+  canFitFilterFull,
   hasActiveRamp,
   hasEffectKeyframes,
   hasTransformKeyframes,
+  linkClips,
+  linkedClipIds,
   moveClip,
   moveClipLayer,
   moveTrack,
@@ -40,6 +44,7 @@ import {
   ticksToSeconds,
   TRANSITION_DEFS,
   trimClip,
+  unlinkClip,
   updateClipEffects,
   updateClipTransition,
   updateTrack,
@@ -54,6 +59,7 @@ import { resolveMediaUrl } from "../../lib/mediaUrl";
 import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
 import {
   DEFAULT_TRACK_HEIGHT_PX,
+  editFollowsLink,
   useEditorUiStore,
 } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
@@ -157,6 +163,7 @@ export function TimelinePanel() {
   const setTimelineZoom = useEditorUiStore((s) => s.setTimelineZoom);
   const setPlayheadTicks = useEditorUiStore((s) => s.setPlayheadTicks);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
+  const setLinkBypassClipIds = useEditorUiStore((s) => s.setLinkBypassClipIds);
   const setSelectedTrackId = useEditorUiStore((s) => s.setSelectedTrackId);
   const nudgeTrackHeight = useEditorUiStore((s) => s.nudgeTrackHeight);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
@@ -199,8 +206,15 @@ export function TimelinePanel() {
   const laneWidth = Math.max(800, durationSeconds * pxPerSecond);
 
   useEffect(() => {
-    setDurationTicks(projectDurationTicks(clips));
-  }, [clips, setDurationTicks]);
+    const d = projectDurationTicks(clips);
+    setDurationTicks(d);
+    // Clips shortened/deleted under the playhead (trim, delete, split) would
+    // otherwise leave the line floating past the lane end — worse the more
+    // you zoom. Pull it back inside.
+    if (useEditorUiStore.getState().playheadTicks > d) {
+      setPlayheadTicks(Math.max(0, d));
+    }
+  }, [clips, setDurationTicks, setPlayheadTicks]);
 
   // Drive playhead + timecode via DOM — no React re-render of the lane/clips.
   // While playing, also auto-scroll the lanes so the blue line stays in view
@@ -208,8 +222,12 @@ export function TimelinePanel() {
   // never fights a manual scroll inside the view).
   useEffect(() => {
     const paint = (ticks: number) => {
-      pendingTicksRef.current = ticks;
-      const x = ticksToSeconds(ticks) * pxPerSecondRef.current;
+      // Belt-and-suspenders with the duration effect above: no path may push
+      // the line past the lane end (it would float outside the tracks).
+      const durTicks = useEditorUiStore.getState().durationTicks;
+      const clamped = Math.max(0, Math.min(durTicks, ticks));
+      pendingTicksRef.current = clamped;
+      const x = ticksToSeconds(clamped) * pxPerSecondRef.current;
       if (!scrubbingRef.current && playheadRef.current) {
         playheadRef.current.style.left = `${x}px`;
       }
@@ -244,6 +262,65 @@ export function TimelinePanel() {
       playheadRef.current.style.left = `${ticksToSeconds(ticks) * pxPerSecond}px`;
     }
   }, [pxPerSecond]);
+
+  // Wheel routing (Premiere-style, no overlap):
+  // - Alt+wheel anywhere on lanes → time zoom (length).
+  // - Ctrl/Meta+wheel on the RULER → time zoom.
+  // - Ctrl/Meta+wheel on a track lane → track height (handled below).
+  // Plain wheel keeps native scroll. Pinch gestures arrive as ctrl+wheel.
+  useEffect(() => {
+    const lanes = lanesRef.current;
+    if (!lanes) return;
+    let pending = 1;
+    let raf = 0;
+    let anchorClientX = 0;
+    const findScroller = (): HTMLElement | null => {
+      let el: HTMLElement | null = lanes.parentElement;
+      while (el && el.scrollWidth <= el.clientWidth + 1) el = el.parentElement;
+      return el;
+    };
+    const apply = () => {
+      raf = 0;
+      const factor = pending;
+      pending = 1;
+      if (factor === 1) return;
+      const ui = useEditorUiStore.getState();
+      const oldZoom = ui.timelineZoom;
+      const newZoom = Math.min(8, Math.max(0.25, oldZoom * factor));
+      if (newZoom === oldZoom) return;
+      const rect = lanes.getBoundingClientRect();
+      const cursorX = Math.max(0, anchorClientX - rect.left);
+      const scroller = findScroller();
+      const scrollLeft = scroller ? scroller.scrollLeft : 0;
+      const tSec = (scrollLeft + cursorX) / (64 * oldZoom);
+      ui.setTimelineZoom(newZoom);
+      requestAnimationFrame(() => {
+        const s2 = findScroller();
+        if (s2) s2.scrollLeft = Math.max(0, tSec * 64 * newZoom - cursorX);
+      });
+    };
+    const onWheel = (e: WheelEvent) => {
+      const wantZoom = e.altKey
+        ? true
+        : (e.ctrlKey || e.metaKey) &&
+          Boolean(
+            (e.target as HTMLElement | null)?.closest?.(`.${styles.ruler}`),
+          );
+      if (!wantZoom) return; // lane Ctrl+wheel belongs to track height below
+      e.preventDefault();
+      const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+      pending *= Math.exp(-dy * 0.0016);
+      if (!Number.isFinite(pending)) pending = 1;
+      pending = Math.min(4, Math.max(0.25, pending));
+      anchorClientX = e.clientX;
+      if (!raf) raf = requestAnimationFrame(apply);
+    };
+    lanes.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      lanes.removeEventListener("wheel", onWheel);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
 
   useEffect(() => {
     if (!clipMenu && !trackMenu) return;
@@ -356,7 +433,9 @@ export function TimelinePanel() {
       return;
     }
     commitProjectChange((p) =>
-      splitClipAt(p, id, useEditorUiStore.getState().playheadTicks),
+      splitClipAt(p, id, useEditorUiStore.getState().playheadTicks, {
+        followLink: editFollowsLink([id]),
+      }),
     );
     setStatusMessage("Split at playhead");
   }
@@ -366,7 +445,9 @@ export function TimelinePanel() {
       setStatusMessage("Select a clip to delete");
       return;
     }
-    commitProjectChange((p) => deleteClips(p, selectedClipIds));
+    commitProjectChange((p) =>
+      deleteClips(p, selectedClipIds, { followLink: editFollowsLink(selectedClipIds) }),
+    );
     setSelectedClipIds([]);
     setStatusMessage("Deleted selected clip(s)");
   }
@@ -404,7 +485,12 @@ export function TimelinePanel() {
       event.stopPropagation();
       event.preventDefault();
       setPlaying(false);
-      setSelectedClipIds([clipId]);
+      const alt = event.altKey;
+      const ids = alt
+        ? [clipId]
+        : linkedClipIds(useProjectStore.getState().project, clipId);
+      setSelectedClipIds(ids);
+      if (alt) setLinkBypassClipIds([clipId]);
       setSelectedTrackId(trackId);
 
       const clip = useProjectStore.getState().project.clips.find((c) => c.id === clipId);
@@ -447,6 +533,7 @@ export function TimelinePanel() {
             drag.clipId,
             startTicks,
             hoverTrackId,
+            { followLink: !alt },
           );
           useProjectStore.getState().setProject(next, { dirty: true });
         } catch {
@@ -456,6 +543,7 @@ export function TimelinePanel() {
               drag.clipId,
               startTicks,
               drag.originTrackId,
+              { followLink: !alt },
             );
             useProjectStore.getState().setProject(next, { dirty: true });
           } catch {
@@ -491,6 +579,7 @@ export function TimelinePanel() {
     },
     [
       setPlaying,
+      setLinkBypassClipIds,
       setSelectedClipIds,
       setSelectedTrackId,
       setStatusMessage,
@@ -519,11 +608,14 @@ export function TimelinePanel() {
 
     function onWheel(e: WheelEvent) {
       if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.altKey) return; // Alt+wheel is time zoom (handled above)
+      const target = (e.target as HTMLElement | null) ?? null;
+      // Only when pointer is over the timeline panel.
+      const panel = target?.closest?.(`.${styles.panel}`);
+      if (!panel) return;
+      if (target?.closest?.(`.${styles.ruler}`)) return; // ruler Ctrl+wheel is time zoom
       const trackId = useEditorUiStore.getState().selectedTrackId;
       if (!trackId) return;
-      // Only when pointer is over the timeline panel.
-      const panel = (e.target as HTMLElement | null)?.closest?.(`.${styles.panel}`);
-      if (!panel) return;
       e.preventDefault();
       nudgeTrackHeight(trackId, e.deltaY < 0 ? 12 : -12);
     }
@@ -600,12 +692,12 @@ export function TimelinePanel() {
             <input
               type="range"
               className={styles.zoomSlider}
-              min={0.4}
-              max={4}
-              step={0.1}
+              min={0.25}
+              max={8}
+              step={0.05}
               value={timelineZoom}
               onChange={(e) => setTimelineZoom(Number(e.target.value))}
-              title={`Zoom ${timelineZoom.toFixed(1)}×`}
+              title={`Zoom ${timelineZoom.toFixed(1)}× — Alt+wheel: zoom length · Ctrl+wheel on a track: track height`}
               aria-label="Timeline zoom"
             />
             <button
@@ -922,10 +1014,15 @@ export function TimelinePanel() {
                         e.preventDefault();
                         e.stopPropagation();
                         setTrackMenu(null);
-                        const ids = selectedClipIds.includes(clip.id)
-                          ? selectedClipIds
-                          : [clip.id];
+                        const alt = e.altKey;
+                        const already = selectedClipIds.includes(clip.id);
+                        const ids = alt
+                          ? [clip.id]
+                          : already
+                            ? selectedClipIds
+                            : linkedClipIds(project, clip.id);
                         setSelectedClipIds(ids);
+                        if (alt) setLinkBypassClipIds([clip.id]);
                         setClipMenu(placeCtxMenu(e.clientX, e.clientY));
                       }}
                       title={labelTitle}
@@ -1090,6 +1187,11 @@ export function TimelinePanel() {
                               const originStart = clip.startTicks;
                               const before = useProjectStore.getState().project;
                               useHistoryStore.getState().pushHistory(before);
+                              if (e.altKey) {
+                                setSelectedClipIds([clip.id]);
+                                setLinkBypassClipIds([clip.id]);
+                              }
+                              const followLink = !e.altKey && editFollowsLink([clip.id]);
                               const onMove = (ev: PointerEvent) => {
                                 const deltaTicks = Math.round(
                                   ((ev.clientX - originX) / pxPerSecond) * 1_000_000,
@@ -1099,8 +1201,12 @@ export function TimelinePanel() {
                                   Math.max(0, originIn + deltaTicks),
                                 );
                                 const applied = nextIn - originIn;
-                                let next = trimClip(before, clip.id, nextIn, originOut);
-                                next = moveClip(next, clip.id, originStart + applied, track.id);
+                                let next = trimClip(before, clip.id, nextIn, originOut, {
+                                  followLink,
+                                });
+                                next = moveClip(next, clip.id, originStart + applied, track.id, {
+                                  followLink,
+                                });
                                 useProjectStore.getState().setProject(next, { dirty: true });
                               };
                               const onUp = () => {
@@ -1123,12 +1229,19 @@ export function TimelinePanel() {
                               const originOut = clip.sourceOutTicks;
                               const before = useProjectStore.getState().project;
                               useHistoryStore.getState().pushHistory(before);
+                              if (e.altKey) {
+                                setSelectedClipIds([clip.id]);
+                                setLinkBypassClipIds([clip.id]);
+                              }
+                              const followLink = !e.altKey && editFollowsLink([clip.id]);
                               const onMove = (ev: PointerEvent) => {
                                 const deltaTicks = Math.round(
                                   ((ev.clientX - originX) / pxPerSecond) * 1_000_000,
                                 );
                                 const nextOut = Math.max(originIn + 100_000, originOut + deltaTicks);
-                                const next = trimClip(before, clip.id, originIn, nextOut);
+                                const next = trimClip(before, clip.id, originIn, nextOut, {
+                                  followLink,
+                                });
                                 useProjectStore.getState().setProject(next, { dirty: true });
                               };
                               const onUp = () => {
@@ -1297,11 +1410,27 @@ export function TimelinePanel() {
           <button
             type="button"
             role="menuitem"
+            disabled={!canFitFilterFull(project, selectedClipIds[0])}
+            onClick={() => {
+              const id = useEditorUiStore.getState().selectedClipIds[0];
+              if (!id) return;
+              commitProjectChange((current) => fitFilterFull(current, id));
+              setStatusMessage("Filter covers the full clip");
+              setClipMenu(null);
+            }}
+          >
+            Full
+          </button>
+          <button
+            type="button"
+            role="menuitem"
             onClick={() => {
               const id = useEditorUiStore.getState().selectedClipIds[0];
               if (id) {
                 commitProjectChange((p) =>
-                  splitClipAt(p, id, useEditorUiStore.getState().playheadTicks),
+                  splitClipAt(p, id, useEditorUiStore.getState().playheadTicks, {
+                    followLink: editFollowsLink([id]),
+                  }),
                 );
                 setStatusMessage("Split at playhead");
               }
@@ -1479,6 +1608,47 @@ export function TimelinePanel() {
             Clip properties
           </button>
           <div className={styles.ctxSep} />
+          {selectedClipIds.some((id) =>
+            project.clips.some((c) => c.id === id && c.linkedClipId),
+          ) ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                const ids = useEditorUiStore.getState().selectedClipIds;
+                commitProjectChange((p) => {
+                  let next = p;
+                  for (const id of ids) next = unlinkClip(next, id);
+                  return next;
+                });
+                setStatusMessage("Unlinked");
+                setClipMenu(null);
+              }}
+            >
+              Unlink
+            </button>
+          ) : null}
+          {selectedClipIds.length === 2 &&
+          project.clips.filter(
+            (c) =>
+              selectedClipIds.includes(c.id) && c.kind === "media" && !c.linkedClipId,
+          ).length === 2 ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                const ids = useEditorUiStore.getState().selectedClipIds;
+                const a = ids[0];
+                const b = ids[1];
+                if (!a || !b) return;
+                commitProjectChange((p) => linkClips(p, a, b));
+                setStatusMessage("Linked");
+                setClipMenu(null);
+              }}
+            >
+              Link
+            </button>
+          ) : null}
           <button
             type="button"
             role="menuitem"
@@ -1486,7 +1656,9 @@ export function TimelinePanel() {
             onClick={() => {
               const ids = useEditorUiStore.getState().selectedClipIds;
               if (ids.length > 0) {
-                commitProjectChange((p) => deleteClips(p, ids));
+                commitProjectChange((p) =>
+                  deleteClips(p, ids, { followLink: editFollowsLink(ids) }),
+                );
                 setSelectedClipIds([]);
                 setStatusMessage("Deleted");
               }

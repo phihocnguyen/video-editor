@@ -255,6 +255,12 @@ export function HomeScreen() {
   const [library, setLibrary] = useState<LibraryProjectInfo[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("Untitled project");
+  const [deleteTarget, setDeleteTarget] = useState<{
+    path: string;
+    name: string;
+    projectId?: string;
+    canDeleteDisk: boolean;
+  } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const topRef = useRef<HTMLElement | null>(null);
   const recentRef = useRef<HTMLElement | null>(null);
@@ -408,35 +414,55 @@ export function HomeScreen() {
 
   const handleDeleteDraft = useCallback(
     async (entry: (typeof drafts)[number]) => {
-      try {
-        if (entry.canDeleteDisk || entry.projectId) {
-          setStatus(`Deleting “${entry.name || shortPath(entry.path)}”…`);
-          setStatusError(false);
-          await actionDeleteLibraryProject({
-            projectId: entry.projectId,
-            path: entry.path,
-            name: entry.name,
-          });
-          removeRecent(entry.path);
-          await refreshLibrary();
-          setStatus(`Deleted “${entry.name || shortPath(entry.path)}”`);
-          setStatusError(false);
-        } else {
-          removeRecent(entry.path);
-          setStatus(null);
-        }
-      } catch (error) {
-        const msg = formatActionError(error);
-        if (msg === "Delete cancelled") {
-          setStatus(null);
-          return;
-        }
-        setStatus(msg);
-        setStatusError(true);
-      }
+      if (busy || deleteTarget) return;
+      // Always confirm first via custom dialog — nothing is deleted here.
+      setDeleteTarget({
+        path: entry.path,
+        name: entry.name,
+        projectId: entry.projectId,
+        canDeleteDisk: entry.canDeleteDisk,
+      });
+      setStatus(null);
+      setStatusError(false);
     },
-    [refreshLibrary, removeRecent],
+    [busy, deleteTarget],
   );
+
+  const handleDeleteConfirm = useCallback(async () => {
+    const entry = deleteTarget;
+    if (!entry || busy) return;
+    setDeleteTarget(null);
+    try {
+      if (entry.canDeleteDisk || entry.projectId) {
+        setBusy("Deleting project…");
+        setStatus(`Deleting “${entry.name || shortPath(entry.path)}”…`);
+        setStatusError(false);
+        await actionDeleteLibraryProject({
+          projectId: entry.projectId,
+          path: entry.path,
+          name: entry.name,
+          skipConfirm: true,
+        });
+        removeRecent(entry.path);
+        await refreshLibrary();
+        setStatus(`Deleted “${entry.name || shortPath(entry.path)}”`);
+        setStatusError(false);
+      } else {
+        removeRecent(entry.path);
+        setStatus(null);
+      }
+    } catch (error) {
+      const msg = formatActionError(error);
+      if (msg === "Delete cancelled") {
+        setStatus(null);
+        return;
+      }
+      setStatus(msg);
+      setStatusError(true);
+    } finally {
+      setBusy(null);
+    }
+  }, [busy, deleteTarget, refreshLibrary, removeRecent]);
 
   const showTip = !homeTipDismissed && drafts.length === 0;
 
@@ -793,6 +819,69 @@ export function HomeScreen() {
                     onClick={() => void handleCreateConfirm()}
                   >
                     Create
+                  </Button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+
+      {deleteTarget
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[10000] grid place-items-center bg-black/55 p-4 backdrop-blur-[2px]"
+              role="presentation"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget && !busy) setDeleteTarget(null);
+              }}
+            >
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="delete-project-title"
+                aria-describedby="delete-project-desc"
+                className="w-full max-w-[400px] rounded-2xl border border-border bg-[var(--bg-panel)] p-5 shadow-[0_24px_60px_-20px_rgba(0,0,0,0.7)]"
+                onMouseDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    if (!busy) setDeleteTarget(null);
+                  }
+                }}
+              >
+                <h2 id="delete-project-title" className="text-lg font-bold tracking-tight">
+                  Delete project
+                </h2>
+                <p id="delete-project-desc" className="mt-1 text-sm text-muted-foreground">
+                  Delete “{deleteTarget.name || shortPath(deleteTarget.path)}”?
+                  {deleteTarget.canDeleteDisk || deleteTarget.projectId ? (
+                    <>
+                      {" "}This permanently removes the draft and copied media from this PC.
+                      Original source files are not touched.
+                    </>
+                  ) : (
+                    <> This only removes it from the recent list.</>
+                  )}
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-xl"
+                    disabled={!!busy}
+                    onClick={() => setDeleteTarget(null)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    className="rounded-xl font-semibold"
+                    disabled={!!busy}
+                    onClick={() => void handleDeleteConfirm()}
+                  >
+                    Delete
                   </Button>
                 </div>
               </div>

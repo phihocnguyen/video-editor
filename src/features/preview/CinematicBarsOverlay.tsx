@@ -43,7 +43,7 @@ export function CinematicBarsOverlay({ letterbox }: Props) {
   function onEdgePointerDown(e: React.PointerEvent<HTMLElement>, edge: Edge) {
     // Require Ctrl — otherwise let the event fall through to clip drag/select.
     if (!e.ctrlKey) {
-      useEditorUiStore.getState().setStatusMessage("Giữ Ctrl + kéo mép đen để chỉnh viền điện ảnh");
+      useEditorUiStore.getState().setStatusMessage("Hold Ctrl + drag a black edge to adjust cinematic bars");
       return;
     }
     e.stopPropagation();
@@ -81,12 +81,12 @@ export function CinematicBarsOverlay({ letterbox }: Props) {
   return (
     <div className={styles.cineBars} data-cine-bars style={{ zIndex: 20000 }}>
       <div className={styles.cineBarTop} style={{ height: `${lb.topPct}%`, background: barColor }}>
-        <div className={styles.cineHandleBottom} title="Giữ Ctrl + kéo">
+        <div className={styles.cineHandleBottom} title="Hold Ctrl + drag">
           <span className={gripClass} onPointerDown={(e) => onEdgePointerDown(e, "topPct")} />
         </div>
       </div>
       <div className={styles.cineBarBottom} style={{ height: `${lb.bottomPct}%`, background: barColor }}>
-        <div className={styles.cineHandleTop} title="Giữ Ctrl + kéo">
+        <div className={styles.cineHandleTop} title="Hold Ctrl + drag">
           <span className={gripClass} onPointerDown={(e) => onEdgePointerDown(e, "bottomPct")} />
         </div>
       </div>
@@ -94,7 +94,7 @@ export function CinematicBarsOverlay({ letterbox }: Props) {
         className={styles.cineBarLeft}
         style={{ width: `${lb.leftPct}%`, top: `${lb.topPct}%`, bottom: `${lb.bottomPct}%`, background: barColor }}
       >
-        <div className={styles.cineHandleRight} title="Giữ Ctrl + kéo">
+        <div className={styles.cineHandleRight} title="Hold Ctrl + drag">
           <span className={gripClass} onPointerDown={(e) => onEdgePointerDown(e, "leftPct")} />
         </div>
       </div>
@@ -102,7 +102,7 @@ export function CinematicBarsOverlay({ letterbox }: Props) {
         className={styles.cineBarRight}
         style={{ width: `${lb.rightPct}%`, top: `${lb.topPct}%`, bottom: `${lb.bottomPct}%`, background: barColor }}
       >
-        <div className={styles.cineHandleLeft} title="Giữ Ctrl + kéo">
+        <div className={styles.cineHandleLeft} title="Hold Ctrl + drag">
           <span className={gripClass} onPointerDown={(e) => onEdgePointerDown(e, "rightPct")} />
         </div>
       </div>

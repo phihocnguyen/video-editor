@@ -307,6 +307,102 @@ export function addFilterOverlay(
   };
 }
 
+/** Stretch a filter clip so it covers one whole media clip on the timeline. */
+export function fitFilterFull(project: ProjectDocument, clipId: string): ProjectDocument {
+  const clip = project.clips.find((item) => item.id === clipId);
+  if (!clip) return project;
+
+  if (clip.kind === "filter") {
+    const media = visualMediaUnder(project, clip);
+    if (!media) return project;
+    return setFilterSpan(project, clip.id, media.startTicks, clipDurationTicks(media));
+  }
+
+  if (!isVisualMediaClip(project, clip)) return project;
+  const filter = topFilterOver(project, clip);
+  if (!filter) return project;
+  return setFilterSpan(project, filter.id, clip.startTicks, clipDurationTicks(clip));
+}
+
+export function canFitFilterFull(project: ProjectDocument, clipId: string | undefined): boolean {
+  if (!clipId) return false;
+  const clip = project.clips.find((item) => item.id === clipId);
+  if (!clip) return false;
+  if (clip.kind === "filter") return visualMediaUnder(project, clip) != null;
+  if (!isVisualMediaClip(project, clip)) return false;
+  return topFilterOver(project, clip) != null;
+}
+
+function isVisualMediaClip(project: ProjectDocument, clip: Clip): boolean {
+  if (clip.kind !== "media" || !clip.assetId) return false;
+  const asset = project.assets.find((item) => item.id === clip.assetId);
+  if (!asset || asset.kind === "audio") return false;
+  const track = project.tracks.find((item) => item.id === clip.trackId);
+  return track?.kind !== "audio";
+}
+
+function clipEndTicks(clip: Clip): number {
+  return clip.startTicks + clipDurationTicks(clip);
+}
+
+function overlapLength(a0: number, a1: number, b0: number, b1: number): number {
+  return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+}
+
+function visualMediaUnder(project: ProjectDocument, filter: Clip): Clip | null {
+  const start = filter.startTicks;
+  const end = clipEndTicks(filter);
+  let best: Clip | null = null;
+  let bestOverlap = 0;
+  for (const clip of project.clips) {
+    if (!isVisualMediaClip(project, clip)) continue;
+    const overlap = overlapLength(start, end, clip.startTicks, clipEndTicks(clip));
+    if (overlap > bestOverlap) {
+      best = clip;
+      bestOverlap = overlap;
+    }
+  }
+  return best;
+}
+
+function topFilterOver(project: ProjectDocument, media: Clip): Clip | null {
+  const order = new Map(project.tracks.map((track) => [track.id, track.order]));
+  const start = media.startTicks;
+  const end = clipEndTicks(media);
+  const hits = project.clips.filter(
+    (clip) =>
+      clip.kind === "filter" &&
+      overlapLength(start, end, clip.startTicks, clipEndTicks(clip)) > 0,
+  );
+  hits.sort((a, b) => (order.get(a.trackId) ?? 0) - (order.get(b.trackId) ?? 0));
+  return hits[0] ?? null;
+}
+
+function setFilterSpan(
+  project: ProjectDocument,
+  filterId: string,
+  startTicks: number,
+  durationTicks: number,
+): ProjectDocument {
+  const duration = Math.max(100_000, Math.round(durationTicks));
+  return {
+    ...project,
+    updatedAt: new Date().toISOString(),
+    clips: project.clips.map((clip) =>
+      clip.id === filterId && clip.kind === "filter"
+        ? {
+            ...clip,
+            startTicks: Math.max(0, Math.round(startTicks)),
+            sourceInTicks: 0,
+            sourceOutTicks: duration,
+            speed: 1,
+            speedRamp: null,
+          }
+        : clip,
+    ),
+  };
+}
+
 /** Change the wash on an existing filter clip. Original removes the clip. */
 export function recolorFilterClip(
   project: ProjectDocument,

@@ -19,6 +19,7 @@ import {
   setRampPointSpeed,
   splitClipAt,
   setClipLinkLocked,
+  unlinkClip,
   toggleEffectKeyframeAtPlayhead,
   toggleTransformKeyframeAtPlayhead,
   setTransformParamAtPlayhead,
@@ -549,7 +550,8 @@ describe("detach video audio", () => {
     expect(video.suppressEmbeddedAudio).toBe(true);
     expect(video.linkedClipId).toBe(audio.id);
     expect(audio.linkedClipId).toBe(video.id);
-    expect(video.linkLocked).toBe(false);
+    expect(video.linkLocked).toBe(true);
+    expect(audio.linkLocked).toBe(true);
     expect(audio.startTicks).toBe(video.startTicks);
     expect(audio.sourceOutTicks).toBe(video.sourceOutTicks);
     const audioTrack = project.tracks.find((t) => t.id === audio.trackId)!;
@@ -560,6 +562,7 @@ describe("detach video audio", () => {
     let project = addMediaClip(pairProject(), "asset-1");
     const audio = project.clips.find((c) => c.assetId === "audio-1")!;
     const video = project.clips.find((c) => c.assetId === "asset-1")!;
+    project = setClipLinkLocked(project, video.id, false);
     project = trimClip(project, audio.id, 2_000_000, 6_000_000);
     const nextAudio = project.clips.find((c) => c.id === audio.id)!;
     const nextVideo = project.clips.find((c) => c.id === video.id)!;
@@ -589,6 +592,7 @@ describe("detach video audio", () => {
   it("keeps the link on the overlapping piece when unlocked", () => {
     let project = addMediaClip(pairProject(), "asset-1");
     const video = project.clips.find((c) => c.assetId === "asset-1")!;
+    project = setClipLinkLocked(project, video.id, false);
     project = splitClipAt(project, video.id, 4_000_000);
     const left = project.clips.find((c) => c.id === video.id)!;
     const right = project.clips.find((c) => c.assetId === "asset-1" && c.id !== video.id)!;
@@ -597,6 +601,34 @@ describe("detach video audio", () => {
     expect(left.linkedClipId).toBe(audios[0]!.id);
     expect(right.linkedClipId).toBeNull();
     expect(audios[0]!.linkedClipId).toBe(left.id);
+  });
+
+  it("deletes the soundtrack of an older unlocked pair", () => {
+    let project = addMediaClip(pairProject(), "asset-1");
+    const video = project.clips.find((c) => c.assetId === "asset-1")!;
+    project = {
+      ...project,
+      clips: project.clips.map((clip) => {
+        const { linkFollow: _ignored, ...rest } = clip;
+        return { ...rest, linkLocked: false };
+      }),
+    };
+    project = deleteClips(project, [video.id]);
+    expect(project.clips).toHaveLength(0);
+  });
+
+  it("moves only the alt-edited side and unlinks on demand", () => {
+    let project = addMediaClip(pairProject(), "asset-1");
+    const video = project.clips.find((c) => c.assetId === "asset-1")!;
+    const audio = project.clips.find((c) => c.assetId === "audio-1")!;
+    project = moveClip(project, video.id, 2_000_000, undefined, { followLink: false });
+    expect(project.clips.find((c) => c.id === video.id)!.startTicks).toBe(2_000_000);
+    expect(project.clips.find((c) => c.id === audio.id)!.startTicks).toBe(0);
+    project = unlinkClip(project, video.id);
+    const solo = project.clips.find((c) => c.id === video.id)!;
+    expect(solo.linkedClipId).toBeNull();
+    expect(solo.linkLocked).toBe(false);
+    expect(project.clips.find((c) => c.id === audio.id)!.linkedClipId).toBeNull();
   });
 });
 

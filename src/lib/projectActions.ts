@@ -144,12 +144,15 @@ export async function actionDeleteLibraryProject(options: {
   projectId?: string | null;
   path?: string | null;
   name?: string | null;
+  /** Skip the native confirm — the caller already confirmed via custom UI. */
+  skipConfirm?: boolean;
 }): Promise<void> {
   if (!isTauriRuntime()) {
     throw new Error("Delete project requires the desktop app");
   }
   const label = options.name?.trim() || "this project";
   if (
+    !options.skipConfirm &&
     !window.confirm(
       `Delete “${label}”?\n\nThis permanently removes the draft and copied media from this PC. Original source files are not touched.`,
     )
