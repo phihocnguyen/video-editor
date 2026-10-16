@@ -152,15 +152,20 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
               <article
                 key={asset.id}
                 className={asset.missing ? `${styles.card} ${styles.missing}` : styles.card}
+                draggable={!asset.missing}
+                onDragStart={(e) => {
+                  if (asset.missing) {
+                    e.preventDefault();
+                    return;
+                  }
+                  e.dataTransfer.setData("text/klipcut-asset", asset.id);
+                  e.dataTransfer.effectAllowed = "copy";
+                }}
               >
                 <button
                   type="button"
                   className={styles.thumbBtn}
-                  draggable
-                  onDragStart={(e) => {
-                    e.dataTransfer.setData("text/klipcut-asset", asset.id);
-                    e.dataTransfer.effectAllowed = "copy";
-                  }}
+                  draggable={false}
                   onDoubleClick={() => handleAddToTimeline(asset.id)}
                   title="Drag to timeline or double-click to add at playhead"
                 >

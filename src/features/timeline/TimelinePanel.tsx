@@ -183,6 +183,7 @@ export function TimelinePanel() {
       ? clips.find((c) => c.id === selectedClipIds[0] && c.kind === "media") ?? null
       : null;
 
+  const [dropTrackId, setDropTrackId] = useState<string | null>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
   const timecodeRef = useRef<HTMLSpanElement>(null);
@@ -884,11 +885,13 @@ export function TimelinePanel() {
             return (
               <div
                 key={track.id}
-                className={
-                  selectedTrackId === track.id
-                    ? `${styles.lane} ${styles.laneSelected}`
-                    : styles.lane
-                }
+                className={[
+                  styles.lane,
+                  selectedTrackId === track.id ? styles.laneSelected : "",
+                  dropTrackId === track.id ? styles.laneDrop : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
                 data-kind={track.kind}
                 data-track-id={track.id}
                 style={{ width: laneWidth, height: h }}
@@ -899,9 +902,18 @@ export function TimelinePanel() {
                   setSelectedTrackId(track.id);
                   beginScrub(e.clientX);
                 }}
-                onDragOver={(e) => e.preventDefault()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "copy";
+                  setDropTrackId(track.id);
+                }}
+                onDragLeave={(e) => {
+                  if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                  setDropTrackId((current) => (current === track.id ? null : current));
+                }}
                 onDrop={(e) => {
                   e.preventDefault();
+                  setDropTrackId(null);
                   const assetId = e.dataTransfer.getData("text/klipcut-asset");
                   if (!assetId) return;
                   const startTicks = ticksFromClientX(e.clientX);
