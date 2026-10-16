@@ -17,6 +17,8 @@ import {
   setClipRamp,
   setEffectParamAtPlayhead,
   setRampPointSpeed,
+  closeGapAtPlayhead,
+  findVideoGapAtPlayhead,
   splitClipAt,
   setClipLinkLocked,
   unlinkClip,
@@ -647,6 +649,59 @@ describe("detach video audio", () => {
     expect(solo.linkedClipId).toBeNull();
     expect(solo.linkLocked).toBe(false);
     expect(project.clips.find((c) => c.id === audio.id)!.linkedClipId).toBeNull();
+  });
+});
+
+describe("closeGapAtPlayhead", () => {
+  it("sticks the following clips to the clip before the gap", () => {
+    let project = withAsset();
+    const track = project.tracks.find((item) => item.kind === "video")!;
+    project = addMediaClip(project, "asset-1", { trackId: track.id, startTicks: 0 });
+    project = addMediaClip(project, "asset-1", { trackId: track.id, startTicks: 12_000_000 });
+    project = addMediaClip(project, "asset-1", { trackId: track.id, startTicks: 24_000_000 });
+    const before = project.clips.slice().sort((a, b) => a.startTicks - b.startTicks);
+    expect(findVideoGapAtPlayhead(project, 11_000_000, track.id)?.leftClipId).toBe(before[0]!.id);
+
+    project = closeGapAtPlayhead(project, 11_000_000, track.id);
+    const after = project.clips.slice().sort((a, b) => a.startTicks - b.startTicks);
+    expect(after[0]!.startTicks).toBe(0);
+    expect(after[0]!.id).toBe(before[0]!.id);
+    expect(after[1]!.startTicks).toBe(10_000_000);
+    expect(after[2]!.startTicks).toBe(22_000_000);
+    expect(findVideoGapAtPlayhead(project, 11_000_000, track.id)).toBeNull();
+  });
+
+  it("moves linked audio with the video that closes the gap", () => {
+    let project = withAsset("video");
+    const audio: MediaAsset = {
+      id: "audio-1",
+      kind: "audio",
+      path: "C:/media/clip.m4a",
+      name: "clip.m4a",
+      durationTicks: 10_000_000,
+      width: null,
+      height: null,
+      frameRate: null,
+      hasAudio: true,
+      missing: false,
+    };
+    project = {
+      ...project,
+      assets: [{ ...project.assets[0]!, extractedAudioAssetId: audio.id }, audio],
+    };
+    const track = project.tracks.find((item) => item.kind === "video")!;
+    project = addMediaClip(project, "asset-1", { trackId: track.id, startTicks: 0 });
+    project = addMediaClip(project, "asset-1", { trackId: track.id, startTicks: 12_000_000 });
+    const right = project.clips.find(
+      (clip) => clip.assetId === "asset-1" && clip.startTicks === 12_000_000,
+    )!;
+    const rightAudio = project.clips.find((clip) => clip.id === right.linkedClipId)!;
+    expect(rightAudio.startTicks).toBe(12_000_000);
+
+    project = closeGapAtPlayhead(project, 11_000_000, track.id);
+    expect(project.clips.find((clip) => clip.id === right.id)!.startTicks).toBe(10_000_000);
+    expect(project.clips.find((clip) => clip.id === rightAudio.id)!.startTicks).toBe(10_000_000);
+    expect(project.clips.find((clip) => clip.assetId === "asset-1" && clip.startTicks === 0)).toBeTruthy();
   });
 });
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { deleteClips } from "../../domain";
+import { closeGapAtPlayhead, deleteClips, findVideoGapAtPlayhead } from "../../domain";
 import {
   actionAutosave,
   actionEnsureLibraryProject,
@@ -446,7 +446,19 @@ export function EditorShell() {
       }
 
       if (event.key === "Delete" || event.key === "Backspace") {
-        const ids = useEditorUiStore.getState().selectedClipIds;
+        const ui = useEditorUiStore.getState();
+        const gap = findVideoGapAtPlayhead(
+          useProjectStore.getState().project,
+          ui.playheadTicks,
+          ui.selectedTrackId,
+        );
+        if (gap) {
+          event.preventDefault();
+          commitProjectChange((p) => closeGapAtPlayhead(p, ui.playheadTicks, ui.selectedTrackId));
+          setStatusMessage("Closed the gap");
+          return;
+        }
+        const ids = ui.selectedClipIds;
         if (ids.length === 0) return;
         event.preventDefault();
         commitProjectChange((p) =>

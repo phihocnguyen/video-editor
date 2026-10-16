@@ -651,6 +651,88 @@ function moveClipInner(
   return next;
 }
 
+export interface VideoGap {
+  trackId: string;
+  leftClipId: string;
+  rightClipId: string;
+  gapStartTicks: number;
+  gapEndTicks: number;
+}
+
+function videoMediaClipsOnTrack(project: ProjectDocument, trackId: string): Clip[] {
+  const track = project.tracks.find((t) => t.id === trackId);
+  if (!track || track.kind !== "video") return [];
+  return project.clips
+    .filter((clip) => {
+      if (clip.trackId !== trackId || clip.kind !== "media") return false;
+      const asset = clip.assetId
+        ? project.assets.find((item) => item.id === clip.assetId)
+        : null;
+      return asset?.kind !== "audio";
+    })
+    .slice()
+    .sort((a, b) => a.startTicks - b.startTicks);
+}
+
+/** Gap between two adjacent video clips that contains the playhead. */
+export function findVideoGapAtPlayhead(
+  project: ProjectDocument,
+  playheadTicks: number,
+  preferredTrackId?: string | null,
+): VideoGap | null {
+  const videoTracks = project.tracks.filter((track) => track.kind === "video");
+  const ordered = preferredTrackId
+    ? [
+        ...videoTracks.filter((track) => track.id === preferredTrackId),
+        ...videoTracks.filter((track) => track.id !== preferredTrackId),
+      ]
+    : videoTracks;
+  for (const track of ordered) {
+    const lane = videoMediaClipsOnTrack(project, track.id);
+    for (let i = 0; i < lane.length - 1; i += 1) {
+      const left = lane[i]!;
+      const right = lane[i + 1]!;
+      const leftEnd = left.startTicks + clipDurationTicks(left);
+      if (playheadTicks > leftEnd && playheadTicks < right.startTicks) {
+        return {
+          trackId: track.id,
+          leftClipId: left.id,
+          rightClipId: right.id,
+          gapStartTicks: leftEnd,
+          gapEndTicks: right.startTicks,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Pull the clip on the right of the playhead gap, and every later clip on
+ * that track, left until it touches the clip on the left. Linked audio follows.
+ */
+export function closeGapAtPlayhead(
+  project: ProjectDocument,
+  playheadTicks: number,
+  preferredTrackId?: string | null,
+): ProjectDocument {
+  const gap = findVideoGapAtPlayhead(project, playheadTicks, preferredTrackId);
+  if (!gap) return project;
+  const delta = gap.gapEndTicks - gap.gapStartTicks;
+  if (delta <= 0) return project;
+  const movers = project.clips
+    .filter((clip) => clip.trackId === gap.trackId && clip.startTicks >= gap.gapEndTicks)
+    .slice()
+    .sort((a, b) => a.startTicks - b.startTicks);
+  let next = project;
+  for (const clip of movers) {
+    next = moveClip(next, clip.id, clip.startTicks - delta, undefined, {
+      followLink: true,
+    });
+  }
+  return next;
+}
+
 export function trimClip(
   project: ProjectDocument,
   clipId: string,

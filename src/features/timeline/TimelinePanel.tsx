@@ -242,6 +242,11 @@ export function TimelinePanel() {
       if (timecodeRef.current) {
         timecodeRef.current.textContent = formatClock(ticksToSeconds(ticks));
       }
+      lanesRef.current?.querySelectorAll<HTMLElement>("[data-gap-start]").forEach((el) => {
+        const start = Number(el.dataset.gapStart);
+        const end = Number(el.dataset.gapEnd);
+        el.classList.toggle(styles.gapActive, clamped > start && clamped < end);
+      });
       const ui = useEditorUiStore.getState();
       if (ui.isPlaying && !ui.isScrubbing && !scrubbingRef.current) {
         let scroller: HTMLElement | null | undefined = lanesRef.current?.parentElement;
@@ -269,7 +274,12 @@ export function TimelinePanel() {
     if (playheadRef.current) {
       playheadRef.current.style.left = `${ticksToSeconds(ticks) * pxPerSecond}px`;
     }
-  }, [pxPerSecond]);
+    lanesRef.current?.querySelectorAll<HTMLElement>("[data-gap-start]").forEach((el) => {
+      const start = Number(el.dataset.gapStart);
+      const end = Number(el.dataset.gapEnd);
+      el.classList.toggle(styles.gapActive, ticks > start && ticks < end);
+    });
+  }, [pxPerSecond, clips]);
 
   // Wheel routing (Premiere-style, no overlap):
   // - Alt+wheel anywhere on lanes → time zoom (length).
@@ -1063,6 +1073,34 @@ export function TimelinePanel() {
                 }}
               >
                 {trackClips.length === 0 ? <div className={styles.emptyLane} /> : null}
+                {track.kind === "video"
+                  ? trackClips
+                      .filter((clip) => clip.kind === "media")
+                      .slice()
+                      .sort((a, b) => a.startTicks - b.startTicks)
+                      .flatMap((clip, index, ordered) => {
+                        const next = ordered[index + 1];
+                        if (!next) return [];
+                        const asset = assets.find((item) => item.id === clip.assetId);
+                        const nextAsset = assets.find((item) => item.id === next.assetId);
+                        if (asset?.kind === "audio" || nextAsset?.kind === "audio") return [];
+                        const gapStart = clip.startTicks + clipDurationTicks(clip);
+                        const gapEnd = next.startTicks;
+                        if (gapEnd - gapStart < 1_000) return [];
+                        return [
+                          <div
+                            key={`gap-${clip.id}-${next.id}`}
+                            className={styles.gap}
+                            data-gap-start={gapStart}
+                            data-gap-end={gapEnd}
+                            style={{
+                              left: ticksToSeconds(gapStart) * pxPerSecond,
+                              width: ticksToSeconds(gapEnd - gapStart) * pxPerSecond,
+                            }}
+                          />,
+                        ];
+                      })
+                  : null}
                 {trackClips
                   .slice()
                   .sort((a, b) => a.startTicks - b.startTicks)
