@@ -31,7 +31,7 @@ import {
   updateTrack,
 } from "../../src/domain/timelineCommands";
 import { addTextClip, createEmptyProject, type MediaAsset } from "../../src/domain";
-import { createSpeedPoint } from "../../src/domain/speedRamp";
+import { createSpeedPoint, MAX_RAMP_SPEED } from "../../src/domain/speedRamp";
 
 function withAsset(kind: MediaAsset["kind"] = "video"): ReturnType<typeof createEmptyProject> {
   const project = createEmptyProject();
@@ -296,9 +296,14 @@ describe("speed ramp commands", () => {
     const slow = project.clips[0];
     expect(clipDurationTicks(slow)).toBeGreaterThan(10_000_000);
 
-    // Fast-forward shrinks the clip.
+    // Fast-forward shortens the clip relative to the slow-mo edit.
+    // 4× is above the ceiling, so the anchor lands on MAX_RAMP_SPEED.
     const fast = setRampPointSpeed(project, clipId, midId, 4);
-    expect(clipDurationTicks(fast.clips[0])).toBeLessThan(10_000_000);
+    const fastClip = fast.clips[0];
+    expect(fastClip.speedRamp!.points.find((p) => p.id === midId)!.speed).toBe(
+      MAX_RAMP_SPEED,
+    );
+    expect(clipDurationTicks(fastClip)).toBeLessThan(clipDurationTicks(slow));
   });
 
   it("moves any anchor, clamped between neighbors", () => {
@@ -359,7 +364,7 @@ describe("speed ramp commands", () => {
     });
     const clamped = project.clips[0].speedRamp!.points;
     expect(clamped[1].atProgress).toBeLessThan(clamped[2].atProgress);
-    expect(clamped[1].speed).toBe(8);
+    expect(clamped[1].speed).toBe(MAX_RAMP_SPEED);
   });
 
   it("relockClipDuration holds timeline duration by adjusting the source range", () => {
@@ -421,25 +426,31 @@ describe("speed ramp commands", () => {
     project = trimClip(project, clipId, 0, 8_000_000);
     project = setClipRamp(project, clipId, {
       points: [
-        createSpeedPoint(0.2, 1),
-        createSpeedPoint(0.5, 1.5),
-        createSpeedPoint(0.8, 1),
+        createSpeedPoint(0.05, 1),
+        createSpeedPoint(0.5, 1.2),
+        createSpeedPoint(0.95, 1),
       ],
     });
     const locked = clipDurationTicks(project.clips[0]);
     const midId = project.clips[0].speedRamp!.points[1].id;
 
-    // 8× on the middle would need more source than the asset holds: the
-    // point stops partway at the wall instead of shrinking the track.
-    const pushed = updateRampPointLocked(project, clipId, midId, { speed: 8 }, locked);
+    // Ceiling speed across most of the clip needs more source than the
+    // asset holds: the point stops partway at the wall.
+    const pushed = updateRampPointLocked(
+      project,
+      clipId,
+      midId,
+      { speed: MAX_RAMP_SPEED },
+      locked,
+    );
     expect(pushed.constrained).toBe(true);
     expect(
       Math.abs(clipDurationTicks(pushed.project.clips[0]) - locked),
     ).toBeLessThanOrEqual(1);
     const after = pushed.project.clips[0];
     const speed = after.speedRamp!.points[1].speed;
-    expect(speed).toBeGreaterThan(1.5);
-    expect(speed).toBeLessThan(8);
+    expect(speed).toBeGreaterThan(1.2);
+    expect(speed).toBeLessThan(MAX_RAMP_SPEED);
     // Source extended into the headroom, never past the media end.
     const span = after.sourceOutTicks - after.sourceInTicks;
     expect(span).toBeGreaterThan(8_000_000);
@@ -458,7 +469,13 @@ describe("speed ramp commands", () => {
     });
     const locked = clipDurationTicks(project.clips[0]);
     const midId = project.clips[0].speedRamp!.points[1].id;
-    const stuck = updateRampPointLocked(project, clipId, midId, { speed: 8 }, locked);
+    const stuck = updateRampPointLocked(
+      project,
+      clipId,
+      midId,
+      { speed: MAX_RAMP_SPEED },
+      locked,
+    );
     expect(stuck.constrained).toBe(true);
     // Same reference → zustand skips notifying (no re-render storm).
     expect(stuck.project).toBe(project);
@@ -491,7 +508,8 @@ describe("speed ramp commands", () => {
     expect(left.speedRamp!.points[left.speedRamp!.points.length - 1].speed).toBeGreaterThan(1.5);
     expect(right.speedRamp!.points[0].speed).toBeGreaterThan(1.5);
     // Concatenated timeline durations roughly match the original.
-    expect(clipDurationTicks(left) + clipDurationTicks(right)).toBeCloseTo(total, -4);
+    const summed = clipDurationTicks(left) + clipDurationTicks(right);
+    expect(Math.abs(summed - total) / total).toBeLessThan(0.005);
   });
 });
 

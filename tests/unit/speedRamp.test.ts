@@ -4,6 +4,7 @@ import {
   getRampProfile,
   hasActiveRamp,
   isFlatRamp,
+  MAX_RAMP_SPEED,
   normalizeSpeedRamp,
   rampDurationTicks,
   sliceRamp,
@@ -48,7 +49,7 @@ describe("normalizeSpeedRamp", () => {
         { atProgress: 1, speed: 0.001 },
       ]),
     )!;
-    expect(r.points[0].speed).toBe(8);
+    expect(r.points[0].speed).toBe(MAX_RAMP_SPEED);
     expect(r.points[1].speed).toBe(0.1);
   });
 
@@ -90,7 +91,7 @@ describe("isFlatRamp / hasActiveRamp", () => {
     ).toBe(true);
   });
 
-  it("holds 1× outside the user curve region", () => {
+  it("eases from 1× into the first anchor and holds the last speed", () => {
     const profile = getRampProfile(
       ramp([
         { atProgress: 0.3, speed: 0.5 },
@@ -98,10 +99,12 @@ describe("isFlatRamp / hasActiveRamp", () => {
       ]),
     )!;
     expect(profile.speedAtProgress(0)).toBeCloseTo(1, 5);
-    expect(profile.speedAtProgress(0.1)).toBeCloseTo(1, 5);
+    const lead = profile.speedAtProgress(0.15);
+    expect(lead).toBeLessThan(1);
+    expect(lead).toBeGreaterThan(0.5);
     expect(profile.speedAtProgress(0.3)).toBeCloseTo(0.5, 5);
     expect(profile.speedAtProgress(0.7)).toBeCloseTo(2, 5);
-    expect(profile.speedAtProgress(0.95)).toBeCloseTo(1, 5);
+    expect(profile.speedAtProgress(0.95)).toBeCloseTo(2, 5);
   });
 });
 
@@ -119,10 +122,10 @@ describe("constant-speed equivalence", () => {
 
   it("scales ticks by the constant speed", () => {
     const r = ramp([
-      { atProgress: 0, speed: 4 },
-      { atProgress: 1, speed: 4 },
+      { atProgress: 0, speed: 2 },
+      { atProgress: 1, speed: 2 },
     ]);
-    expect(rampDurationTicks(r, 10_000_000)).toBe(2_500_000);
+    expect(rampDurationTicks(r, 10_000_000)).toBe(5_000_000);
   });
 });
 
@@ -130,14 +133,14 @@ describe("speed curve interpolation", () => {
   it("does not overshoot between anchors (monotone)", () => {
     const r = ramp([
       { atProgress: 0, speed: 1 },
-      { atProgress: 0.5, speed: 8 },
+      { atProgress: 0.5, speed: MAX_RAMP_SPEED },
       { atProgress: 1, speed: 1 },
     ]);
     const profile = getRampProfile(r)!;
     for (let p = 0; p <= 1.0001; p += 0.01) {
       const v = profile.speedAtProgress(p);
       expect(v).toBeGreaterThanOrEqual(1 - 1e-6);
-      expect(v).toBeLessThanOrEqual(8 + 1e-6);
+      expect(v).toBeLessThanOrEqual(MAX_RAMP_SPEED + 1e-6);
     }
   });
 
