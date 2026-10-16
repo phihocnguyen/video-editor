@@ -1,0 +1,63 @@
+# Pinned FFmpeg essentials for the Tauri sidecars.
+# Cache key includes the version, so a normal run restores the two .exe files
+# and only a version bump downloads again.
+name: FFmpeg sidecars
+description: Restore pinned FFmpeg essentials from the Actions cache, or download that version once.
+
+inputs:
+  version:
+    description: GyanD/codexffmpeg release tag (essentials build)
+    required: false
+    default: "7.1.1"
+
+runs:
+  using: composite
+  steps:
+    - name: Restore FFmpeg cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+          src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
+        key: ffmpeg-essentials-${{ inputs.version }}-win64
+
+    - name: Download pinned FFmpeg essentials
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      env:
+        FFMPEG_VERSION: ${{ inputs.version }}
+      run: |
+        $version = $env:FFMPEG_VERSION
+        $archive = Join-Path $env:RUNNER_TEMP "ffmpeg-essentials.7z"
+        $extract = Join-Path $env:RUNNER_TEMP "ffmpeg-essentials"
+        $url = "https://github.com/GyanD/codexffmpeg/releases/download/$version/ffmpeg-$version-essentials_build.7z"
+        Write-Host "Cache miss. Downloading $url"
+        Invoke-WebRequest -Uri $url -OutFile $archive
+        $seven = Get-Command 7z -ErrorAction SilentlyContinue
+        if ($seven) { $sevenZip = $seven.Source } else { $sevenZip = "C:\Program Files\7-Zip\7z.exe" }
+        if (-not (Test-Path $sevenZip)) { throw "7-Zip is not available on this runner" }
+        New-Item -ItemType Directory -Force -Path $extract | Out-Null
+        & $sevenZip x $archive "-o$extract" -y
+        if ($LASTEXITCODE -ne 0) { throw "7z extract failed" }
+        $bin = Join-Path $extract "ffmpeg-$version-essentials_build\bin"
+        foreach ($name in @("ffmpeg.exe", "ffprobe.exe")) {
+          if (-not (Test-Path (Join-Path $bin $name))) { throw "Missing $name in $bin" }
+        }
+        New-Item -ItemType Directory -Force -Path "src-tauri/binaries" | Out-Null
+        Copy-Item (Join-Path $bin "ffmpeg.exe") "src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe" -Force
+        Copy-Item (Join-Path $bin "ffprobe.exe") "src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe" -Force
+
+    - name: Check FFmpeg sidecars
+      shell: pwsh
+      run: |
+        $files = @(
+          "src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe",
+          "src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe"
+        )
+        foreach ($file in $files) {
+          if (-not (Test-Path $file)) { throw "Missing $file" }
+          $bytes = (Get-Item $file).Length
+          if ($bytes -lt 1MB) { throw "$file is too small ($bytes bytes)" }
+          Write-Host "$file $bytes bytes"
+        }

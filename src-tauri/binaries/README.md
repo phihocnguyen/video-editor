@@ -35,6 +35,10 @@ If the sidecars are absent at runtime (dev machines), the app resolves in order:
 `PATH` → bare `ffmpeg`. The Export panel shows which binary is active
 (bundled vs system path).
 
+## CI
+
+Build, Publish, and Release restore these two files from the GitHub Actions cache. The pin is FFmpeg essentials **7.1.1** (`.github/actions/ffmpeg-sidecars`). A cache hit skips the download. Bump the version input to download a new build once.
+
 ## Size note
 
 The two essentials binaries add ~55–65 MB pre-compression (~25–35 MB in the

@@ -463,34 +463,72 @@ function probeBrowserMedia(
   });
 }
 
-/** Best-effort; export path also probes with ffprobe before building the filter graph. */
+/**
+ * Best-effort; export path also probes with ffprobe before building the filter graph.
+ *
+ * Chrome exposes neither `mozHasAudio` nor `audioTracks`, so metadata alone
+ * always reports "no audio" there (the classic "imported video plays silent"
+ * bug). `webkitAudioDecodedByteCount` only populates after frames decode, so
+ * play muted briefly (autoplay-allowed) and re-check before concluding.
+ */
 function detectBrowserVideoHasAudio(url: string): Promise<boolean> {
   return new Promise((resolve) => {
     const video = document.createElement("video");
-    video.preload = "metadata";
     video.muted = true;
+    video.preload = "auto";
     video.src = url;
+    let done = false;
+    const anyVideo = video as HTMLVideoElement & {
+      mozHasAudio?: boolean;
+      webkitAudioDecodedByteCount?: number;
+      audioTracks?: { length: number };
+    };
+    const staticTracks = (): boolean | null => {
+      if (typeof anyVideo.mozHasAudio === "boolean") return anyVideo.mozHasAudio;
+      if (anyVideo.audioTracks && typeof anyVideo.audioTracks.length === "number") {
+        return anyVideo.audioTracks.length > 0;
+      }
+      if (
+        typeof anyVideo.webkitAudioDecodedByteCount === "number" &&
+        anyVideo.webkitAudioDecodedByteCount > 0
+      ) {
+        return true;
+      }
+      return null;
+    };
     const finish = (value: boolean) => {
+      if (done) return;
+      done = true;
+      try {
+        video.pause();
+      } catch {
+        /* ignore */
+      }
       video.removeAttribute("src");
-      video.load();
+      try {
+        video.load();
+      } catch {
+        /* ignore */
+      }
       resolve(value);
     };
+    const onProgress = () => {
+      if (staticTracks() === true) finish(true);
+    };
     video.onloadedmetadata = () => {
-      const anyVideo = video as HTMLVideoElement & {
-        mozHasAudio?: boolean;
-        webkitAudioDecodedByteCount?: number;
-        audioTracks?: { length: number };
-      };
-      if (typeof anyVideo.mozHasAudio === "boolean") {
-        finish(anyVideo.mozHasAudio);
+      if (staticTracks() === true) {
+        finish(true);
         return;
       }
-      if (anyVideo.audioTracks && typeof anyVideo.audioTracks.length === "number") {
-        finish(anyVideo.audioTracks.length > 0);
-        return;
+      video.addEventListener("timeupdate", onProgress);
+      try {
+        const p = video.play();
+        if (p && typeof p.catch === "function") p.catch(() => undefined);
+      } catch {
+        /* ignore */
       }
-      // Unknown — assume no audio so silent clips don't break FFmpeg; ffprobe corrects at export.
-      finish(false);
+      // Give the decoder ~2s to report audio bytes, then conclude silent.
+      window.setTimeout(() => finish(false), 2000);
     };
     video.onerror = () => finish(false);
   });

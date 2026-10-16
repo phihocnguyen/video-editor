@@ -14,9 +14,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/ffmpeg-sidecars
+
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 12.11.2
 
       - uses: actions/setup-node@v4
         with:
