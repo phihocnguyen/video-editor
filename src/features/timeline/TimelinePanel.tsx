@@ -184,6 +184,12 @@ export function TimelinePanel() {
       : null;
 
   const [dropTrackId, setDropTrackId] = useState<string | null>(null);
+  const [marquee, setMarquee] = useState<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } | null>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
   const timecodeRef = useRef<HTMLSpanElement>(null);
@@ -934,8 +940,76 @@ export function TimelinePanel() {
                   if (e.button !== 0) return;
                   if ((e.target as HTMLElement).closest(`.${styles.clip}`)) return;
                   e.preventDefault();
-                  setSelectedTrackId(track.id);
-                  beginScrub(e.clientX);
+                  const originX = e.clientX;
+                  const originY = e.clientY;
+                  let moved = false;
+                  const onMove = (ev: PointerEvent) => {
+                    if (Math.hypot(ev.clientX - originX, ev.clientY - originY) < 4) return;
+                    moved = true;
+                    const lanes = lanesRef.current;
+                    if (!lanes) return;
+                    const rect = lanes.getBoundingClientRect();
+                    const x1 = originX - rect.left;
+                    const y1 = originY - rect.top;
+                    const x2 = ev.clientX - rect.left;
+                    const y2 = ev.clientY - rect.top;
+                    setMarquee({
+                      x: Math.min(x1, x2),
+                      y: Math.min(y1, y2),
+                      w: Math.abs(x2 - x1),
+                      h: Math.abs(y2 - y1),
+                    });
+                  };
+                  const onUp = (ev: PointerEvent) => {
+                    window.removeEventListener("pointermove", onMove);
+                    window.removeEventListener("pointerup", onUp);
+                    window.removeEventListener("pointercancel", onUp);
+                    setMarquee(null);
+                    setSelectedTrackId(track.id);
+                    if (!moved) {
+                      setPlaying(false);
+                      setSelectedClipIds([]);
+                      applyScrubTicks(ticksFromClientX(originX), true);
+                      return;
+                    }
+                    const box = new DOMRect(
+                      Math.min(originX, ev.clientX),
+                      Math.min(originY, ev.clientY),
+                      Math.abs(ev.clientX - originX),
+                      Math.abs(ev.clientY - originY),
+                    );
+                    const project = useProjectStore.getState().project;
+                    const ids: string[] = [];
+                    const root = lanesRef.current;
+                    if (root) {
+                      for (const clip of project.clips) {
+                        if (clip.kind !== "media") continue;
+                        const lane = project.tracks.find((item) => item.id === clip.trackId);
+                        if (!lane || lane.kind !== "video") continue;
+                        const asset = project.assets.find((item) => item.id === clip.assetId);
+                        if (asset?.kind === "audio") continue;
+                        const el = root.querySelector<HTMLElement>(
+                          `[data-clip-id="${clip.id}"]`,
+                        );
+                        if (!el) continue;
+                        const rect = el.getBoundingClientRect();
+                        const hit =
+                          rect.left < box.right &&
+                          rect.right > box.left &&
+                          rect.top < box.bottom &&
+                          rect.bottom > box.top;
+                        if (hit) ids.push(...linkedClipIds(project, clip.id));
+                      }
+                    }
+                    setSelectedClipIds([...new Set(ids)]);
+                    setPlaying(false);
+                    setStatusMessage(
+                      ids.length > 0 ? `Selected ${new Set(ids).size} clip(s)` : "No clips in selection",
+                    );
+                  };
+                  window.addEventListener("pointermove", onMove);
+                  window.addEventListener("pointerup", onUp);
+                  window.addEventListener("pointercancel", onUp);
                 }}
                 onDragOver={(e) => {
                   e.preventDefault();
@@ -1052,6 +1126,7 @@ export function TimelinePanel() {
                       data-kind={
                         clip.kind === "text" ? "text" : clip.kind === "filter" ? "filter" : track.kind
                       }
+                      data-clip-id={clip.id}
                       style={{
                         left: start * pxPerSecond,
                         width: clipWidthPx,
@@ -1392,6 +1467,17 @@ export function TimelinePanel() {
             );
           })}
 
+          {marquee ? (
+            <div
+              className={styles.marquee}
+              style={{
+                left: marquee.x,
+                top: marquee.y,
+                width: marquee.w,
+                height: marquee.h,
+              }}
+            />
+          ) : null}
           <div
             ref={playheadRef}
             className={styles.playhead}
