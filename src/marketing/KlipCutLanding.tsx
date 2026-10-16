@@ -21,14 +21,15 @@ const Scene3D = lazy(() => import("./Scene3D"));
 const env = import.meta.env;
 const APP = {
   name: "KlipCut",
-  version: env.VITE_APP_VERSION || "0.1.0",
-  size: env.VITE_DOWNLOAD_SIZE || "~ 56 MB",
+  version: env.VITE_APP_VERSION || "0.1.2",
+  size: env.VITE_DOWNLOAD_SIZE || "~ 46 MB",
   os: "Windows 10 / 11 (64-bit)",
-  // Vercel build fills these from the latest GitHub Release. Local fallback
-  // is a file dropped in public/downloads.
+  // Vercel build fills these from the latest GitHub Release. This fallback is
+  // the versioned installer already published on that release.
   downloadUrl:
-    env.VITE_DOWNLOAD_URL || "/downloads/KlipCut_0.1.0_x64-setup.exe",
-  fileName: env.VITE_DOWNLOAD_NAME || "KlipCut_0.1.0_x64-setup.exe",
+    env.VITE_DOWNLOAD_URL ||
+    "https://github.com/phihocnguyen/video-editor/releases/download/v0.1.2/KlipCut_0.1.2_x64-setup.exe",
+  fileName: env.VITE_DOWNLOAD_NAME || "KlipCut_0.1.2_x64-setup.exe",
   contact: "hello@klipcut.app",
 };
 

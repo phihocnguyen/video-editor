@@ -80,10 +80,8 @@ if (!chosen) {
 
 const version = String(release.tag_name || "").replace(/^v/, "") || "0.1.0";
 const size = formatSize(chosen.size);
-const downloadUrl = stable
-  ? `https://github.com/${repo}/releases/latest/download/${STABLE_NAME}`
-  : chosen.browser_download_url;
-const fileName = versioned?.name || chosen.name;
+const downloadUrl = chosen.browser_download_url;
+const fileName = chosen.name;
 
 const lines = [
   `VITE_APP_VERSION=${version}`,
