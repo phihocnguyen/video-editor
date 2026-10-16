@@ -387,11 +387,19 @@
 }
 
 .side {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
+}
+
+.side > * {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
 }
 
 .main {

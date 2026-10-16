@@ -371,80 +371,142 @@ function downloadBrowserText(filename: string, contents: string) {
   URL.revokeObjectURL(url);
 }
 
-async function pickBrowserMediaFiles(): Promise<MediaAsset[]> {
+const AUDIO_EXT = new Set(["mp3", "wav", "aac", "m4a", "flac", "ogg", "opus"]);
+const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
+const VIDEO_EXT = new Set(["mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv"]);
+
+/** Explorer drags often have an empty MIME type, so the extension decides. */
+export function mediaKindFromFile(file: File): MediaKind | null {
+  const type = file.type;
+  if (type.startsWith("audio/")) return "audio";
+  if (type.startsWith("image/")) return "image";
+  if (type.startsWith("video/")) return "video";
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+  if (AUDIO_EXT.has(ext)) return "audio";
+  if (IMAGE_EXT.has(ext)) return "image";
+  if (VIDEO_EXT.has(ext)) return "video";
+  return null;
+}
+
+const IN_APP_ASSET_DRAG = "text/klipcut-asset";
+
+/** Card drag from the media bin. Folder drops leave this null. */
+let assetDrag: { assetId: string; placed: boolean } | null = null;
+
+export function beginInAppAssetDrag(assetId: string): void {
+  assetDrag = { assetId, placed: false };
+}
+
+export function endInAppAssetDrag(): void {
+  assetDrag = null;
+}
+
+export function isInAppAssetDrag(): boolean {
+  return assetDrag != null;
+}
+
+/**
+ * Asset to place for this drop. A bin-card drag places once, same as Add.
+ * A second drop in that same drag returns null so it cannot add again.
+ */
+export function claimInAppAssetDrop(data: DataTransfer | null): string | null {
+  const fromEvent = data?.getData(IN_APP_ASSET_DRAG) ?? "";
+  const assetId = fromEvent || assetDrag?.assetId || "";
+  if (!assetId) return null;
+  if (assetDrag?.placed) return null;
+  if (assetDrag) assetDrag.placed = true;
+  return assetId;
+}
+
+/** True for an Explorer/Finder file drag. False while a media-bin card is dragging. */
+export function isOsFileDrag(data: DataTransfer | null): boolean {
+  if (assetDrag) return false;
+  if (!data) return false;
+  const types = Array.from(data.types);
+  // A bin-card drag can also carry the thumbnail as a File. That is not an import.
+  if (types.includes(IN_APP_ASSET_DRAG)) return false;
+  return types.includes("Files");
+}
+
+/** Files dragged in from the OS. Empty when the drag is an in-app asset card. */
+export function filesFromOsDrop(data: DataTransfer | null): File[] {
+  if (!isOsFileDrag(data) || !data) return [];
+  return Array.from(data.files);
+}
+
+async function importBrowserFiles(files: File[]): Promise<MediaAsset[]> {
+  const accepted = files.filter((file) => mediaKindFromFile(file) != null);
+  if (accepted.length === 0) return [];
   const { rememberBrowserObjectUrl } = await import("./mediaUrl");
   const { localExportHealth, localImportFile } = await import("./localExport");
+  const helper = await localExportHealth();
+  const assets: MediaAsset[] = [];
+  for (const file of accepted) {
+    const id = crypto.randomUUID();
+    const url = URL.createObjectURL(file);
+    rememberBrowserObjectUrl(id, url);
+    const kind = mediaKindFromFile(file)!;
+    let durationTicks: number | null = null;
+    let width: number | null = null;
+    let height: number | null = null;
+    if (kind === "video" || kind === "audio") {
+      const meta = await probeBrowserMedia(url, kind);
+      durationTicks = meta.durationTicks;
+      width = meta.width;
+      height = meta.height;
+    } else {
+      const size = await probeBrowserImage(url);
+      width = size.width;
+      height = size.height;
+      durationTicks = 5_000_000;
+    }
+    let path = url;
+    if (helper.ok) {
+      try {
+        const cached = await localImportFile(file);
+        path = cached.path;
+      } catch {
+        /* keep blob preview; export will warn */
+      }
+    }
+    assets.push({
+      id,
+      kind,
+      path,
+      name: file.name,
+      durationTicks,
+      width,
+      height,
+      frameRate: null,
+      hasAudio:
+        kind === "audio" ? true : kind === "video" ? await detectBrowserVideoHasAudio(url) : false,
+      missing: false,
+    });
+  }
+  return attachExtractedAudio(assets);
+}
+
+async function pickBrowserMediaFiles(): Promise<MediaAsset[]> {
   return new Promise((resolve, reject) => {
     const input = document.createElement("input");
     input.type = "file";
     input.multiple = true;
     input.accept = "video/*,audio/*,image/*";
-    input.onchange = async () => {
+    input.onchange = () => {
       const files = Array.from(input.files ?? []);
       if (files.length === 0) {
         resolve([]);
         return;
       }
-      try {
-        const helper = await localExportHealth();
-        const assets: MediaAsset[] = [];
-        for (const file of files) {
-          const id = crypto.randomUUID();
-          const url = URL.createObjectURL(file);
-          rememberBrowserObjectUrl(id, url);
-          const kind: MediaKind = file.type.startsWith("audio/")
-            ? "audio"
-            : file.type.startsWith("image/")
-              ? "image"
-              : "video";
-          let durationTicks: number | null = null;
-          let width: number | null = null;
-          let height: number | null = null;
-          if (kind === "video" || kind === "audio") {
-            const meta = await probeBrowserMedia(url, kind);
-            durationTicks = meta.durationTicks;
-            width = meta.width;
-            height = meta.height;
-          } else if (kind === "image") {
-            const size = await probeBrowserImage(url);
-            width = size.width;
-            height = size.height;
-            durationTicks = 5_000_000;
-          }
-          let path = url;
-          if (helper.ok) {
-            try {
-              const cached = await localImportFile(file);
-              path = cached.path;
-            } catch {
-              /* keep blob preview; export will warn */
-            }
-          }
-          assets.push({
-            id,
-            kind,
-            path,
-            name: file.name,
-            durationTicks,
-            width,
-            height,
-            frameRate: null,
-            hasAudio:
-              kind === "audio"
-                ? true
-                : kind === "video"
-                  ? await detectBrowserVideoHasAudio(url)
-                  : false,
-            missing: false,
-          });
-        }
-        resolve(await attachExtractedAudio(assets));
-      } catch (error) {
-        reject(error);
-      }
+      importBrowserFiles(files).then(resolve, reject);
     };
     input.click();
   });
+}
+
+/** Import files dragged in from a folder. Same result as the Import button. */
+export async function actionImportDroppedFiles(files: File[]): Promise<MediaAsset[]> {
+  return importBrowserFiles(files);
 }
 
 function probeBrowserMedia(

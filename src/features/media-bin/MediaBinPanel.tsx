@@ -1,8 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { addMediaClip, relinkAsset, type MediaKind } from "../../domain";
 import {
+  actionImportDroppedFiles,
   actionImportMedia,
   actionRelinkAsset,
+  beginInAppAssetDrag,
+  endInAppAssetDrag,
+  filesFromOsDrop,
+  isOsFileDrag,
   formatActionError,
 } from "../../lib/projectActions";
 import { VideoThumb } from "../../components/VideoThumb";
@@ -27,6 +32,8 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
   const setProject = useProjectStore((s) => s.setProject);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const [busy, setBusy] = useState(false);
+  const [fileDrag, setFileDrag] = useState(false);
+  const dragDepth = useRef(0);
   const extractedAudioIds = new Set(
     assets.flatMap((asset) =>
       asset.extractedAudioAssetId ? [asset.extractedAudioAssetId] : [],
@@ -38,6 +45,12 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
   );
   const title =
     filter === "audio" ? "Audio" : filter === "image" ? "Photos" : "Media";
+
+  useEffect(() => {
+    const finish = () => endInAppAssetDrag();
+    window.addEventListener("dragend", finish);
+    return () => window.removeEventListener("dragend", finish);
+  }, []);
 
   // Keep preview decoders warm for every video already in the bin.
   useEffect(() => {
@@ -76,6 +89,26 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
     }
   }
 
+  async function importDropped(files: File[]) {
+    const imported = await actionImportDroppedFiles(files);
+    const skipped = files.length - imported.length;
+    if (imported.length === 0) {
+      setStatusMessage("Drop video, audio, or image files");
+      return;
+    }
+    addAssets(imported);
+    for (const asset of imported) {
+      if (asset.kind !== "video" || asset.missing) continue;
+      const url = resolveMediaUrl(asset.path, asset.id);
+      if (url) warmMediaUrl(url);
+    }
+    setStatusMessage(
+      skipped > 0
+        ? `Imported ${imported.length} · skipped ${skipped}`
+        : `Imported ${imported.length} media file(s)`,
+    );
+  }
+
   function handleAddToTimeline(assetId: string) {
     try {
       // Don't release/restart media-bin thumbs — that steals the decoder from
@@ -112,7 +145,36 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
   }
 
   return (
-    <div className={styles.panel}>
+    <div
+      className={styles.panel}
+      onDragEnter={(e) => {
+        if (!isOsFileDrag(e.dataTransfer)) return;
+        e.preventDefault();
+        dragDepth.current += 1;
+        setFileDrag(true);
+      }}
+      onDragOver={(e) => {
+        if (!isOsFileDrag(e.dataTransfer)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setFileDrag(false);
+      }}
+      onDrop={(e) => {
+        const files = filesFromOsDrop(e.dataTransfer);
+        if (files.length === 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        dragDepth.current = 0;
+        setFileDrag(false);
+        setBusy(true);
+        void importDropped(files)
+          .catch((error) => setStatusMessage(formatActionError(error)))
+          .finally(() => setBusy(false));
+      }}
+    >
       <div className={styles.header}>
         {hideTitle ? (
           <h2 className="text-[13px] font-bold text-muted-foreground">Imported</h2>
@@ -132,12 +194,12 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
 
       <button
         type="button"
-        className={styles.dropzone}
+        className={fileDrag ? `${styles.dropzone} ${styles.dropzoneActive}` : styles.dropzone}
         onClick={() => void handleImport()}
         disabled={busy}
       >
-        <strong>Upload files</strong>
-        <span>Video, audio, and images stay on your computer</span>
+        <strong>{fileDrag ? "Drop to import" : "Drop files here"}</strong>
+        <span>Or click to browse. Video, audio, and images stay on your computer</span>
       </button>
 
       {visible.length === 0 ? (
@@ -158,9 +220,13 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
                     e.preventDefault();
                     return;
                   }
+                  e.stopPropagation();
+                  beginInAppAssetDrag(asset.id);
+                  e.dataTransfer.clearData();
                   e.dataTransfer.setData("text/klipcut-asset", asset.id);
                   e.dataTransfer.effectAllowed = "copy";
                 }}
+                onDragEnd={() => endInAppAssetDrag()}
               >
                 <button
                   type="button"
@@ -171,7 +237,7 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
                 >
                   <div className={styles.thumb} data-kind={asset.kind}>
                     {thumbUrl && asset.kind === "image" ? (
-                      <img src={thumbUrl} alt="" />
+                      <img src={thumbUrl} alt="" draggable={false} />
                     ) : thumbUrl && asset.kind === "video" ? (
                       <VideoThumb
                         src={thumbUrl}
@@ -193,7 +259,11 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
                     {asset.missing ? " · missing" : ""}
                   </span>
                   <div className={styles.cardActions}>
-                    <button type="button" onClick={() => handleAddToTimeline(asset.id)}>
+                    <button
+                      type="button"
+                      draggable={false}
+                      onClick={() => handleAddToTimeline(asset.id)}
+                    >
                       Add
                     </button>
                     {asset.missing ? (

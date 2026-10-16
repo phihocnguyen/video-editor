@@ -3,11 +3,14 @@ import { closeGapAtPlayhead, deleteClips, findVideoGapAtPlayhead } from "../../d
 import {
   actionAutosave,
   actionEnsureLibraryProject,
+  actionImportDroppedFiles,
   actionOpenProject,
   actionOpenProjectAtPath,
   actionRecoverAutosave,
   actionRefreshMissing,
   actionSaveProject,
+  filesFromOsDrop,
+  isOsFileDrag,
   formatActionError,
 } from "../../lib/projectActions";
 import {
@@ -17,6 +20,8 @@ import {
   pasteClipboardClips,
 } from "../../lib/clipClipboard";
 import { getAppInfo, isTauriRuntime } from "../../lib/tauri";
+import { resolveMediaUrl } from "../../lib/mediaUrl";
+import { warmMediaUrl } from "../../lib/mediaVideoPool";
 import { requestPlay, togglePlay } from "../../lib/playback";
 import {
   nudgePlaybackRate,
@@ -557,8 +562,44 @@ export function EditorShell() {
     },
   ];
 
+  async function importOsFiles(files: File[]) {
+    try {
+      const imported = await actionImportDroppedFiles(files);
+      const skipped = files.length - imported.length;
+      if (imported.length === 0) {
+        setStatusMessage("Drop video, audio, or image files");
+        return;
+      }
+      useProjectStore.getState().addAssets(imported);
+      for (const asset of imported) {
+        if (asset.kind !== "video" || asset.missing) continue;
+        const url = resolveMediaUrl(asset.path, asset.id);
+        if (url) warmMediaUrl(url);
+      }
+      setStatusMessage(
+        skipped > 0
+          ? `Imported ${imported.length} · skipped ${skipped}`
+          : `Imported ${imported.length} media file(s)`,
+      );
+    } catch (error) {
+      setStatusMessage(formatActionError(error));
+    }
+  }
+
   return (
-    <div className={styles.shell}>
+    <div
+      className={styles.shell}
+      onDragOver={(e) => {
+        if (!isOsFileDrag(e.dataTransfer)) return;
+        e.preventDefault();
+      }}
+      onDrop={(e) => {
+        const files = filesFromOsDrop(e.dataTransfer);
+        if (files.length === 0) return;
+        e.preventDefault();
+        void importOsFiles(files);
+      }}
+    >
       <header className={styles.topbar}>
         <div className={styles.topLeft}>
           <div className={styles.brand}>

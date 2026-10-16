@@ -180,6 +180,7 @@ export function VideoThumb({ src, filePath, className }: VideoThumbProps) {
           className={ready ? styles.videoReady : styles.videoHidden}
           src={posterSrc}
           alt=""
+          draggable={false}
           onLoad={() => setReady(true)}
         />
       </div>
@@ -195,6 +196,7 @@ export function VideoThumb({ src, filePath, className }: VideoThumbProps) {
         muted
         playsInline
         preload="metadata"
+        draggable={false}
       />
     </div>
   );

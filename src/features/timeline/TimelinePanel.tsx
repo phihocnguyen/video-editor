@@ -8,6 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { claimInAppAssetDrop, isInAppAssetDrag } from "../../lib/projectActions";
 import {
   addMediaClip,
   addRampPointAtPlayhead,
@@ -1056,15 +1057,19 @@ export function TimelinePanel() {
                 onDrop={(e) => {
                   e.preventDefault();
                   setDropTrackId(null);
-                  const assetId = e.dataTransfer.getData("text/klipcut-asset");
-                  if (!assetId) return;
+                  const assetId = claimInAppAssetDrop(e.dataTransfer);
+                  if (!assetId) {
+                    if (isInAppAssetDrag()) e.stopPropagation();
+                    return;
+                  }
+                  e.stopPropagation();
                   const startTicks = ticksFromClientX(e.clientX);
                   try {
                     commitProjectChange((p) =>
                       addMediaClip(p, assetId, { trackId: track.id, startTicks }),
                     );
                     setSelectedTrackId(track.id);
-                    setStatusMessage("Clip dropped on timeline");
+                    setStatusMessage("Clip added to timeline");
                   } catch {
                     setStatusMessage("Drop failed — check track type");
                   }
