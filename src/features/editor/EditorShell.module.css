@@ -1,6 +1,9 @@
 .shell {
   display: grid;
-  grid-template-rows: var(--toolbar-h) minmax(0, 1fr) 5px var(--timeline-h) var(--statusbar-h);
+  grid-template-rows:
+    var(--toolbar-h) minmax(0, 1fr) 5px minmax(140px, min(var(--timeline-h), 42vh)) var(
+      --statusbar-h
+    );
   grid-template-columns: minmax(0, 1fr);
   height: 100%;
   width: 100%;
@@ -49,6 +52,13 @@
   background: var(--bg-panel);
   z-index: 20;
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.topbar::-webkit-scrollbar {
+  display: none;
 }
 
 .topLeft {
@@ -113,11 +123,12 @@
   font-size: var(--fs-md);
   font-weight: 600;
   width: 100%;
-  max-width: 220px;
+  max-width: min(220px, 24vw);
   border-radius: var(--radius-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex-shrink: 1;
 }
 
 .projectTitle:hover {
@@ -317,11 +328,21 @@
 .body {
   position: relative;
   display: grid;
-  /* Props column always reserved — selection must not resize preview. */
-  grid-template-columns: var(--rail-w) var(--side-w) minmax(0, 1fr) minmax(240px, var(--props-w));
+  /* Props column always reserved — selection must not resize preview.
+     Side/props columns flex down on narrow screens so the preview keeps room. */
+  grid-template-columns:
+    var(--rail-w) minmax(180px, var(--side-w)) minmax(0, 1fr) minmax(200px, var(--props-w));
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+}
+
+/* Narrow laptops: tighten the fixed columns before squeezing preview. */
+@media (max-width: 1180px) {
+  .body {
+    grid-template-columns:
+      var(--rail-w) minmax(160px, 240px) minmax(0, 1fr) minmax(180px, 260px);
+  }
 }
 
 .rail {
