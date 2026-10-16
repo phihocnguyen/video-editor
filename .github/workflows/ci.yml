@@ -1,8 +1,13 @@
-# Manual-only checks: typecheck + unit tests. Press "Run workflow" to run.
+# Typecheck and unit tests. Release calls this first.
+# You can also run it on its own from the Actions tab.
 name: CI
 
 on:
   workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   check:

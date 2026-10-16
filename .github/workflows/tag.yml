@@ -1,7 +1,5 @@
-# Manual-only versioning: bumps package.json, tauri.conf.json and Cargo.toml,
-# commits, and pushes a vX.Y.Z tag. Version is auto-bumped from the current
-# one (patch by default) — pass `version` explicitly to override.
-# Run AFTER deciding the release, BEFORE running Release.
+# Bump package.json, tauri.conf.json and Cargo.toml, commit, and push vX.Y.Z.
+# Release calls this after CI. Patch bump unless `version` is set.
 name: Tag
 
 on:
@@ -20,6 +18,22 @@ on:
         description: "Explicit version without leading v (e.g. 0.2.0) — overrides bump"
         required: false
         type: string
+  workflow_call:
+    inputs:
+      bump:
+        description: "Auto-bump level"
+        required: false
+        type: string
+        default: patch
+      version:
+        description: "Explicit version without leading v. Overrides bump."
+        required: false
+        type: string
+        default: ""
+    outputs:
+      version:
+        description: "Resolved version without a leading v"
+        value: ${{ jobs.tag.outputs.version }}
 
 permissions:
   contents: write
@@ -27,6 +41,8 @@ permissions:
 jobs:
   tag:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:

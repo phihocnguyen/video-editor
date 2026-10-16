@@ -1,53 +1,57 @@
-# Manual-only release: builds the Windows installer from a tag and attaches
-# the .exe (.msi) to a GitHub Release. Run Tag first, then Release.
+# One button. Runs the other workflows in order and stops on the first failure:
+# CI (typecheck + test) → Tag (bump + vX.Y.Z) → Build (Windows .exe) → Publish (GitHub Release).
 name: Release
 
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Tag to release (e.g. v0.2.0)"
-        required: true
+      bump:
+        description: "Auto-bump level"
+        required: false
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: "Explicit version without leading v (overrides bump)"
+        required: false
         type: string
       draft:
-        description: "Create as draft (publish manually later)"
+        description: "Create release as draft"
         required: false
         default: false
         type: boolean
 
+concurrency:
+  group: cutline-release
+  cancel-in-progress: false
+
 permissions:
   contents: write
+  actions: write
 
 jobs:
-  release-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.tag }}
+  ci:
+    uses: ./.github/workflows/ci.yml
 
-      - uses: ./.github/actions/ffmpeg-sidecars
+  tag:
+    needs: ci
+    uses: ./.github/workflows/tag.yml
+    with:
+      bump: ${{ inputs.bump }}
+      version: ${{ inputs.version }}
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 12.11.2
+  build:
+    needs: tag
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: v${{ needs.tag.outputs.version }}
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: pnpm
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install frontend deps
-        run: pnpm install --frozen-lockfile
-
-      - name: Build and publish release
-        uses: tauri-apps/tauri-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ inputs.tag }}
-          releaseName: "Cutline ${{ inputs.tag }}"
-          releaseDraft: ${{ inputs.draft }}
-          prerelease: false
+  publish:
+    needs: [tag, build]
+    uses: ./.github/workflows/publish.yml
+    with:
+      tag: v${{ needs.tag.outputs.version }}
+      draft: ${{ inputs.draft }}

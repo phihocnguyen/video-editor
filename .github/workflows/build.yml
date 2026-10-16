@@ -1,18 +1,33 @@
-# Manual-only build: produces the Windows installer (.exe NSIS) as a run
-# artifact. Nothing here runs on push — press "Run workflow" to build.
+# Compile the Windows NSIS installer and upload it as a workflow artifact.
+# Release calls this after Tag, checking out the new tag.
 name: Build
 
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag, or SHA). Defaults to the selected ref."
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag, or SHA)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - uses: ./.github/actions/ffmpeg-sidecars
 
@@ -30,13 +45,14 @@ jobs:
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Test
-        run: pnpm test
-
       - name: Build Tauri app (NSIS .exe)
-        uses: tauri-apps/tauri-action@v2
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: cutline-windows-setup
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
