@@ -34,9 +34,11 @@ permissions:
 
 jobs:
   ci:
+    name: Check
     uses: ./.github/workflows/ci.yml
 
   tag:
+    name: Tag
     needs: ci
     uses: ./.github/workflows/tag.yml
     with:
@@ -44,12 +46,14 @@ jobs:
       version: ${{ inputs.version }}
 
   build:
+    name: Build
     needs: tag
     uses: ./.github/workflows/build.yml
     with:
       ref: v${{ needs.tag.outputs.version }}
 
   publish:
+    name: Publish
     needs: [tag, build]
     uses: ./.github/workflows/publish.yml
     with:

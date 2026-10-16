@@ -23,6 +23,7 @@ permissions:
 
 jobs:
   build-windows:
+    name: Windows installer
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

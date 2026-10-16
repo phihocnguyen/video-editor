@@ -18,14 +18,17 @@ gsap.registerPlugin(ScrollTrigger);
 const Scene3D = lazy(() => import("./Scene3D"));
 
 /* ============================ CONFIG ============================ */
+const env = import.meta.env;
 const APP = {
   name: "Cutline",
-  version: "0.1.0",
-  size: "~ 56 MB",
+  version: env.VITE_APP_VERSION || "0.1.0",
+  size: env.VITE_DOWNLOAD_SIZE || "~ 56 MB",
   os: "Windows 10 / 11 (64-bit)",
-  // Served from public/downloads (copy from src-tauri/target/release/bundle/nsis/)
-  downloadUrl: "/downloads/Cutline_0.1.0_x64-setup.exe",
-  fileName: "Cutline_0.1.0_x64-setup.exe",
+  // Vercel build fills these from the latest GitHub Release. Local fallback
+  // is a file dropped in public/downloads.
+  downloadUrl:
+    env.VITE_DOWNLOAD_URL || "/downloads/Cutline_0.1.0_x64-setup.exe",
+  fileName: env.VITE_DOWNLOAD_NAME || "Cutline_0.1.0_x64-setup.exe",
   contact: "hello@cutline.app",
 };
 

@@ -10,6 +10,7 @@
     "dev:marketing": "vite --open /marketing.html",
     "export:server": "tsx scripts/export-server.ts",
     "build": "tsc && vite build",
+    "resolve-download": "node scripts/resolve-latest-release.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

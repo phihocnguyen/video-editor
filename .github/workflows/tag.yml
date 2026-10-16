@@ -40,6 +40,7 @@ permissions:
 
 jobs:
   tag:
+    name: Bump version
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.resolve.outputs.version }}

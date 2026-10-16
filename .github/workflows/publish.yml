@@ -33,6 +33,7 @@ permissions:
 
 jobs:
   publish:
+    name: Upload release
     runs-on: ubuntu-latest
     steps:
       - name: Download installer
@@ -49,11 +50,19 @@ jobs:
           DRAFT: ${{ inputs.draft }}
         run: |
           shopt -s nullglob
-          files=(release-assets/*)
+          files=(release-assets/*.exe)
           if [ ${#files[@]} -eq 0 ]; then
             echo "No installer found in cutline-windows-setup"
             exit 1
           fi
+          src="${files[0]}"
+          for f in "${files[@]}"; do
+            case "$f" in
+              *[Ss]etup.exe) src="$f"; break ;;
+            esac
+          done
+          cp "$src" release-assets/Cutline-windows-setup.exe
+          files=("$src" release-assets/Cutline-windows-setup.exe)
           if [ "$DRAFT" = "true" ]; then
             draft_flag=(--draft)
           else
@@ -67,3 +76,14 @@ jobs:
               --title "Cutline $TAG" \
               "${draft_flag[@]}"
           fi
+
+      - name: Refresh marketing site
+        if: inputs.draft == false
+        env:
+          VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$VERCEL_DEPLOY_HOOK" ]; then
+            echo "VERCEL_DEPLOY_HOOK is not set. The download link updates on the next Vercel deploy."
+            exit 0
+          fi
+          curl -fsS -X POST "$VERCEL_DEPLOY_HOOK"
