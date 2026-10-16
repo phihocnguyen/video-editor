@@ -1,7 +1,7 @@
 {
   "name": "klipcut",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Windows desktop video editor — React + TypeScript + Tauri 2 + FFmpeg",
   "scripts": {
