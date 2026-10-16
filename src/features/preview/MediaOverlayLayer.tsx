@@ -15,8 +15,13 @@ import {
   type RefObject,
 } from "react";
 import {
+  applyTransformPatch,
   layerStackZ,
-  updateClipTransform,
+  mediaCenter,
+  paramHasTransformKeyframes,
+  progressFromTicks,
+  transformAtProgress,
+  clipDurationTicks,
   type Clip,
   type MediaAsset,
 } from "../../domain";
@@ -61,6 +66,7 @@ export function MediaOverlayLayer({
   stageRef,
 }: MediaOverlayLayerProps) {
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
+  const playheadTicks = useEditorUiStore((s) => s.playheadTicks);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
   const setPlaying = useEditorUiStore((s) => s.setPlaying);
 
@@ -76,7 +82,12 @@ export function MediaOverlayLayer({
     startRotation: number;
     startDist: number;
     startAngle: number;
+    playheadTicks: number;
   } | null>(null);
+
+  function dragPlayhead(drag: { playheadTicks: number }) {
+    return drag.playheadTicks;
+  }
 
   function beginGesture(
     event: ReactPointerEvent,
@@ -95,7 +106,26 @@ export function MediaOverlayLayer({
     const before = useProjectStore.getState().project;
     useHistoryStore.getState().pushHistory(before);
 
-    const geom = mediaGeometry(clip.transform, canvasWidth, canvasHeight, asset);
+    const playheadNow = useEditorUiStore.getState().playheadTicks;
+    const progress = progressFromTicks(
+      clip.startTicks,
+      clipDurationTicks(clip),
+      playheadNow,
+    );
+    const tr = transformAtProgress(clip.transform, clip.transformKeyframes, progress);
+    const geom = mediaGeometry(tr, canvasWidth, canvasHeight, asset);
+    if (
+      paramHasTransformKeyframes(clip.transformKeyframes, "x") ||
+      paramHasTransformKeyframes(clip.transformKeyframes, "y")
+    ) {
+      const center = mediaCenter(clip.transform, canvasWidth, canvasHeight);
+      geom.centerX = paramHasTransformKeyframes(clip.transformKeyframes, "x")
+        ? tr.x
+        : center.x;
+      geom.centerY = paramHasTransformKeyframes(clip.transformKeyframes, "y")
+        ? tr.y
+        : center.y;
+    }
     const point = clientToCanvas(
       stage,
       event.clientX,
@@ -117,6 +147,7 @@ export function MediaOverlayLayer({
       startDist: Math.max(8, Math.hypot(point.x - geom.centerX, point.y - geom.centerY)),
       startAngle:
         (Math.atan2(point.y - geom.centerY, point.x - geom.centerX) * 180) / Math.PI,
+      playheadTicks: useEditorUiStore.getState().playheadTicks,
     };
 
     const onMove = (ev: globalThis.PointerEvent) => {
@@ -132,11 +163,12 @@ export function MediaOverlayLayer({
         const nextX = Math.min(canvasWidth, Math.max(0, p.x - drag.grabX));
         const nextY = Math.min(canvasHeight, Math.max(0, p.y - drag.grabY));
         useProjectStore.getState().setProject(
-          updateClipTransform(project, drag.clipId, {
-            ...current.transform,
-            x: nextX,
-            y: nextY,
-          }),
+          applyTransformPatch(
+            project,
+            drag.clipId,
+            { x: nextX, y: nextY },
+            dragPlayhead(drag),
+          ),
           { dirty: true },
         );
         return;
@@ -147,10 +179,12 @@ export function MediaOverlayLayer({
           (Math.atan2(p.y - drag.startY, p.x - drag.startX) * 180) / Math.PI;
         const delta = angle - drag.startAngle;
         useProjectStore.getState().setProject(
-          updateClipTransform(project, drag.clipId, {
-            ...current.transform,
-            rotation: Math.round(drag.startRotation + delta),
-          }),
+          applyTransformPatch(
+            project,
+            drag.clipId,
+            { rotation: Math.round(drag.startRotation + delta) },
+            dragPlayhead(drag),
+          ),
           { dirty: true },
         );
         return;
@@ -166,11 +200,12 @@ export function MediaOverlayLayer({
       const sy =
         sySign * Math.min(20, Math.max(0.02, Math.abs(drag.startScaleY) * ratio));
       useProjectStore.getState().setProject(
-        updateClipTransform(project, drag.clipId, {
-          ...current.transform,
-          scaleX: sx,
-          scaleY: sy,
-        }),
+        applyTransformPatch(
+          project,
+          drag.clipId,
+          { scaleX: sx, scaleY: sy },
+          dragPlayhead(drag),
+        ),
         { dirty: true },
       );
     };
@@ -191,7 +226,20 @@ export function MediaOverlayLayer({
     <>
       {items.map(({ clip, asset, trackOrder }) => {
         const selected = selectedClipIds.includes(clip.id);
-        const geom = mediaGeometry(clip.transform, canvasWidth, canvasHeight, asset);
+        const progress = progressFromTicks(
+          clip.startTicks,
+          clipDurationTicks(clip),
+          playheadTicks,
+        );
+        const tr = transformAtProgress(clip.transform, clip.transformKeyframes, progress);
+        const geom = mediaGeometry(tr, canvasWidth, canvasHeight, asset);
+        const xAbs = paramHasTransformKeyframes(clip.transformKeyframes, "x");
+        const yAbs = paramHasTransformKeyframes(clip.transformKeyframes, "y");
+        if (xAbs || yAbs) {
+          const center = mediaCenter(clip.transform, canvasWidth, canvasHeight);
+          geom.centerX = xAbs ? tr.x : center.x;
+          geom.centerY = yAbs ? tr.y : center.y;
+        }
         const leftPct = (geom.centerX / canvasWidth) * 100;
         const topPct = (geom.centerY / canvasHeight) * 100;
         const widthPct = (geom.boxWidth / canvasWidth) * 100;

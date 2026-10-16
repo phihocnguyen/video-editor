@@ -3,7 +3,7 @@
  * Serves import cache + FFmpeg export on http://127.0.0.1:1421
  */
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   copyFileSync,
   createReadStream,
@@ -23,6 +23,7 @@ import type {
 import {
   ffmpegMissingMessage,
   resolveFfmpegPath,
+  probeHasAudioStream,
   sanitizePlanAudio,
 } from "./resolve-ffmpeg.ts";
 
@@ -40,9 +41,11 @@ const PORT = Number(process.env.CUTLINE_EXPORT_PORT ?? 1421);
 const ROOT = resolve(process.cwd(), ".cutline-cache");
 const MEDIA = join(ROOT, "media");
 const EXPORTS = join(ROOT, "exports");
+const AUDIO = join(ROOT, "audio");
 
 mkdirSync(MEDIA, { recursive: true });
 mkdirSync(EXPORTS, { recursive: true });
+mkdirSync(AUDIO, { recursive: true });
 
 type Job = {
   id: string;
@@ -143,6 +146,41 @@ async function handleImport(req: IncomingMessage, res: ServerResponse) {
   const dest = join(MEDIA, `${randomUUID()}-${safe}`);
   writeFileSync(dest, parsed.data);
   sendJson(res, 200, { path: dest, name: safe });
+}
+
+async function handleExtractAudio(req: IncomingMessage, res: ServerResponse) {
+  const raw = JSON.parse((await readBody(req)).toString("utf8")) as { path?: string };
+  const source = raw.path ?? "";
+  if (!source || source.startsWith("blob:") || !existsSync(source)) {
+    sendJson(res, 400, { error: "Media path is not a local file" });
+    return;
+  }
+  if (!probeHasAudioStream(source)) {
+    sendJson(res, 200, { hasAudio: false, path: null });
+    return;
+  }
+  const key = createHash("sha1").update(source).digest("hex").slice(0, 16);
+  const dest = join(AUDIO, `${key}.m4a`);
+  if (!existsSync(dest)) {
+    const ffmpeg = resolveFfmpegPath();
+    try {
+      await runFfmpeg(ffmpeg, ["-y", "-i", source, "-vn", "-acodec", "copy", dest]);
+    } catch {
+      if (existsSync(dest)) unlinkSync(dest);
+      await runFfmpeg(ffmpeg, [
+        "-y",
+        "-i",
+        source,
+        "-vn",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        dest,
+      ]);
+    }
+  }
+  sendJson(res, 200, { hasAudio: true, path: dest });
 }
 
 async function handleExport(req: IncomingMessage, res: ServerResponse) {
@@ -252,6 +290,10 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "POST" && url.pathname === "/api/import") {
       await handleImport(req, res);
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/extract-audio") {
+      await handleExtractAudio(req, res);
       return;
     }
     if (req.method === "POST" && url.pathname === "/api/export") {

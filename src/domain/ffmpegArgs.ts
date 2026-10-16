@@ -1,7 +1,14 @@
 import { blendModeToFfmpeg, normalizeBlendMode } from "./blendModes";
 import { ffmpegVideoEffectsChainAnimated } from "./effectKeyframes";
+import { ffmpegWashPlate } from "./effects";
 import { bundledFontFileForFamily } from "../lib/fonts";
-import { mediaGeometry } from "./mediaTransform";
+import { containFitBox, mediaCenter, mediaGeometry } from "./mediaTransform";
+import {
+  ffmpegLinearExpr,
+  getTransformTrack,
+  hasGeometryKeyframes,
+  type TransformParamKey,
+} from "./transformKeyframes";
 import type { RenderClipPlan, RenderPlan } from "./renderPlan";
 import {
   rampOutputDurationSec,
@@ -196,7 +203,11 @@ function buildFilterComplex(
         trackId: string;
         trackIndex: number;
       }
+    | { kind: "wash"; trackOrder: number; washIndex: number; wash: (typeof plan.washes)[number] }
     | { kind: "text"; trackOrder: number; textIndex: number; text: (typeof plan.texts)[number] };
+
+  const paintRank = (kind: PaintStep["kind"]) =>
+    kind === "track" ? 0 : kind === "wash" ? 1 : 2;
 
   const steps: PaintStep[] = [
     ...trackIds.map((trackId, trackIndex) => ({
@@ -204,6 +215,12 @@ function buildFilterComplex(
       trackOrder: trackOrderById.get(trackId) ?? trackIndex,
       trackId,
       trackIndex,
+    })),
+    ...plan.washes.map((wash, washIndex) => ({
+      kind: "wash" as const,
+      trackOrder: wash.trackOrder,
+      washIndex,
+      wash,
     })),
     ...plan.texts.map((text, textIndex) => ({
       kind: "text" as const,
@@ -215,9 +232,8 @@ function buildFilterComplex(
   steps.sort((a, b) => {
     // Paint high order first (behind), low order last (on top) — matches preview.
     if (a.trackOrder !== b.trackOrder) return b.trackOrder - a.trackOrder;
-    // Same track: media before text (matches layerStackZ).
-    if (a.kind !== b.kind) return a.kind === "track" ? -1 : 1;
-    return 0;
+    // Same track: media, then the wash, then text (matches layerStackZ).
+    return paintRank(a.kind) - paintRank(b.kind);
   });
 
   let mixCount = 0;
@@ -244,6 +260,31 @@ function buildFilterComplex(
       continue;
     }
 
+    if (step.kind === "wash") {
+      const wash = step.wash;
+      const start = Math.max(0, wash.timelineStartSec);
+      const end = Math.max(start + 0.01, wash.timelineEndSec);
+      const plate = ffmpegWashPlate(
+        wash.effects,
+        width,
+        height,
+        Math.max(end, plan.durationSec),
+        fps,
+      );
+      if (!plate) continue;
+      const layer = `[wash${step.washIndex}]`;
+      const next = `[wmix${step.washIndex}]`;
+      const opacity = Math.min(1, Math.max(0, wash.opacity));
+      const alpha =
+        opacity < 0.999 ? `,colorchannelmixer=aa=${opacity.toFixed(3)}` : "";
+      parts.push(`${plate}${alpha}${layer}`);
+      parts.push(
+        `${current}${layer}overlay=x=0:y=0:format=auto:eof_action=pass:enable='between(t\\,${start.toFixed(3)}\\,${end.toFixed(3)})'${next}`,
+      );
+      current = next;
+      continue;
+    }
+
     const text = step.text;
     const start = Math.max(0, text.timelineStartSec);
     const end = Math.max(start + 0.01, text.timelineEndSec);
@@ -252,12 +293,33 @@ function buildFilterComplex(
     const fontfile = resolvedFont
       ? `:fontfile=${quoteFilterPath(resolvedFont)}`
       : "";
-    const baseSize = Math.max(8, Math.round(text.fontSize));
+    const textDur = Math.max(0.01, end - start);
+    const xTrack = getTransformTrack(text.transformKeyframes, "x");
+    const yTrack = getTransformTrack(text.transformKeyframes, "y");
+    const scaleTrack = getTransformTrack(text.transformKeyframes, "scaleX");
+    const opacityTrack = getTransformTrack(text.transformKeyframes, "opacity");
+    const xValue = xTrack
+      ? (ffmpegLinearExpr(xTrack.points, textDur, text.x, start, "t") ?? text.x.toFixed(2))
+      : String(Math.max(0, Math.round(text.x)));
+    const yValue = yTrack
+      ? (ffmpegLinearExpr(yTrack.points, textDur, text.y, start, "t") ?? text.y.toFixed(2))
+      : String(Math.max(0, Math.round(text.y)));
+    const baseSize = scaleTrack
+      ? `'(${(text.baseFontSize || text.fontSize).toFixed(3)})*abs(${ffmpegLinearExpr(scaleTrack.points, textDur, 1, start, "t") ?? "1"})'`
+      : String(Math.max(8, Math.round(text.fontSize)));
     const color = normalizeColor(text.color);
-    const baseAlpha = Math.min(1, Math.max(0, text.opacity));
-    const xExpr = drawtextXExpr(text);
-    const yExpr = drawtextYExpr(text);
-    const alphaExpr = drawtextAlphaExpr(text, start, end, baseAlpha);
+    const opacityExpr = opacityTrack
+      ? (ffmpegLinearExpr(
+          opacityTrack.points,
+          textDur,
+          Math.min(1, Math.max(0, text.opacity)),
+          start,
+          "t",
+        ) ?? text.opacity.toFixed(3))
+      : Math.min(1, Math.max(0, text.opacity));
+    const xExpr = xTrack ? drawtextXExpr(text, xValue) : drawtextXExpr(text);
+    const yExpr = yTrack ? drawtextYExpr(text, yValue) : drawtextYExpr(text);
+    const alphaExpr = drawtextAlphaExpr(text, start, end, opacityExpr);
     const box =
       text.backgroundColor && text.backgroundColor.length > 0
         ? `:box=1:boxcolor=${normalizeColor(text.backgroundColor)}@1:boxborderw=${Math.max(2, Math.round(text.backgroundPadding || 12))}`
@@ -284,6 +346,40 @@ function buildFilterComplex(
   }
 
   if (current !== "[outv]") {
+    // Cinematic bars (Sony Vegas style) — painted dead last so they cover
+    // every layer exactly like the draggable preview overlay (% of output).
+    const lb = plan.letterbox;
+    if (lb && lb.enabled) {
+      const bar = ffmpegColorLiteral(lb.color ?? "#000000");
+      const top = Math.round((Math.min(45, Math.max(0, lb.topPct)) / 100) * height);
+      const bottom = Math.round((Math.min(45, Math.max(0, lb.bottomPct)) / 100) * height);
+      const left = Math.round((Math.min(45, Math.max(0, lb.leftPct)) / 100) * width);
+      const right = Math.round((Math.min(45, Math.max(0, lb.rightPct)) / 100) * width);
+      const next = (i: number) => `[lb${i}]`;
+      let li = 0;
+      let cur = current;
+      if (top > 0) {
+        const n = next(li++);
+        parts.push(`${cur}drawbox=x=0:y=0:w=iw:h=${top}:c=${bar}:t=fill${n}`);
+        cur = n;
+      }
+      if (bottom > 0) {
+        const n = next(li++);
+        parts.push(`${cur}drawbox=x=0:y=ih-${bottom}:w=iw:h=${bottom}:c=${bar}:t=fill${n}`);
+        cur = n;
+      }
+      if (left > 0) {
+        const n = next(li++);
+        parts.push(`${cur}drawbox=x=0:y=0:w=${left}:h=ih:c=${bar}:t=fill${n}`);
+        cur = n;
+      }
+      if (right > 0) {
+        const n = next(li++);
+        parts.push(`${cur}drawbox=x=iw-${right}:y=0:w=${right}:h=ih:c=${bar}:t=fill${n}`);
+        cur = n;
+      }
+      current = cur;
+    }
     // Force constant frame rate = canvas fps so motion matches preview
     // (sources may be VFR or a different fps; lavfi base alone doesn't fix it).
     parts.push(`${current}fps=${formatFps(fps)}[outv]`);
@@ -335,6 +431,9 @@ export function mediaPlacementFilters(
   width: number,
   height: number,
 ): string {
+  if (hasGeometryKeyframes(clip.transformKeyframes)) {
+    return animatedPlacementFilters(clip, width, height);
+  }
   const geom = mediaGeometry(clip.transform, clip.canvasWidth, clip.canvasHeight, {
     width: clip.mediaWidth,
     height: clip.mediaHeight,
@@ -376,6 +475,95 @@ export function mediaPlacementFilters(
 }
 
 /**
+ * Time-varying scale / rotate / pad. The clip stays a full frame so xfade and
+ * concat keep matching sizes; pad x/y is the animated layer position (the same
+ * result as overlaying an unpadded clip). `t` is clip-local because setpts
+ * runs before this chain.
+ */
+function animatedPlacementFilters(
+  clip: RenderClipPlan,
+  width: number,
+  height: number,
+): string {
+  const cw = Math.max(1, clip.canvasWidth);
+  const ch = Math.max(1, clip.canvasHeight);
+  const fit = containFitBox(cw, ch, clip.mediaWidth, clip.mediaHeight);
+  const outScaleX = width / cw;
+  const outScaleY = height / ch;
+  const fitW = fit.width * outScaleX;
+  const fitH = fit.height * outScaleY;
+  const dur = Math.max(0.01, clip.timelineEndSec - clip.timelineStartSec);
+  const center = mediaCenter(clip.transform, cw, ch);
+  const xTracked = Boolean(getTransformTrack(clip.transformKeyframes, "x"));
+  const yTracked = Boolean(getTransformTrack(clip.transformKeyframes, "y"));
+
+  const scaleXExpr = paramExpr(clip, "scaleX", clip.transform.scaleX, dur);
+  const scaleYExpr = paramExpr(clip, "scaleY", clip.transform.scaleY, dur);
+  const boxW = getTransformTrack(clip.transformKeyframes, "scaleX")
+    ? evenExpr(`${fitW.toFixed(4)}*abs(${scaleXExpr})`)
+    : evenNum(fitW * Math.abs(clip.transform.scaleX || 1));
+  const boxH = getTransformTrack(clip.transformKeyframes, "scaleY")
+    ? evenExpr(`${fitH.toFixed(4)}*abs(${scaleYExpr})`)
+    : evenNum(fitH * Math.abs(clip.transform.scaleY || 1));
+
+  const centerX = xTracked
+    ? `(${paramExpr(clip, "x", clip.transform.x, dur)})*${outScaleX.toFixed(6)}`
+    : (center.x * outScaleX).toFixed(3);
+  const centerY = yTracked
+    ? `(${paramExpr(clip, "y", clip.transform.y, dur)})*${outScaleY.toFixed(6)}`
+    : (center.y * outScaleY).toFixed(3);
+
+  const parts: string[] = [
+    `scale=w='${boxW}':h='${boxH}':eval=frame:flags=lanczos`,
+  ];
+  if (clip.transform.scaleX < 0) parts.push("hflip");
+  if (clip.transform.scaleY < 0) parts.push("vflip");
+
+  const rotTracked = Boolean(getTransformTrack(clip.transformKeyframes, "rotation"));
+  const rot = clip.transform.rotation;
+  let padW = boxW;
+  let padH = boxH;
+  if (rotTracked || Math.abs(rot) > 0.01) {
+    const rotExpr = paramExpr(clip, "rotation", rot, dur);
+    const rad = `(${rotExpr})*0.0174533`;
+    const ow = `abs((${boxW})*cos(abs(${rad})))+abs((${boxH})*sin(abs(${rad})))`;
+    const oh = `abs((${boxW})*sin(abs(${rad})))+abs((${boxH})*cos(abs(${rad})))`;
+    parts.push(`rotate=${rad}:ow='${ow}':oh='${oh}':c=black@0:eval=frame`);
+    padW = ow;
+    padH = oh;
+  }
+  const offX = `(${centerX})-(${padW})/2`;
+  const offY = `(${centerY})-(${padH})/2`;
+  parts.push(
+    `pad=${width}:${height}:x='${offX}':y='${offY}':color=black@0:eval=frame`,
+  );
+  parts.push("setsar=1");
+  return parts.join(",");
+}
+
+function paramExpr(
+  clip: RenderClipPlan,
+  param: TransformParamKey,
+  before: number,
+  clipDur: number,
+  timeVar = "t",
+  tOrigin = 0,
+): string {
+  const track = getTransformTrack(clip.transformKeyframes, param);
+  if (!track) return before.toFixed(4);
+  return ffmpegLinearExpr(track.points, clipDur, before, tOrigin, timeVar) ?? before.toFixed(4);
+}
+
+function evenExpr(inner: string): string {
+  return `max(2\\,2*trunc((${inner})/2))`;
+}
+
+function evenNum(value: number): string {
+  const even = Math.max(2, Math.round(value) & ~1);
+  return String(even);
+}
+
+/**
  * Build one video track: prepare clips, chain with xfade (matches preview transitions).
  * Returns a label like `[trk0]` whose PTS starts at timeline 0 (leading black pad if needed).
  */
@@ -413,16 +601,23 @@ function buildTrackChain(
         ? Math.max(0, next.transitionOverlapSec)
         : 0;
     const setpts = clipSetpts(clip);
+    const animatedGeo = hasGeometryKeyframes(clip.transformKeyframes);
 
     const fx = ffmpegVideoEffectsChainAnimated(clip.effects, clipDur, {
       delaySec: early,
       keyframes: clip.effectKeyframes,
     });
-    const bits: string[] = [
-      `[${inputIndex}:v]${mediaPlacementFilters(clip, width, height)}`,
-      setpts,
-      "format=rgba",
-    ];
+    const bits: string[] = animatedGeo
+      ? [
+          `[${inputIndex}:v]${setpts}`,
+          mediaPlacementFilters(clip, width, height),
+          "format=rgba",
+        ]
+      : [
+          `[${inputIndex}:v]${mediaPlacementFilters(clip, width, height)}`,
+          setpts,
+          "format=rgba",
+        ];
     if (fx) bits.push(fx);
 
     // First clip on track with transitionIn: RGB fade from black (preview over empty stage).
@@ -440,7 +635,15 @@ function buildTrackChain(
     if (hold > 0.001) {
       bits.push(`tpad=stop_mode=clone:stop_duration=${hold.toFixed(3)}`);
     }
-    if (opacity < 0.999) {
+    const opacityTrack = getTransformTrack(clip.transformKeyframes, "opacity");
+    if (opacityTrack) {
+      const expr =
+        ffmpegLinearExpr(opacityTrack.points, clipDur, opacity, 0, "T") ??
+        opacity.toFixed(4);
+      bits.push(
+        `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*(${expr})'`,
+      );
+    } else if (opacity < 0.999) {
       bits.push(`colorchannelmixer=aa=${opacity.toFixed(3)}`);
     }
     parts.push(`${bits.join(",")}[c${trackIndex}_${i}]`);
@@ -645,10 +848,13 @@ function audioFadeChain(
 
 /** FFmpeg drawtext needs a real TTF/OTF path; UI fonts like Manrope often have none. */
 function drawtextBaseX(text: { align: string; x: number }): string {
-  if (text.align === "left") return `${Math.max(0, Math.round(text.x))}`;
-  if (text.align === "right")
-    return `${Math.max(0, Math.round(text.x))}-text_w`;
-  return `${Math.max(0, Math.round(text.x))}-(text_w/2)`;
+  return drawtextBaseFrom(text.align, `${Math.max(0, Math.round(text.x))}`, "x");
+}
+
+function drawtextBaseFrom(align: string, xExpr: string, _axis: "x"): string {
+  if (align === "left") return xExpr;
+  if (align === "right") return `(${xExpr})-text_w`;
+  return `(${xExpr})-(text_w/2)`;
 }
 
 function drawtextBaseY(text: { y: number }): string {
@@ -688,15 +894,18 @@ function slideOffsetExpr(
 }
 
 /** drawtext x/y with slide in/out offsets (B1); scalePop/blur degrade to fade. */
-export function drawtextXExpr(text: {
-  align: string;
-  x: number;
-  timelineStartSec: number;
-  timelineEndSec: number;
-  slideDist?: number;
-  textAnimation?: { in: string; out: string; inDurationSec: number; outDurationSec: number } | null;
-}): string {
-  const base = drawtextBaseX(text);
+export function drawtextXExpr(
+  text: {
+    align: string;
+    x: number;
+    timelineStartSec: number;
+    timelineEndSec: number;
+    slideDist?: number;
+    textAnimation?: { in: string; out: string; inDurationSec: number; outDurationSec: number } | null;
+  },
+  xOverride?: string,
+): string {
+  const base = xOverride ? drawtextBaseFrom(text.align, xOverride, "x") : drawtextBaseX(text);
   const dur = Math.max(0, text.timelineEndSec - text.timelineStartSec);
   const anim = text.textAnimation;
   if (!anim || dur <= 0.01) return base;
@@ -711,14 +920,17 @@ export function drawtextXExpr(text: {
   return off ? `(${base}+${off})` : base;
 }
 
-export function drawtextYExpr(text: {
-  y: number;
-  timelineStartSec: number;
-  timelineEndSec: number;
-  slideDist?: number;
-  textAnimation?: { in: string; out: string; inDurationSec: number; outDurationSec: number } | null;
-}): string {
-  const base = drawtextBaseY(text);
+export function drawtextYExpr(
+  text: {
+    y: number;
+    timelineStartSec: number;
+    timelineEndSec: number;
+    slideDist?: number;
+    textAnimation?: { in: string; out: string; inDurationSec: number; outDurationSec: number } | null;
+  },
+  yOverride?: string,
+): string {
+  const base = yOverride ? `(${yOverride})-(text_h/2)` : drawtextBaseY(text);
   const dur = Math.max(0, text.timelineEndSec - text.timelineStartSec);
   const anim = text.textAnimation;
   if (!anim || dur <= 0.01) return base;
@@ -747,10 +959,12 @@ export function drawtextAlphaExpr(
   },
   start: number,
   end: number,
-  baseAlpha: number,
+  baseAlpha: number | string,
 ): string {
   const dur = Math.max(0.01, end - start);
-  const terms: string[] = [baseAlpha.toFixed(3)];
+  const terms: string[] = [
+    typeof baseAlpha === "number" ? baseAlpha.toFixed(3) : baseAlpha,
+  ];
   const fadeIn = Math.min(text.fadeInSec ?? 0, dur);
   if (fadeIn > 0.001) {
     terms.push(`min(1\\,max(0\\,(t-${start.toFixed(3)})/${fadeIn.toFixed(3)}))`);

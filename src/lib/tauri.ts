@@ -49,6 +49,12 @@ export interface ThumbnailResult {
   cached: boolean;
 }
 
+export async function extractAudioTrack(
+  path: string,
+): Promise<{ hasAudio: boolean; path: string | null }> {
+  return invoke<{ hasAudio: boolean; path: string | null }>("extract_audio_track", { path });
+}
+
 export async function generateThumbnail(
   path: string,
   timeSec = 0.5,

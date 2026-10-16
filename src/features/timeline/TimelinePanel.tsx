@@ -19,14 +19,17 @@ import {
   clipShortLabel,
   deleteClips,
   enableSpeedRamp,
+  findMatchingFilterTemplate,
   hasActiveRamp,
   hasEffectKeyframes,
+  hasTransformKeyframes,
   moveClip,
   moveClipLayer,
   moveTrack,
   normalizeClipEffects,
   normalizeClipTransition,
   normalizeEffectKeyframes,
+  normalizeTransformKeyframes,
   projectDurationTicks,
   pruneEmptyTrack,
   relockClipDuration,
@@ -907,7 +910,9 @@ export function TimelinePanel() {
                       ]
                         .filter(Boolean)
                         .join(" ")}
-                      data-kind={clip.kind === "text" ? "text" : track.kind}
+                      data-kind={
+                        clip.kind === "text" ? "text" : clip.kind === "filter" ? "filter" : track.kind
+                      }
                       style={{
                         left: start * pxPerSecond,
                         width: clipWidthPx,
@@ -1141,24 +1146,31 @@ export function TimelinePanel() {
                         <span
                           className={`${styles.clipBadge} ${styles.clipFxBadge}`}
                           title={
-                            hasEffectKeyframes(clip.effectKeyframes)
+                            findMatchingFilterTemplate(clip.effects)?.label ??
+                            (hasEffectKeyframes(clip.effectKeyframes)
                               ? "Effects + keyframes"
-                              : "Effects applied"
+                              : "Effects applied")
                           }
                         >
-                          FX
+                          {(() => {
+                            const look = findMatchingFilterTemplate(clip.effects);
+                            return look && look.id !== "none" ? look.label : "FX";
+                          })()}
                         </span>
                       ) : null}
-                      {clip.kind === "media" &&
-                      hasEffectKeyframes(clip.effectKeyframes)
+                      {(hasEffectKeyframes(clip.effectKeyframes) ||
+                        hasTransformKeyframes(clip.transformKeyframes))
                         ? (() => {
                             const kf = normalizeEffectKeyframes(clip.effectKeyframes);
-                            if (!kf) return null;
+                            const tf = normalizeTransformKeyframes(clip.transformKeyframes);
                             const marks = new Map<
                               number,
                               { progress: number; params: string[] }
                             >();
-                            for (const track of kf.tracks) {
+                            for (const track of [
+                              ...(kf?.tracks ?? []),
+                              ...(tf?.tracks ?? []),
+                            ]) {
                               for (const p of track.points) {
                                 const key = Math.round(p.atProgress * 1000);
                                 const existing = marks.get(key);

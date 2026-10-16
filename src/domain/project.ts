@@ -1,6 +1,7 @@
 import type { BlendMode } from "./blendModes";
 import type { ClipEffects } from "./effects";
 import type { EffectKeyframes } from "./effectKeyframes";
+import type { TransformKeyframes } from "./transformKeyframes";
 import type { ClipTransition } from "./transitions";
 import type { Tick } from "./time";
 import type { SpeedRamp } from "./speedRamp";
@@ -22,6 +23,11 @@ export interface MediaAsset {
   frameRate: number | null;
   hasAudio: boolean;
   missing: boolean;
+  /**
+   * Soundtrack extracted from this video asset. Missing → audio still rides
+   * the video file until a clip is detached.
+   */
+  extractedAudioAssetId?: string | null;
 }
 
 /**
@@ -273,7 +279,7 @@ export interface Clip {
   id: string;
   trackId: string;
   assetId: string | null;
-  kind: "media" | "text";
+  kind: "media" | "text" | "filter";
   /** Timeline start in ticks (inclusive). */
   startTicks: Tick;
   /** Source in-point in ticks (inclusive). */
@@ -290,6 +296,22 @@ export interface Clip {
    * `effects` for the whole clip.
    */
   effectKeyframes?: EffectKeyframes | null;
+  /**
+   * Linear opacity / position / scale / rotation keyframes. Missing → static
+   * `transform` for the whole clip.
+   */
+  transformKeyframes?: TransformKeyframes | null;
+  /**
+   * Partner clip created when a video soundtrack is detached. Missing → no link.
+   * `linkLocked` makes trim / split / move / delete follow the partner.
+   */
+  linkedClipId?: string | null;
+  linkLocked?: boolean;
+  /**
+   * Video clip whose soundtrack plays from the linked audio clip. Missing or
+   * false keeps today's embedded-audio playback.
+   */
+  suppressEmbeddedAudio?: boolean;
   /**
    * Incoming transition from the previous clip on the same track.
    * Missing on older projects → none.
@@ -315,6 +337,47 @@ export interface Track {
   volume: number;
 }
 
+export interface Letterbox {
+  /** Master switch — off = no bars in preview/export. */
+  enabled: boolean;
+  /** Bars as % of canvas dimension (0..45 each). */
+  topPct: number;
+  bottomPct: number;
+  leftPct: number;
+  rightPct: number;
+  /** Bar colour (default black). */
+  color: string;
+}
+
+export const DEFAULT_LETTERBOX: Letterbox = {
+  enabled: false,
+  topPct: 0,
+  bottomPct: 0,
+  leftPct: 0,
+  rightPct: 0,
+  color: "#000000",
+};
+
+export function normalizeLetterbox(input?: Partial<Letterbox> | null): Letterbox {
+  const src = (input ?? {}) as Record<string, unknown>;
+  const pct = (v: unknown, fallback: number) =>
+    typeof v === "number" && Number.isFinite(v)
+      ? Math.min(45, Math.max(0, v))
+      : fallback;
+  const color =
+    typeof src.color === "string" && src.color.trim().length > 0
+      ? src.color.trim()
+      : DEFAULT_LETTERBOX.color;
+  return {
+    enabled: src.enabled === true,
+    topPct: pct(src.topPct, 0),
+    bottomPct: pct(src.bottomPct, 0),
+    leftPct: pct(src.leftPct, 0),
+    rightPct: pct(src.rightPct, 0),
+    color,
+  };
+}
+
 export interface ProjectDocument {
   schemaVersion: typeof PROJECT_SCHEMA_VERSION;
   id: string;
@@ -325,6 +388,8 @@ export interface ProjectDocument {
     frameRate: number;
     /** Stage background colour behind all layers (CSS + export base). */
     backgroundColor: string;
+    /** Cinematic bars overlay (Sony Vegas style). Missing → off. */
+    letterbox?: Letterbox | null;
   };
   tracks: Track[];
   assets: MediaAsset[];

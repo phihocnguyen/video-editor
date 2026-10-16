@@ -1,5 +1,5 @@
 use crate::media::probe::{probe_path, ProbeResult};
-use crate::render::ffmpeg::generate_thumbnail_file;
+use crate::render::ffmpeg::{extract_audio_file, generate_thumbnail_file, media_has_audio_stream};
 use crate::storage;
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
@@ -67,6 +67,39 @@ pub fn check_media_paths(paths: Vec<String>) -> Result<Vec<MediaAvailability>, S
             path,
         })
         .collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractAudioResult {
+    pub has_audio: bool,
+    pub path: Option<String>,
+}
+
+/// Extract a video soundtrack to the app cache. No-op result when the file has no audio.
+#[tauri::command]
+pub fn extract_audio_track(app: AppHandle, path: String) -> Result<ExtractAudioResult, String> {
+    if !Path::new(&path).is_file() {
+        return Err("Media file missing".into());
+    }
+    if !media_has_audio_stream(&path) {
+        return Ok(ExtractAudioResult {
+            has_audio: false,
+            path: None,
+        });
+    }
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    let key = format!("{:x}", hasher.finish());
+    let cache_dir = storage::cache_dir(&app, "audio")?;
+    let out = cache_dir.join(format!("{key}.m4a"));
+    if !out.is_file() {
+        extract_audio_file(Path::new(&path), &out)?;
+    }
+    Ok(ExtractAudioResult {
+        has_audio: true,
+        path: Some(out.to_string_lossy().to_string()),
+    })
 }
 
 #[tauri::command]

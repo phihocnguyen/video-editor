@@ -11,12 +11,15 @@ import {
   blendModeToCss,
   clipDurationTicks,
   layerStackZ,
+  paramHasTransformKeyframes,
+  progressFromTicks,
+  transformAtProgress,
   normalizeClipEffects,
   normalizeTextStyle,
   textAnimVisual,
   ticksToSeconds,
+  applyTransformPatch,
   updateClipText,
-  updateClipTransform,
   type Clip,
 } from "../../domain";
 import { useHistoryStore } from "../../stores/historyStore";
@@ -125,9 +128,23 @@ export function TextOverlayLayer({
           local,
           dur,
         );
-        const sx = clip.transform.scaleX || 1;
-        const sy = clip.transform.scaleY || 1;
-        el.style.opacity = String(clip.transform.opacity * anim.opacity);
+        const progress = progressFromTicks(
+          clip.startTicks,
+          clipDurationTicks(clip),
+          playhead,
+        );
+        const tr = transformAtProgress(clip.transform, clip.transformKeyframes, progress);
+        const sx = tr.scaleX || 1;
+        const sy = tr.scaleY || 1;
+        const posX = paramHasTransformKeyframes(clip.transformKeyframes, "x")
+          ? tr.x
+          : clip.transform.x;
+        const posY = paramHasTransformKeyframes(clip.transformKeyframes, "y")
+          ? tr.y
+          : clip.transform.y;
+        el.style.left = `${(posX / live.canvasWidth) * 100}%`;
+        el.style.top = `${(posY / live.canvasHeight) * 100}%`;
+        el.style.opacity = String(tr.opacity * anim.opacity);
         el.style.mixBlendMode = blendModeToCss(clip.transform.blendMode);
         el.style.transform =
           `translate(-50%, -50%) translate(${(anim.offsetX * stageScale).toFixed(2)}px, ` +
@@ -230,11 +247,12 @@ export function TextOverlayLayer({
         const nextX = Math.min(canvasWidth, Math.max(0, p.x - drag.originX));
         const nextY = Math.min(canvasHeight, Math.max(0, p.y - drag.originY));
         useProjectStore.getState().setProject(
-          updateClipTransform(project, drag.clipId, {
-            ...current.transform,
-            x: nextX,
-            y: nextY,
-          }),
+          applyTransformPatch(
+            project,
+            drag.clipId,
+            { x: nextX, y: nextY },
+            useEditorUiStore.getState().playheadTicks,
+          ),
           { dirty: true },
         );
         return;
@@ -306,10 +324,20 @@ export function TextOverlayLayer({
           localSec,
           durationSec,
         );
+        const progress = progressFromTicks(
+          clip.startTicks,
+          clipDurationTicks(clip),
+          playheadTicks,
+        );
+        const tr = transformAtProgress(clip.transform, clip.transformKeyframes, progress);
+        const xAbs = paramHasTransformKeyframes(clip.transformKeyframes, "x");
+        const yAbs = paramHasTransformKeyframes(clip.transformKeyframes, "y");
+        const posX = xAbs ? tr.x : clip.transform.x;
+        const posY = yAbs ? tr.y : clip.transform.y;
         const stageW = stageRef.current?.clientWidth ?? canvasWidth;
         const stageScale = stageW / Math.max(1, canvasWidth);
-        const sx = clip.transform.scaleX || 1;
-        const sy = clip.transform.scaleY || 1;
+        const sx = tr.scaleX || 1;
+        const sy = tr.scaleY || 1;
         const flipScale =
           sx < 0 || sy < 0 ? ` scale(${sx < 0 ? -1 : 1}, ${sy < 0 ? -1 : 1})` : "";
 
@@ -343,9 +371,9 @@ export function TextOverlayLayer({
             }}
             className={selected ? styles.textBoxSelected : styles.textBox}
             style={{
-              left: `${(clip.transform.x / canvasWidth) * 100}%`,
-              top: `${(clip.transform.y / canvasHeight) * 100}%`,
-              opacity: clip.transform.opacity * anim.opacity,
+              left: `${(posX / canvasWidth) * 100}%`,
+              top: `${(posY / canvasHeight) * 100}%`,
+              opacity: tr.opacity * anim.opacity,
               mixBlendMode: blendModeToCss(
                 clip.transform.blendMode,
               ) as CSSProperties["mixBlendMode"],

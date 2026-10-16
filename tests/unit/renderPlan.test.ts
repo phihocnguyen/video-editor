@@ -34,6 +34,11 @@ describe("buildRenderPlan", () => {
     expect(plan.clips[0].opacity).toBe(1);
     expect(plan.clips[0].speed).toBe(1);
     expect(plan.clips[0].includeAudio).toBe(true);
+    project = {
+      ...project,
+      clips: project.clips.map((c) => ({ ...c, suppressEmbeddedAudio: true })),
+    };
+    expect(buildRenderPlan(project, "720", "high").clips[0].includeAudio).toBe(false);
     expect(plan.videoBitrate).toBe("12M");
     expect(plan.durationSec).toBeCloseTo(6);
     expect(plan.missingAssetIds).toEqual([]);

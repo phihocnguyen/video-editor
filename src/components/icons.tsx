@@ -184,6 +184,15 @@ export const ShapeIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const TemplateIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2.2" y="2.2" width="5" height="5" rx="1" />
+    <rect x="8.8" y="2.2" width="5" height="5" rx="1" />
+    <rect x="2.2" y="8.8" width="5" height="5" rx="1" />
+    <path d="M9.4 10.2h3.8M11.3 8.3v3.8" />
+  </Svg>
+);
+
 export const SubtitlesIcon = (p: IconProps) => (
   <Svg {...p}>
     <rect x="2.4" y="3.4" width="11.2" height="9.2" rx="1.6" />

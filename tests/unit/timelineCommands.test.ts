@@ -18,7 +18,10 @@ import {
   setEffectParamAtPlayhead,
   setRampPointSpeed,
   splitClipAt,
+  setClipLinkLocked,
   toggleEffectKeyframeAtPlayhead,
+  toggleTransformKeyframeAtPlayhead,
+  setTransformParamAtPlayhead,
   trimClip,
   updateCanvas,
   updateClipSpeed,
@@ -510,5 +513,103 @@ describe("effect keyframe toggle", () => {
     const points = project.clips[0].effectKeyframes!.tracks[0]!.points;
     expect(points).toHaveLength(2);
     expect(points[1]!.value).toBeCloseTo(0, 5);
+  });
+});
+
+describe("detach video audio", () => {
+  function pairProject() {
+    let project = withAsset("video");
+    const audio: MediaAsset = {
+      id: "audio-1",
+      kind: "audio",
+      path: "C:/media/clip.m4a",
+      name: "clip.m4a",
+      durationTicks: 10_000_000,
+      width: null,
+      height: null,
+      frameRate: null,
+      hasAudio: true,
+      missing: false,
+    };
+    project = {
+      ...project,
+      assets: [
+        { ...project.assets[0]!, extractedAudioAssetId: audio.id },
+        audio,
+      ],
+    };
+    return project;
+  }
+
+  it("places a linked audio clip and suppresses embedded video audio", () => {
+    const project = addMediaClip(pairProject(), "asset-1", { startTicks: 1_000_000 });
+    expect(project.clips).toHaveLength(2);
+    const video = project.clips.find((c) => c.assetId === "asset-1")!;
+    const audio = project.clips.find((c) => c.assetId === "audio-1")!;
+    expect(video.suppressEmbeddedAudio).toBe(true);
+    expect(video.linkedClipId).toBe(audio.id);
+    expect(audio.linkedClipId).toBe(video.id);
+    expect(video.linkLocked).toBe(false);
+    expect(audio.startTicks).toBe(video.startTicks);
+    expect(audio.sourceOutTicks).toBe(video.sourceOutTicks);
+    const audioTrack = project.tracks.find((t) => t.id === audio.trackId)!;
+    expect(audioTrack.kind).toBe("audio");
+  });
+
+  it("trims unlocked audio without moving the video", () => {
+    let project = addMediaClip(pairProject(), "asset-1");
+    const audio = project.clips.find((c) => c.assetId === "audio-1")!;
+    const video = project.clips.find((c) => c.assetId === "asset-1")!;
+    project = trimClip(project, audio.id, 2_000_000, 6_000_000);
+    const nextAudio = project.clips.find((c) => c.id === audio.id)!;
+    const nextVideo = project.clips.find((c) => c.id === video.id)!;
+    expect(nextAudio.sourceInTicks).toBe(2_000_000);
+    expect(nextVideo.sourceInTicks).toBe(0);
+    expect(nextVideo.sourceOutTicks).toBe(10_000_000);
+  });
+
+  it("splits both sides when the pair is locked", () => {
+    let project = addMediaClip(pairProject(), "asset-1", { startTicks: 0 });
+    const video = project.clips.find((c) => c.assetId === "asset-1")!;
+    project = setClipLinkLocked(project, video.id, true);
+    project = splitClipAt(project, video.id, 4_000_000);
+    expect(project.clips).toHaveLength(4);
+    const videos = project.clips.filter((c) => c.assetId === "asset-1");
+    const audios = project.clips.filter((c) => c.assetId === "audio-1");
+    expect(videos).toHaveLength(2);
+    expect(audios).toHaveLength(2);
+    for (const clip of videos) {
+      const partner = project.clips.find((c) => c.id === clip.linkedClipId);
+      expect(partner?.assetId).toBe("audio-1");
+      expect(partner?.startTicks).toBe(clip.startTicks);
+      expect(clip.linkLocked).toBe(true);
+    }
+  });
+
+  it("keeps the link on the overlapping piece when unlocked", () => {
+    let project = addMediaClip(pairProject(), "asset-1");
+    const video = project.clips.find((c) => c.assetId === "asset-1")!;
+    project = splitClipAt(project, video.id, 4_000_000);
+    const left = project.clips.find((c) => c.id === video.id)!;
+    const right = project.clips.find((c) => c.assetId === "asset-1" && c.id !== video.id)!;
+    const audios = project.clips.filter((c) => c.assetId === "audio-1");
+    expect(audios).toHaveLength(1);
+    expect(left.linkedClipId).toBe(audios[0]!.id);
+    expect(right.linkedClipId).toBeNull();
+    expect(audios[0]!.linkedClipId).toBe(left.id);
+  });
+});
+
+describe("transform keyframe toggle", () => {
+  it("seeds the current value and blends later edits at the playhead", () => {
+    let project = addMediaClip(withAsset(), "asset-1", { startTicks: 0 });
+    const clipId = project.clips[0]!.id;
+    project = toggleTransformKeyframeAtPlayhead(project, clipId, "opacity", 0);
+    project = toggleTransformKeyframeAtPlayhead(project, clipId, "opacity", 5_000_000);
+    project = setTransformParamAtPlayhead(project, clipId, "opacity", 0.25, 5_000_000);
+    const points = project.clips[0]!.transformKeyframes!.tracks[0]!.points;
+    expect(points[0]!.value).toBeCloseTo(1, 5);
+    expect(points[1]!.value).toBeCloseTo(0.25, 5);
+    expect(project.clips[0]!.transform.opacity).toBe(1);
   });
 });

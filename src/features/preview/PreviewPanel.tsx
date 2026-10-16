@@ -1,8 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import {
   clipDurationTicks,
   clipVisibleWithTransition,
+  layerStackZ,
+  normalizeClipEffects,
+  normalizeLetterbox,
   playheadInTransitionWindow,
+  tintOverlayFromEffects,
+  updateCanvas,
   type Clip,
   type MediaAsset,
   type ProjectDocument,
@@ -16,7 +21,9 @@ import { releaseMediaBinThumbs } from "../../lib/mediaFilmstrip";
 import { isRampClockActive } from "../../lib/rampClock";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { commitProjectChange } from "../../stores/historyStore";
 import { CompositeLayers, isPreTransitionMount, preTransitionWindowStart, type PreviewLayer } from "./CompositeLayers";
+import { CinematicBarsOverlay } from "./CinematicBarsOverlay";
 import { MediaOverlayLayer, type MediaOverlayItem } from "./MediaOverlayLayer";
 import { TextOverlayLayer } from "./TextOverlayLayer";
 import { TextQuickAccess } from "./TextQuickAccess";
@@ -57,20 +64,21 @@ function visibleLayerKey(
   return ids.join("|");
 }
 
-function activeTextKey(clips: Clip[], tracks: Track[], playheadTicks: number): string {  const hidden = new Set(
+function activeTextKey(clips: Clip[], tracks: Track[], playheadTicks: number): string {
+  const hidden = new Set(
     tracks.filter((t) => t.kind === "video" && !t.visible).map((t) => t.id),
   );
-  return clips
-    .filter(
-      (c) =>
-        c.kind === "text" &&
-        c.text &&
-        !hidden.has(c.trackId) &&
-        playheadTicks >= c.startTicks &&
-        playheadTicks < c.startTicks + clipDurationTicks(c),
-    )
-    .map((c) => c.id)
-    .join("|");
+  const covering = (c: Clip) =>
+    !hidden.has(c.trackId) &&
+    playheadTicks >= c.startTicks &&
+    playheadTicks < c.startTicks + clipDurationTicks(c);
+  const textIds = clips
+    .filter((c) => c.kind === "text" && c.text && covering(c))
+    .map((c) => c.id);
+  const filterIds = clips
+    .filter((c) => c.kind === "filter" && covering(c))
+    .map((c) => c.id);
+  return `${textIds.join("|")}#${filterIds.join("|")}`;
 }
 
 export function PreviewPanel() {
@@ -87,6 +95,46 @@ export function PreviewPanel() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
+  const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
+  const [cineMenu, setCineMenu] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!cineMenu) return;
+    const close = () => setCineMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCineMenu(null);
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [cineMenu]);
+
+  function openCineMenu(e: ReactMouseEvent) {
+    e.preventDefault();
+    const wrap = wrapRef.current?.getBoundingClientRect();
+    if (!wrap) return;
+    setCineMenu({
+      x: Math.min(e.clientX - wrap.left, Math.max(0, wrap.width - 240)),
+      y: Math.min(e.clientY - wrap.top, Math.max(0, wrap.height - 200)),
+    });
+  }
+
+  function cineAddRemove(enabled: boolean) {
+    commitProjectChange((p) =>
+      updateCanvas(p, {
+        letterbox: enabled
+          ? { enabled: true, topPct: 12, bottomPct: 12, leftPct: 0, rightPct: 0 }
+          : { enabled: false, topPct: 0, bottomPct: 0, leftPct: 0, rightPct: 0 },
+      }),
+    );
+    setStatusMessage(
+      enabled ? "Đã thêm viền điện ảnh · giữ Ctrl + kéo mép đen" : "Đã gỡ viền điện ảnh",
+    );
+    setCineMenu(null);
+  }
 
   // React list playhead — only advances when visible layers/texts change (or scrub/pause).
   const [listPlayhead, setListPlayhead] = useState(
@@ -198,6 +246,26 @@ export function PreviewPanel() {
       .sort((a, b) => a.trackOrder - b.trackOrder);
   }, [clips, listPlayhead, tracks]);
 
+  const activeFilters = useMemo(() => {
+    const tracksById = new Map(tracks.map((t) => [t.id, t]));
+    const hidden = new Set(
+      tracks.filter((t) => t.kind === "video" && !t.visible).map((t) => t.id),
+    );
+    return clips
+      .filter(
+        (c) =>
+          c.kind === "filter" &&
+          !hidden.has(c.trackId) &&
+          listPlayhead >= c.startTicks &&
+          listPlayhead < c.startTicks + clipDurationTicks(c),
+      )
+      .map((clip) => ({
+        clip,
+        trackOrder: tracksById.get(clip.trackId)?.order ?? 0,
+      }))
+      .sort((a, b) => b.trackOrder - a.trackOrder);
+  }, [clips, listPlayhead, tracks]);
+
   useTimelineAudio({
     clips,
     tracks,
@@ -293,7 +361,7 @@ export function PreviewPanel() {
 
   return (
     <div className={styles.panel}>
-      <div ref={wrapRef} className={styles.stageWrap}>
+      <div ref={wrapRef} className={styles.stageWrap} onContextMenu={openCineMenu}>
         <div
           ref={stageRef}
           className={styles.stage}
@@ -313,6 +381,7 @@ export function PreviewPanel() {
             isPlaying={isPlaying}
             isScrubbing={isScrubbing}
           />
+          <FilterWashLayer items={activeFilters} />
           <MediaOverlayLayer
             items={mediaOverlayItems}
             canvasWidth={canvas.width}
@@ -326,12 +395,72 @@ export function PreviewPanel() {
             stageRef={stageRef}
             playheadTicks={listPlayhead}
           />
+          <CinematicBarsOverlay letterbox={canvas.letterbox} />
         </div>
+        {cineMenu ? (
+          <div
+            className={styles.cineMenu}
+            style={{ left: cineMenu.x, top: cineMenu.y }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            {(() => {
+              const lb = normalizeLetterbox(canvas.letterbox ?? null);
+              return lb.enabled ? (
+                <button
+                  type="button"
+                  className={styles.cineMenuItem}
+                  onClick={() => cineAddRemove(false)}
+                >
+                  Remove cinematic bars
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={styles.cineMenuItem}
+                  onClick={() => cineAddRemove(true)}
+                >
+                  Add cinematic bars
+                </button>
+              );
+            })()}
+          </div>
+        ) : null}
         {/* Outside .stage so overflow:hidden doesn't clip the floating bar */}
         <TextQuickAccess stageRef={stageRef} wrapRef={wrapRef} />
       </div>
 
       <TransportBar />
     </div>
+  );
+}
+
+function FilterWashLayer({
+  items,
+}: {
+  items: { clip: Clip; trackOrder: number }[];
+}) {
+  return (
+    <>
+      {items.map(({ clip, trackOrder }) => {
+        const tint = tintOverlayFromEffects(normalizeClipEffects(clip.effects));
+        if (!tint) return null;
+        const opacity = Math.min(1, Math.max(0, clip.transform.opacity));
+        return (
+          <div
+            key={clip.id}
+            style={{
+              position: "absolute",
+              inset: 0,
+              zIndex: layerStackZ(trackOrder, "filter"),
+              background: tint.color,
+              opacity: tint.opacity * opacity,
+              mixBlendMode: tint.blend as CSSProperties["mixBlendMode"],
+              pointerEvents: "none",
+            }}
+          />
+        );
+      })}
+    </>
   );
 }

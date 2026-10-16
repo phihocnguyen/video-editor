@@ -9,6 +9,7 @@ export type EditorPanel =
   | "audio"
   | "photos"
   | "shape"
+  | "template"
   | "subtitles"
   | "export";
 

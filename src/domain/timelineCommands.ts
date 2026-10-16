@@ -20,9 +20,25 @@ import {
   type EffectParamKey,
 } from "./effectKeyframes";
 import {
+  cloneTransformKeyframes,
+  findTransformKeyframeNear,
+  getTransformTrack,
+  paramHasTransformKeyframes,
+  progressFromTransformTicks,
+  readTransformParam,
+  removeTransformKeyframeNear,
+  sliceTransformKeyframes,
+  transformAtProgress,
+  upsertTransformKeyframe,
+  type TransformParamKey,
+} from "./transformKeyframes";
+import { mediaCenter } from "./mediaTransform";
+import {
   createDefaultTextStyle,
+  normalizeLetterbox,
   normalizeTextStyle,
   type Clip,
+  type Letterbox,
   type MediaAsset,
   type ProjectDocument,
   type TextStyle,
@@ -227,14 +243,172 @@ export function addMediaClip(
     text: null,
   };
 
-  return withUpdatedClips(working, [...working.clips, clip]);
+  let next = withUpdatedClips(working, [...working.clips, clip]);
+  if (asset.kind === "video" && asset.extractedAudioAssetId) {
+    const audio = next.assets.find(
+      (a) => a.id === asset.extractedAudioAssetId && a.kind === "audio",
+    );
+    if (audio) next = detachVideoAudio(next, clip.id, audio.id);
+  }
+  return next;
+}
+
+function mutualLockedPartner(project: ProjectDocument, clip: Clip): Clip | null {
+  if (!clip.linkLocked || !clip.linkedClipId) return null;
+  const partner = project.clips.find((c) => c.id === clip.linkedClipId);
+  if (!partner?.linkLocked || partner.linkedClipId !== clip.id) return null;
+  return partner;
+}
+
+function rangesOverlap(startA: number, durA: number, startB: number, durB: number): boolean {
+  return startA < startB + durB && startB < startA + durA;
+}
+
+function linkPair(
+  project: ProjectDocument,
+  aId: string,
+  bId: string,
+  locked: boolean,
+): ProjectDocument {
+  return {
+    ...project,
+    clips: project.clips.map((clip) => {
+      if (clip.id === aId) return { ...clip, linkedClipId: bId, linkLocked: locked };
+      if (clip.id === bId) return { ...clip, linkedClipId: aId, linkLocked: locked };
+      return clip;
+    }),
+  };
+}
+
+/**
+ * Place the extracted soundtrack on an audio track, linked to the video clip.
+ * The video clip stops playing its embedded stream so preview and export
+ * don't double the sound. Unlocked by default.
+ */
+export function detachVideoAudio(
+  project: ProjectDocument,
+  videoClipId: string,
+  audioAssetId: string,
+): ProjectDocument {
+  const video = project.clips.find((c) => c.id === videoClipId);
+  if (!video) throw new Error("Unknown clipId");
+  const audioAsset = project.assets.find((a) => a.id === audioAssetId);
+  if (!audioAsset || audioAsset.kind !== "audio") {
+    throw new Error("Audio asset required");
+  }
+  if (video.linkedClipId) {
+    const existing = project.clips.find((c) => c.id === video.linkedClipId);
+    if (existing) {
+      return linkPair(
+        {
+          ...project,
+          clips: project.clips.map((c) =>
+            c.id === video.id ? { ...c, suppressEmbeddedAudio: true } : c,
+          ),
+          assets: project.assets.map((a) =>
+            a.id === video.assetId && !a.extractedAudioAssetId
+              ? { ...a, extractedAudioAssetId: audioAsset.id }
+              : a,
+          ),
+        },
+        video.id,
+        existing.id,
+        Boolean(video.linkLocked && existing.linkLocked),
+      );
+    }
+  }
+
+  let working = project;
+  let track = findEmptyTrack(working, "audio");
+  if (!track) {
+    const beforeIds = new Set(working.tracks.map((t) => t.id));
+    working = addTrack(working, "audio");
+    track = working.tracks.find((t) => !beforeIds.has(t.id));
+  }
+  if (!track || track.locked) throw new Error("No unlocked audio track");
+
+  const audioDur =
+    audioAsset.durationTicks != null && audioAsset.durationTicks > 0
+      ? audioAsset.durationTicks
+      : video.sourceOutTicks;
+  let sourceIn = Math.max(0, Math.min(video.sourceInTicks, audioDur - 1));
+  let sourceOut = Math.min(video.sourceOutTicks, audioDur);
+  if (sourceOut <= sourceIn) {
+    sourceIn = 0;
+    sourceOut = Math.max(1, audioDur);
+  }
+
+  const audioClip: Clip = {
+    id: crypto.randomUUID(),
+    trackId: track.id,
+    assetId: audioAsset.id,
+    kind: "media",
+    startTicks: video.startTicks,
+    sourceInTicks: sourceIn,
+    sourceOutTicks: sourceOut,
+    speed: video.speed,
+    transform: {
+      ...DEFAULT_TRANSFORM,
+      x: working.canvas.width / 2,
+      y: working.canvas.height / 2,
+    },
+    volume: video.volume,
+    effects: { ...DEFAULT_CLIP_EFFECTS },
+    transitionIn: { ...DEFAULT_CLIP_TRANSITION },
+    text: null,
+    speedRamp: video.speedRamp
+      ? { points: video.speedRamp.points.map((p) => ({ ...p })) }
+      : null,
+    linkedClipId: video.id,
+    linkLocked: false,
+  };
+
+  working = {
+    ...working,
+    assets: working.assets.map((a) =>
+      a.id === video.assetId ? { ...a, extractedAudioAssetId: audioAsset.id } : a,
+    ),
+    clips: [
+      ...working.clips.map((c) =>
+        c.id === video.id
+          ? { ...c, linkedClipId: audioClip.id, linkLocked: false, suppressEmbeddedAudio: true }
+          : c,
+      ),
+      audioClip,
+    ],
+  };
+  return withUpdatedClips(working, working.clips);
+}
+
+/** Lock or unlock a detached A/V pair so edits follow both sides. */
+export function setClipLinkLocked(
+  project: ProjectDocument,
+  clipId: string,
+  locked: boolean,
+): ProjectDocument {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip?.linkedClipId) return project;
+  const partner = project.clips.find((c) => c.id === clip.linkedClipId);
+  if (!partner) return project;
+  return linkPair(project, clip.id, partner.id, locked);
 }
 
 export function deleteClips(project: ProjectDocument, clipIds: string[]): ProjectDocument {
   const idSet = new Set(clipIds);
+  for (const id of clipIds) {
+    const clip = project.clips.find((c) => c.id === id);
+    const partner = clip ? mutualLockedPartner(project, clip) : null;
+    if (partner) idSet.add(partner.id);
+  }
   return withUpdatedClips(
     project,
-    project.clips.filter((c) => !idSet.has(c.id)),
+    project.clips
+      .filter((c) => !idSet.has(c.id))
+      .map((c) =>
+        c.linkedClipId && idSet.has(c.linkedClipId)
+          ? { ...c, linkedClipId: null, linkLocked: false }
+          : c,
+      ),
   );
 }
 
@@ -256,6 +430,7 @@ function cloneClipData(clip: Clip): Clip {
     transform: { ...clip.transform },
     effects: { ...clip.effects },
     effectKeyframes: cloneEffectKeyframes(clip.effectKeyframes ?? null),
+    transformKeyframes: cloneTransformKeyframes(clip.transformKeyframes ?? null),
     transitionIn: { ...clip.transitionIn },
     text: clip.text ? { ...clip.text } : null,
     speedRamp: clip.speedRamp
@@ -270,7 +445,7 @@ function resolvePasteTrack(
 ): Track | undefined {
   const preferred = project.tracks.find((t) => t.id === template.trackId && !t.locked);
   if (preferred) return preferred;
-  if (template.kind === "text") {
+  if (template.kind === "text" || template.kind === "filter") {
     return project.tracks.find((t) => t.kind === "video" && !t.locked);
   }
   if (template.assetId) {
@@ -294,6 +469,9 @@ export function pasteClips(
 ): { project: ProjectDocument; newIds: string[] } {
   if (clipboard.length === 0) return { project, newIds: [] };
   const origin = Math.min(...clipboard.map((c) => c.startTicks));
+  const templateIds = new Set(clipboard.map((c) => c.id));
+  const idMap = new Map<string, string>();
+  for (const template of clipboard) idMap.set(template.id, crypto.randomUUID());
   const newIds: string[] = [];
   const added: Clip[] = [];
 
@@ -309,16 +487,22 @@ export function pasteClips(
         throw new Error("Asset kind does not match track kind");
       }
     }
-    if (template.kind === "text" && track.kind !== "video") {
+    if ((template.kind === "text" || template.kind === "filter") && track.kind !== "video") {
       throw new Error("Text clips require a video track");
     }
-    const id = crypto.randomUUID();
+    const id = idMap.get(template.id)!;
+    const linked =
+      template.linkedClipId && templateIds.has(template.linkedClipId)
+        ? (idMap.get(template.linkedClipId) ?? null)
+        : null;
     newIds.push(id);
     added.push({
       ...cloneClipData(template),
       id,
       trackId: track.id,
       startTicks: Math.max(0, Math.round(atTicks + (template.startTicks - origin))),
+      linkedClipId: linked,
+      linkLocked: linked ? Boolean(template.linkLocked) : false,
     });
   }
 
@@ -349,16 +533,28 @@ export function moveClip(
   trackId?: string,
   options?: { pruneEmptySource?: boolean },
 ): ProjectDocument {
+  return moveClipInner(project, clipId, startTicks, trackId, options, true);
+}
+
+function moveClipInner(
+  project: ProjectDocument,
+  clipId: string,
+  startTicks: Tick,
+  trackId: string | undefined,
+  options: { pruneEmptySource?: boolean } | undefined,
+  followLink: boolean,
+): ProjectDocument {
   const source = project.clips.find((c) => c.id === clipId);
   const sourceTrackId = source?.trackId;
   const nextTrackId = trackId ?? sourceTrackId;
+  const oldStart = source?.startTicks ?? 0;
 
   let next = mapClip(project, clipId, (clip) => {
     const destId = trackId ?? clip.trackId;
     const track = project.tracks.find((t) => t.id === destId);
     if (!track) throw new Error("Unknown trackId");
     if (track.locked) throw new Error("Track is locked");
-    if (clip.kind === "text" && track.kind !== "video") {
+    if ((clip.kind === "text" || clip.kind === "filter") && track.kind !== "video") {
       throw new Error("Text clips require a video track");
     }
     if (clip.kind === "media" && clip.assetId) {
@@ -382,6 +578,24 @@ export function moveClip(
   ) {
     next = pruneEmptyTrack(next, sourceTrackId);
   }
+
+  if (followLink && source) {
+    const partner = mutualLockedPartner(project, source);
+    if (partner) {
+      const moved = next.clips.find((c) => c.id === clipId);
+      const delta = (moved?.startTicks ?? oldStart) - oldStart;
+      if (delta !== 0) {
+        next = moveClipInner(
+          next,
+          partner.id,
+          Math.max(0, partner.startTicks + delta),
+          undefined,
+          undefined,
+          false,
+        );
+      }
+    }
+  }
   return next;
 }
 
@@ -398,11 +612,28 @@ export function trimClip(
     throw new Error("sourceInTicks cannot be negative");
   }
 
-  return mapClip(project, clipId, (clip) => ({
-    ...clip,
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip) throw new Error("Unknown clipId");
+  const dIn = sourceInTicks - clip.sourceInTicks;
+  const dOut = sourceOutTicks - clip.sourceOutTicks;
+  let next = mapClip(project, clipId, (current) => ({
+    ...current,
     sourceInTicks,
     sourceOutTicks,
   }));
+  const partner = mutualLockedPartner(project, clip);
+  if (partner && (dIn !== 0 || dOut !== 0)) {
+    const pIn = partner.sourceInTicks + dIn;
+    const pOut = partner.sourceOutTicks + dOut;
+    if (pIn >= 0 && pOut > pIn) {
+      next = mapClip(next, partner.id, (current) => ({
+        ...current,
+        sourceInTicks: pIn,
+        sourceOutTicks: pOut,
+      }));
+    }
+  }
+  return next;
 }
 
 /** Split clip at an absolute timeline position. Returns unchanged project if split is invalid. */
@@ -413,53 +644,137 @@ export function splitClipAt(
 ): ProjectDocument {
   const clip = project.clips.find((c) => c.id === clipId);
   if (!clip) throw new Error("Unknown clipId");
+  const partner = mutualLockedPartner(project, clip);
+  const split = splitClipCore(project, clipId, timelineTicks);
+  if (!split.rightId) return project;
+
+  if (partner) {
+    const partnerDur = clipDurationTicks(partner);
+    const partnerLocal = timelineTicks - partner.startTicks;
+    const partnerCanSplit = partnerLocal > 0 && partnerLocal < partnerDur;
+    if (partnerCanSplit) {
+      const partnerSplit = splitClipCore(split.project, partner.id, timelineTicks);
+      if (partnerSplit.rightId) {
+        let linked = linkPair(partnerSplit.project, clip.id, partner.id, true);
+        linked = linkPair(linked, split.rightId, partnerSplit.rightId, true);
+        return linked;
+      }
+    }
+  }
+
+  return relinkAfterSplit(split.project, clip.id, split.rightId);
+}
+
+function splitClipCore(
+  project: ProjectDocument,
+  clipId: string,
+  timelineTicks: Tick,
+): { project: ProjectDocument; rightId: string | null } {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip) throw new Error("Unknown clipId");
 
   const duration = clipDurationTicks(clip);
   const local = timelineTicks - clip.startTicks;
   if (local <= 0 || local >= duration) {
-    return project;
+    return { project, rightId: null };
   }
 
   // Where in the source range the cut lands — ramp-aware when a curve is set.
   const splitSourceOffset = sourceOffsetForClipTimelineOffset(clip, local);
   const splitSource = Math.round(clip.sourceInTicks + splitSourceOffset);
   if (splitSource <= clip.sourceInTicks || splitSource >= clip.sourceOutTicks) {
-    return project;
+    return { project, rightId: null };
   }
 
   const span = Math.max(1, clip.sourceOutTicks - clip.sourceInTicks);
   const splitProgress = (splitSource - clip.sourceInTicks) / span;
-  const rampSplit = clip.speedRamp
-    ? sliceRamp(clip.speedRamp, 0, splitProgress)
-    : null;
-  const rampRight = clip.speedRamp
-    ? sliceRamp(clip.speedRamp, splitProgress, 1)
-    : null;
+  const rampSplit = clip.speedRamp ? sliceRamp(clip.speedRamp, 0, splitProgress) : null;
+  const rampRight = clip.speedRamp ? sliceRamp(clip.speedRamp, splitProgress, 1) : null;
   const timelineSplit = local / duration;
   const fxLeft = sliceEffectKeyframes(clip.effectKeyframes ?? null, 0, timelineSplit);
   const fxRight = sliceEffectKeyframes(clip.effectKeyframes ?? null, timelineSplit, 1);
+  const tfLeft = sliceTransformKeyframes(clip.transformKeyframes ?? null, 0, timelineSplit);
+  const tfRight = sliceTransformKeyframes(clip.transformKeyframes ?? null, timelineSplit, 1);
+  const rightId = crypto.randomUUID();
 
   const left: Clip = {
     ...clip,
     sourceOutTicks: splitSource,
     ...(rampSplit ? { speedRamp: rampSplit } : {}),
     effectKeyframes: fxLeft,
+    transformKeyframes: tfLeft,
   };
   const right: Clip = {
     ...clip,
-    id: crypto.randomUUID(),
+    id: rightId,
     startTicks: timelineTicks,
     sourceInTicks: splitSource,
     ...(rampRight ? { speedRamp: rampRight } : {}),
     effectKeyframes: fxRight,
+    transformKeyframes: tfRight,
     // Incoming transition belongs to the cut into this piece — clear by default.
     transitionIn: { ...DEFAULT_CLIP_TRANSITION },
+    linkedClipId: null,
+    linkLocked: false,
   };
 
-  return withUpdatedClips(
-    project,
-    project.clips.flatMap((c) => (c.id === clipId ? [left, right] : [c])),
+  return {
+    project: withUpdatedClips(
+      project,
+      project.clips.flatMap((c) => (c.id === clipId ? [left, right] : [c])),
+    ),
+    rightId,
+  };
+}
+
+/** Keep the link on the piece that still overlaps the partner; unlink the other. */
+function relinkAfterSplit(
+  project: ProjectDocument,
+  leftId: string,
+  rightId: string,
+): ProjectDocument {
+  const left = project.clips.find((c) => c.id === leftId);
+  const right = project.clips.find((c) => c.id === rightId);
+  if (!left) return project;
+  const partnerId = left.linkedClipId;
+  const partner = partnerId ? project.clips.find((c) => c.id === partnerId) : null;
+  if (!partner) {
+    return {
+      ...project,
+      clips: project.clips.map((c) =>
+        c.id === leftId || c.id === rightId
+          ? { ...c, linkedClipId: null, linkLocked: false }
+          : c,
+      ),
+    };
+  }
+  const pDur = clipDurationTicks(partner);
+  const leftOverlaps = rangesOverlap(
+    left.startTicks,
+    clipDurationTicks(left),
+    partner.startTicks,
+    pDur,
   );
+  const rightOverlaps =
+    right != null &&
+    rangesOverlap(right.startTicks, clipDurationTicks(right), partner.startTicks, pDur);
+  const keepId = leftOverlaps ? leftId : rightOverlaps ? rightId : null;
+  const locked = Boolean(left.linkLocked && partner.linkLocked);
+  return {
+    ...project,
+    clips: project.clips.map((c) => {
+      if (c.id === partner.id) {
+        return keepId
+          ? { ...c, linkedClipId: keepId, linkLocked: locked }
+          : { ...c, linkedClipId: null, linkLocked: false };
+      }
+      if (c.id === leftId || c.id === rightId) {
+        if (c.id === keepId) return { ...c, linkedClipId: partner.id, linkLocked: locked };
+        return { ...c, linkedClipId: null, linkLocked: false };
+      }
+      return c;
+    }),
+  };
 }
 
 /**
@@ -741,6 +1056,128 @@ export function setClipEffectKeyframes(
   }));
 }
 
+export function setTransformParamAtPlayhead(
+  project: ProjectDocument,
+  clipId: string,
+  param: TransformParamKey,
+  value: number,
+  playheadTicks: Tick,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => {
+    const progress = progressFromTransformTicks(
+      clip.startTicks,
+      clipDurationTicks(clip),
+      playheadTicks,
+    );
+    if (!paramHasTransformKeyframes(clip.transformKeyframes, param)) {
+      return {
+        ...clip,
+        transform: { ...clip.transform, [param]: value },
+      };
+    }
+    return {
+      ...clip,
+      transformKeyframes: upsertTransformKeyframe(
+        clip.transformKeyframes,
+        param,
+        progress,
+        value,
+      ),
+    };
+  });
+}
+
+/** Diamond toggle. Seeds the current resolved value and does not reset the base. */
+export function toggleTransformKeyframeAtPlayhead(
+  project: ProjectDocument,
+  clipId: string,
+  param: TransformParamKey,
+  playheadTicks: Tick,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => {
+    const progress = progressFromTransformTicks(
+      clip.startTicks,
+      clipDurationTicks(clip),
+      playheadTicks,
+    );
+    const track = getTransformTrack(clip.transformKeyframes, param);
+    if (track && findTransformKeyframeNear(track.points, progress)) {
+      return {
+        ...clip,
+        transformKeyframes: removeTransformKeyframeNear(
+          clip.transformKeyframes,
+          param,
+          progress,
+        ),
+      };
+    }
+    const resolved = transformAtProgress(clip.transform, clip.transformKeyframes, progress);
+    let seed = readTransformParam(resolved, param);
+    if (
+      (param === "x" || param === "y") &&
+      !paramHasTransformKeyframes(clip.transformKeyframes, "x") &&
+      !paramHasTransformKeyframes(clip.transformKeyframes, "y") &&
+      clip.transform.x === 0 &&
+      clip.transform.y === 0
+    ) {
+      const center = mediaCenter(clip.transform, project.canvas.width, project.canvas.height);
+      seed = param === "x" ? center.x : center.y;
+    }
+    return {
+      ...clip,
+      transformKeyframes: upsertTransformKeyframe(
+        clip.transformKeyframes,
+        param,
+        progress,
+        seed,
+      ),
+    };
+  });
+}
+
+/** Write transform fields, upserting any param that already has a keyframe track. */
+export function applyTransformPatch(
+  project: ProjectDocument,
+  clipId: string,
+  patch: Partial<Clip["transform"]>,
+  playheadTicks: Tick,
+): ProjectDocument {
+  const keys = Object.keys(patch) as (keyof Clip["transform"])[];
+  let next = project;
+  for (const key of keys) {
+    const value = patch[key];
+    if (typeof value !== "number") {
+      if (key === "blendMode" && patch.blendMode) {
+        next = mapClip(next, clipId, (clip) => ({
+          ...clip,
+          transform: { ...clip.transform, blendMode: patch.blendMode },
+        }));
+      }
+      continue;
+    }
+    if (!TRANSFORM_PATCH_PARAMS.includes(key as TransformParamKey)) {
+      continue;
+    }
+    next = setTransformParamAtPlayhead(
+      next,
+      clipId,
+      key as TransformParamKey,
+      value,
+      playheadTicks,
+    );
+  }
+  return next;
+}
+
+const TRANSFORM_PATCH_PARAMS: TransformParamKey[] = [
+  "opacity",
+  "x",
+  "y",
+  "scaleX",
+  "scaleY",
+  "rotation",
+];
+
 /** True when the clip has non-default static effects or any effect keyframes. */
 export function clipHasEffectLook(clip: Clip): boolean {
   if (normalizeEffectKeyframes(clip.effectKeyframes ?? null)) return true;
@@ -764,7 +1201,9 @@ export function updateClipTransition(
 /** Update project/sequence canvas settings (resolution, fps, background). */
 export function updateCanvas(
   project: ProjectDocument,
-  patch: Partial<ProjectDocument["canvas"]>,
+  patch: Omit<Partial<ProjectDocument["canvas"]>, "letterbox"> & {
+    letterbox?: Partial<Letterbox> | null;
+  },
 ): ProjectDocument {
   // Width/height stay even so the canvas (preview) always matches export dims
   // (H.264/yuv420p requires even sizes; the builders floor odd values).
@@ -775,9 +1214,18 @@ export function updateCanvas(
     typeof patch.backgroundColor === "string" && patch.backgroundColor.length > 0
       ? patch.backgroundColor
       : project.canvas.backgroundColor;
+  const letterbox: Letterbox | null | undefined =
+    "letterbox" in patch
+      ? patch.letterbox == null
+        ? null
+        : normalizeLetterbox({
+            ...(project.canvas.letterbox ?? undefined),
+            ...patch.letterbox,
+          })
+      : project.canvas.letterbox;
   return {
     ...project,
-    canvas: { width, height, frameRate, backgroundColor },
+    canvas: { width, height, frameRate, backgroundColor, letterbox },
   };
 }
 
@@ -833,7 +1281,9 @@ export function updateClipSpeed(
     throw new Error("Speed must be a positive number");
   }
   return mapClip(project, clipId, (clip) => {
-    if (clip.kind === "text") throw new Error("Text clips do not support speed");
+    if (clip.kind === "text" || clip.kind === "filter") {
+      throw new Error("Text clips do not support speed");
+    }
     // A constant speed supersedes (and clears) any ramp so the change is visible.
     const { speedRamp: _dropped, ...rest } = clip;
     return { ...(rest as Clip), speed: clampRampSpeed(speed) };
@@ -1006,7 +1456,7 @@ export function moveClipLayer(
   if (track.locked) throw new Error("Track is locked");
 
   let kind: TrackKind = track.kind;
-  if (clip.kind === "text") {
+  if (clip.kind === "text" || clip.kind === "filter") {
     kind = "video";
   } else if (clip.kind === "media" && clip.assetId) {
     const asset = project.assets.find((a) => a.id === clip.assetId);
@@ -1084,7 +1534,9 @@ export function setClipRamp(
   ramp: SpeedRamp | null,
 ): ProjectDocument {
   return mapClip(project, clipId, (clip) => {
-    if (clip.kind === "text") throw new Error("Text clips do not support speed ramps");
+    if (clip.kind === "text" || clip.kind === "filter") {
+      throw new Error("Text clips do not support speed ramps");
+    }
     const normalized = normalizeSpeedRamp(ramp);
     if (!normalized || isFlatRamp(normalized)) {
       const { speedRamp: _dropped, ...rest } = clip;
@@ -1107,7 +1559,9 @@ export function enableSpeedRamp(
 ): ProjectDocument {
   const clip = project.clips.find((c) => c.id === clipId);
   if (!clip) throw new Error("Unknown clipId");
-  if (clip.kind === "text") throw new Error("Text clips do not support speed ramps");
+  if (clip.kind === "text" || clip.kind === "filter") {
+    throw new Error("Text clips do not support speed ramps");
+  }
 
   const duration = clipDurationTicks(clip);
   const local = Math.min(duration, Math.max(0, playheadTicks - clip.startTicks));
@@ -1144,7 +1598,9 @@ export function addRampPointAtPlayhead(
 ): { project: ProjectDocument; pointId: string } {
   const clip = project.clips.find((c) => c.id === clipId);
   if (!clip) throw new Error("Unknown clipId");
-  if (clip.kind === "text") throw new Error("Text clips do not support speed ramps");
+  if (clip.kind === "text" || clip.kind === "filter") {
+    throw new Error("Text clips do not support speed ramps");
+  }
 
   const duration = clipDurationTicks(clip);
   const local = Math.min(duration, Math.max(0, playheadTicks - clip.startTicks));
@@ -1293,7 +1749,7 @@ export function relockClipDuration(
   lockedDurationTicks: Tick,
 ): ProjectDocument {
   const clip = project.clips.find((c) => c.id === clipId);
-  if (!clip || clip.kind === "text") return project;
+  if (!clip || clip.kind === "text" || clip.kind === "filter") return project;
   if (Math.abs(clipDurationTicks(clip) - lockedDurationTicks) <= 1) {
     return project;
   }
@@ -1337,7 +1793,9 @@ export function updateRampPointLocked(
 ): { project: ProjectDocument; constrained: boolean } {
   const clip = project.clips.find((c) => c.id === clipId);
   if (!clip) throw new Error("Unknown clipId");
-  if (clip.kind === "text") throw new Error("Text clips do not support speed ramps");
+  if (clip.kind === "text" || clip.kind === "filter") {
+    throw new Error("Text clips do not support speed ramps");
+  }
   const ramp = normalizeSpeedRamp(clip.speedRamp);
   if (!ramp) throw new Error("Clip has no speed ramp");
   const current = ramp.points.find((p) => p.id === pointId);

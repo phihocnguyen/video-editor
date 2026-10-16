@@ -1,3 +1,4 @@
+import { findMatchingFilterTemplate } from "./filterTemplates";
 import type { Clip, MediaAsset, ProjectDocument } from "./project";
 
 const SHAPE_PATH_RE = /\/shapes\//i;
@@ -22,6 +23,10 @@ export function clipShortLabel(
   clip: Clip,
   asset?: MediaAsset | null,
 ): string {
+  if (clip.kind === "filter") {
+    return findMatchingFilterTemplate(clip.effects)?.label ?? "Filter";
+  }
+
   if (clip.kind === "text") {
     const texts = project.clips.filter((c) => c.kind === "text").sort(sortClipsStable);
     const index = texts.findIndex((c) => c.id === clip.id);
@@ -55,6 +60,8 @@ export function clipDisplayTitle(
   asset?: MediaAsset | null,
 ): string {
   const short = clipShortLabel(project, clip, asset);
+  if (clip.kind === "filter") return short;
+
   if (clip.kind === "text") {
     const content = clip.text?.content?.trim();
     return content ? `${short} · ${content}` : short;

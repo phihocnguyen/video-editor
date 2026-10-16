@@ -11,8 +11,12 @@ import {
   normalizeEffectKeyframes,
   type EffectKeyframes,
 } from "./effectKeyframes";
-import type { ClipTransform, ProjectDocument, TextAnimation } from "./project";
-import { normalizeTextAnimation } from "./project";
+import {
+  normalizeTransformKeyframes,
+  type TransformKeyframes,
+} from "./transformKeyframes";
+import type { ClipTransform, Letterbox, ProjectDocument, TextAnimation } from "./project";
+import { normalizeLetterbox, normalizeTextAnimation } from "./project";
 import { clipDurationTicks } from "./timelineCommands";
 import { ticksToSeconds } from "./time";
 import {
@@ -43,6 +47,7 @@ export interface RenderClipPlan {
   kind: "video" | "audio" | "image";
   effects: ClipEffects;
   effectKeyframes: EffectKeyframes | null;
+  transformKeyframes: TransformKeyframes | null;
   transitionIn: ClipTransition;
   /** Seconds to start overlay early for incoming transition overlap. */
   transitionOverlapSec: number;
@@ -82,6 +87,19 @@ export interface RenderTextPlan {
   fadeInSec: number;
   fadeOutSec: number;
   textAnimation: TextAnimation;
+  transformKeyframes: TransformKeyframes | null;
+  /** Font size before transform scale, in output px. Used when scale is keyframed. */
+  baseFontSize: number;
+}
+
+export interface RenderWashPlan {
+  clipId: string;
+  trackId: string;
+  trackOrder: number;
+  timelineStartSec: number;
+  timelineEndSec: number;
+  opacity: number;
+  effects: ClipEffects;
 }
 
 export interface RenderPlan {
@@ -90,11 +108,15 @@ export interface RenderPlan {
   frameRate: number;
   /** Background colour behind all layers. */
   backgroundColor: string;
+  /** Cinematic bars painted last (same geometry as preview overlay). */
+  letterbox: Letterbox;
   durationSec: number;
   videoBitrate: string;
   audioBitrate: string;
   clips: RenderClipPlan[];
   texts: RenderTextPlan[];
+  /** Filter-track washes painted above the picture for their time range. */
+  washes: RenderWashPlan[];
   missingAssetIds: string[];
 }
 
@@ -110,6 +132,7 @@ export function buildRenderPlan(
   let durationTicks = 0;
   const clips: RenderClipPlan[] = [];
   const texts: RenderTextPlan[] = [];
+  const washes: RenderWashPlan[] = [];
   const { width, height } = resolveSize(project, preset);
   const scaleX = width / Math.max(1, project.canvas.width);
   const scaleY = height / Math.max(1, project.canvas.height);
@@ -123,10 +146,14 @@ export function buildRenderPlan(
     if (clip.kind === "text" && clip.text) {
       if (track && !track.visible) continue;
       const fx = normalizeClipEffects(clip.effects ?? DEFAULT_CLIP_EFFECTS);
+      const textKf = normalizeTransformKeyframes(clip.transformKeyframes ?? null);
+      const scaleAnimated = Boolean(textKf?.tracks.some((t) => t.param === "scaleX"));
       const textScaleX =
-        Number.isFinite(clip.transform.scaleX) && clip.transform.scaleX !== 0
-          ? Math.abs(clip.transform.scaleX)
-          : 1;
+        scaleAnimated
+          ? 1
+          : Number.isFinite(clip.transform.scaleX) && clip.transform.scaleX !== 0
+            ? Math.abs(clip.transform.scaleX)
+            : 1;
       texts.push({
         clipId: clip.id,
         trackId: clip.trackId,
@@ -151,6 +178,22 @@ export function buildRenderPlan(
         fadeInSec: fx.fadeInSec,
         fadeOutSec: fx.fadeOutSec,
         textAnimation: normalizeTextAnimation(clip.text.textAnimation ?? null),
+        transformKeyframes: textKf,
+        baseFontSize: clip.text.fontSize * fontScale,
+      });
+      continue;
+    }
+
+    if (clip.kind === "filter") {
+      if (track && !track.visible) continue;
+      washes.push({
+        clipId: clip.id,
+        trackId: clip.trackId,
+        trackOrder: track?.order ?? 0,
+        timelineStartSec: ticksToSeconds(clip.startTicks),
+        timelineEndSec: ticksToSeconds(end),
+        opacity: clip.transform.opacity,
+        effects: normalizeClipEffects(clip.effects ?? DEFAULT_CLIP_EFFECTS),
       });
       continue;
     }
@@ -175,10 +218,14 @@ export function buildRenderPlan(
       opacity: clip.transform.opacity,
       speed: clip.speed > 0 ? clip.speed : 1,
       speedRamp: normalizeSpeedRamp(clip.speedRamp ?? null),
-      includeAudio: !muted && asset.hasAudio && (asset.kind === "video" || asset.kind === "audio"),
+      includeAudio:
+        !muted &&
+        asset.hasAudio &&
+        (asset.kind === "audio" || (asset.kind === "video" && !clip.suppressEmbeddedAudio)),
       kind: asset.kind,
       effects: normalizeClipEffects(clip.effects ?? DEFAULT_CLIP_EFFECTS),
       effectKeyframes: normalizeEffectKeyframes(clip.effectKeyframes ?? null),
+      transformKeyframes: normalizeTransformKeyframes(clip.transformKeyframes ?? null),
       transitionIn: normalizeClipTransition(clip.transitionIn),
       transitionOverlapSec: 0,
       transform: {
@@ -196,6 +243,9 @@ export function buildRenderPlan(
   texts.sort(
     (a, b) =>
       a.trackOrder - b.trackOrder || a.timelineStartSec - b.timelineStartSec,
+  );
+  washes.sort(
+    (a, b) => a.trackOrder - b.trackOrder || a.timelineStartSec - b.timelineStartSec,
   );
 
   // Match preview: always honor transitionIn, centered on the cut (D/2 each side).
@@ -232,11 +282,13 @@ export function buildRenderPlan(
     height,
     frameRate: project.canvas.frameRate,
     backgroundColor: project.canvas.backgroundColor,
+    letterbox: normalizeLetterbox(project.canvas.letterbox ?? null),
     durationSec: Math.max(ticksToSeconds(durationTicks), 0.1),
     videoBitrate,
     audioBitrate,
     clips,
     texts,
+    washes,
     missingAssetIds,
   };
 }

@@ -1,8 +1,10 @@
 import { normalizeBlendMode } from "./blendModes";
 import { normalizeClipEffects } from "./effects";
 import { normalizeEffectKeyframes } from "./effectKeyframes";
+import { normalizeTransformKeyframes } from "./transformKeyframes";
 import {
   PROJECT_SCHEMA_VERSION,
+  normalizeLetterbox,
   normalizeTextAnimation,
   normalizeTextStyle,
   type Clip,
@@ -164,8 +166,8 @@ function validateClip(clip: unknown, path: string, issues: ValidationIssue[]) {
   }
   requireString(clip, "id", path, issues);
   requireString(clip, "trackId", path, issues);
-  if (clip.kind !== "media" && clip.kind !== "text") {
-    issues.push({ path: `${path}.kind`, message: "kind must be media|text" });
+  if (clip.kind !== "media" && clip.kind !== "text" && clip.kind !== "filter") {
+    issues.push({ path: `${path}.kind`, message: "kind must be media|text|filter" });
   }
   requireNumber(clip, "startTicks", path, issues);
   requireNumber(clip, "sourceInTicks", path, issues);
@@ -280,6 +282,7 @@ const DEFAULT_TRANSFORM: Clip["transform"] = {
 export function normalizeProjectDocument(project: ProjectDocument): ProjectDocument {
   const canvas = project.canvas as ProjectDocument["canvas"] & {
     backgroundColor?: unknown;
+    letterbox?: unknown;
   };
   return {
     ...project,
@@ -292,11 +295,15 @@ export function normalizeProjectDocument(project: ProjectDocument): ProjectDocum
         typeof canvas.backgroundColor === "string" && canvas.backgroundColor.length > 0
           ? canvas.backgroundColor
           : "#000000",
+      letterbox: normalizeLetterbox(
+        (canvas.letterbox ?? null) as Partial<import("./project").Letterbox> | null,
+      ),
     },
     clips: project.clips.map((clip) => {
       const raw = clip as Clip & {
         effects?: Partial<Clip["effects"]> | null;
         effectKeyframes?: Clip["effectKeyframes"];
+        transformKeyframes?: Clip["transformKeyframes"];
         transitionIn?: Partial<Clip["transitionIn"]> | null;
         speedRamp?: Partial<Clip["speedRamp"]> | null;
         transform?: Partial<Clip["transform"]> | null;
@@ -305,6 +312,7 @@ export function normalizeProjectDocument(project: ProjectDocument): ProjectDocum
       };
       const normalizedRamp = normalizeSpeedRamp(raw.speedRamp ?? null);
       const normalizedEffectKf = normalizeEffectKeyframes(raw.effectKeyframes ?? null);
+      const normalizedTransformKf = normalizeTransformKeyframes(raw.transformKeyframes ?? null);
       const { animation: _removedAnim, ...rest } = raw;
       const { animation: _removedTextAnim, ...rawText } = (raw.text ?? {}) as Record<
         string,
@@ -333,6 +341,7 @@ export function normalizeProjectDocument(project: ProjectDocument): ProjectDocum
         },
         effects: normalizeClipEffects(raw.effects),
         effectKeyframes: normalizedEffectKf,
+        transformKeyframes: normalizedTransformKf,
         transitionIn: normalizeClipTransition(raw.transitionIn),
         speedRamp: normalizedRamp,
       };

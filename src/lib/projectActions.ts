@@ -1,4 +1,5 @@
 import {
+  detachVideoAudio,
   parseProjectJson,
   secondsToTicks,
   serializeProject,
@@ -10,6 +11,7 @@ import { toAppError } from "./errors";
 import {
   checkMediaPaths,
   deleteLibraryProject,
+  extractAudioTrack,
   importMediaIntoProject,
   importMediaPaths,
   isLibraryProjectPath,
@@ -60,7 +62,7 @@ export async function actionOpenProjectAtPath(
   if (!isTauriRuntime()) {
     throw new Error("Open by path requires the desktop app");
   }
-  const project = await openProjectFile(path);
+  const project = await prepareDetachedAudio(await openProjectFile(path));
   return { project, path };
 }
 
@@ -70,14 +72,14 @@ export async function actionOpenProject(): Promise<{
 }> {
   if (!isTauriRuntime()) {
     const text = await pickBrowserTextFile();
-    return { project: parseProjectJson(text), path: null };
+    return { project: await prepareDetachedAudio(parseProjectJson(text)), path: null };
   }
 
   const path = await pickOpenProjectPath();
   if (!path) {
     throw new Error("Open cancelled");
   }
-  const project = await openProjectFile(path);
+  const project = await prepareDetachedAudio(await openProjectFile(path));
   return { project, path };
 }
 
@@ -184,10 +186,10 @@ export async function actionImportMedia(projectId?: string): Promise<MediaAsset[
   }
   if (projectId) {
     const probed = await importMediaIntoProject(projectId, paths);
-    return probed.map(assetFromProbe);
+    return attachExtractedAudio(probed.map(assetFromProbe));
   }
   const probed = await importMediaPaths(paths);
-  return probed.map(assetFromProbe);
+  return attachExtractedAudio(probed.map(assetFromProbe));
 }
 
 export async function actionRelinkAsset(
@@ -250,7 +252,84 @@ export async function actionAutosave(project: ProjectDocument): Promise<string |
 
 export async function actionRecoverAutosave(): Promise<ProjectDocument | null> {
   if (!isTauriRuntime()) return null;
-  return recoverAutosave();
+  const project = await recoverAutosave();
+  if (!project) return null;
+  return prepareDetachedAudio(project);
+}
+
+async function probeExtract(path: string): Promise<{ hasAudio: boolean; path: string | null } | null> {
+  if (!path || path.startsWith("blob:")) return null;
+  try {
+    if (isTauriRuntime()) return await extractAudioTrack(path);
+    const { localExportHealth, localExtractAudio } = await import("./localExport");
+    const helper = await localExportHealth();
+    if (!helper.ok) return null;
+    return await localExtractAudio(path);
+  } catch {
+    return null;
+  }
+}
+
+function audioAssetFromVideo(video: MediaAsset, id: string, path: string): MediaAsset {
+  const stem = video.name.replace(/\.[^.]+$/, "");
+  return {
+    id,
+    kind: "audio",
+    path,
+    name: `${stem} audio`,
+    durationTicks: video.durationTicks,
+    width: null,
+    height: null,
+    frameRate: null,
+    hasAudio: true,
+    missing: false,
+  };
+}
+
+/** Probe + extract soundtracks and remember them on the video assets. */
+export async function attachExtractedAudio(assets: MediaAsset[]): Promise<MediaAsset[]> {
+  const next = [...assets];
+  for (let i = 0; i < next.length; i += 1) {
+    const asset = next[i]!;
+    if (asset.kind !== "video" || asset.missing || asset.extractedAudioAssetId) continue;
+    const extracted = await probeExtract(asset.path);
+    if (!extracted) continue;
+    if (!extracted.hasAudio || !extracted.path) {
+      next[i] = { ...asset, hasAudio: false };
+      continue;
+    }
+    const audioId = crypto.randomUUID();
+    next[i] = { ...asset, hasAudio: true, extractedAudioAssetId: audioId };
+    next.push(audioAssetFromVideo(asset, audioId, extracted.path));
+  }
+  return next;
+}
+
+/**
+ * On open, detach soundtracks for video clips that still play embedded audio.
+ * Skips clips that are already linked or suppressed. If ffmpeg is unavailable,
+ * the project is left unchanged.
+ */
+export async function prepareDetachedAudio(project: ProjectDocument): Promise<ProjectDocument> {
+  const assets = await attachExtractedAudio(project.assets);
+  let next: ProjectDocument = { ...project, assets };
+  const pending = next.clips
+    .filter(
+      (clip) =>
+        clip.kind === "media" &&
+        !clip.suppressEmbeddedAudio &&
+        !clip.linkedClipId &&
+        clip.assetId,
+    )
+    .map((clip) => clip.id);
+  for (const clipId of pending) {
+    const clip = next.clips.find((c) => c.id === clipId);
+    const video = clip?.assetId ? next.assets.find((a) => a.id === clip.assetId) : null;
+    const audioId = video?.extractedAudioAssetId;
+    if (!audioId || !next.assets.some((a) => a.id === audioId && a.kind === "audio")) continue;
+    next = detachVideoAudio(next, clipId, audioId);
+  }
+  return next;
 }
 
 export function formatActionError(error: unknown): string {
@@ -354,7 +433,7 @@ async function pickBrowserMediaFiles(): Promise<MediaAsset[]> {
             missing: false,
           });
         }
-        resolve(assets);
+        resolve(await attachExtractedAudio(assets));
       } catch (error) {
         reject(error);
       }

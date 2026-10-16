@@ -139,13 +139,32 @@
 
 .layerHost {
   overflow: hidden;
+  /* Keep the color wash inside the clip. Without this, blend mode paints the canvas gutters. */
+  isolation: isolate;
 }
 
-.layerHost > .layerMedia {
+.gradeWrap {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.layerHost > .layerMedia,
+.gradeWrap > .layerMedia {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
+  object-fit: fill;
+}
+
+/* Instagram-style color wash. Blend mode and opacity are set inline. */
+.tintOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
 }
 
 /* Soft corner darkening for CapCut-style vignette (preview parity). */
@@ -418,4 +437,164 @@
 
 .selHint {
   color: var(--accent) !important;
+}
+
+/* ---- Cinematic bars (Sony Vegas style, draggable) ---- */
+.cineBars {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20000;
+}
+
+.cineBarTop,
+.cineBarBottom,
+.cineBarLeft,
+.cineBarRight {
+  position: absolute;
+  pointer-events: none;
+  background: #000;
+}
+
+.cineBarTop {
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+.cineBarBottom {
+  bottom: 0;
+  left: 0;
+  right: 0;
+}
+
+.cineBarLeft {
+  left: 0;
+}
+
+.cineBarRight {
+  right: 0;
+}
+
+.cineHandleBottom,
+.cineHandleTop,
+.cineHandleLeft,
+.cineHandleRight {
+  position: absolute;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cineHandleBottom,
+.cineHandleTop {
+  left: 0;
+  right: 0;
+  height: 12px;
+}
+
+.cineHandleBottom {
+  bottom: -6px;
+}
+
+.cineHandleTop {
+  top: -6px;
+}
+
+.cineHandleLeft,
+.cineHandleRight {
+  top: 0;
+  bottom: 0;
+  width: 12px;
+}
+
+.cineHandleLeft {
+  left: -6px;
+}
+
+.cineHandleRight {
+  right: -6px;
+}
+
+/* Grip dot — invisible until Ctrl is held, so plain drag still moves clips. */
+.cineGrip {
+  display: none;
+  pointer-events: auto;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.cineGripLive {
+  display: block;
+  cursor: ns-resize;
+}
+
+.cineHandleLeft .cineGripLive,
+.cineHandleRight .cineGripLive {
+  cursor: ew-resize;
+}
+
+.cineHandleBottom .cineGripLive,
+.cineHandleTop .cineGripLive {
+  width: 56px;
+  height: 6px;
+}
+
+.cineHandleLeft .cineGripLive,
+.cineHandleRight .cineGripLive {
+  width: 6px;
+  height: 56px;
+}
+
+.cineGripLive:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Right-click menu on preview */
+.cineMenu {
+  position: absolute;
+  z-index: 6000;
+  min-width: 220px;
+  padding: 4px;
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+}
+
+.cineMenuItem {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  text-align: left;
+}
+
+.cineMenuItem:hover {
+  background: var(--bg-hover);
+}
+
+.cineToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+}
+
+.cineToggleOn {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
 }

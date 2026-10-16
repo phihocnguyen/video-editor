@@ -36,6 +36,7 @@ function clipPlan(overrides: Partial<RenderClipPlan> = {}): RenderClipPlan {
     kind: "video",
     effects: { ...DEFAULT_CLIP_EFFECTS },
     effectKeyframes: null,
+    transformKeyframes: null,
     transitionIn: { type: "none", durationTicks: 0 } as RenderClipPlan["transitionIn"],
     transitionOverlapSec: 0,
     transform: {

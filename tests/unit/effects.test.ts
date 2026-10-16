@@ -96,6 +96,45 @@ describe("clip effects", () => {
     expect(chain).toContain("fade=t=out:st=3.500:d=0.500:alpha=1");
   });
 
+  it("emits sepia, hue, and tint wash in the FFmpeg chain", () => {
+    const chain = ffmpegVideoEffectsChain(
+      normalizeClipEffects({
+        sepia: 0.5,
+        hueRotate: -12,
+        tintColor: "#F4A04A",
+        tintAmount: 0.4,
+        tintBlend: "soft-light",
+      }),
+      4,
+    );
+    expect(chain).toContain("colorchannelmixer=rr=");
+    expect(chain).toContain("hue=h=-12.0");
+    expect(chain).toContain("geq=r=");
+    expect(chain).toContain("244.00");
+  });
+
+  it("emits a vertical gradient wash for story-style tints", () => {
+    const chain = ffmpegVideoEffectsChain(
+      normalizeClipEffects({
+        tintGradient: ["#4E2022", "#281E41"],
+        tintAmount: 0.78,
+        tintBlend: "normal",
+      }),
+      4,
+    );
+    expect(chain).toContain("Y/H");
+    expect(chain).toContain("78.00");
+    expect(chain).toContain("40.00");
+  });
+
+  it("adds sepia and hue-rotate to the preview CSS filter", () => {
+    const css = cssFilterFromEffects(
+      normalizeClipEffects({ sepia: 0.4, hueRotate: 12 }),
+    );
+    expect(css).toContain("sepia(0.40)");
+    expect(css).toContain("hue-rotate(12.0deg)");
+  });
+
   it("emits unsharp and vignette in FFmpeg chain", () => {
     const chain = ffmpegVideoEffectsChain(
       normalizeClipEffects({ sharpen: 1, vignette: 0.6 }),

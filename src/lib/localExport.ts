@@ -39,6 +39,23 @@ export async function localImportFile(file: File): Promise<{ path: string; name:
   return { path: data.path, name: data.name ?? file.name };
 }
 
+export async function localExtractAudio(
+  path: string,
+): Promise<{ hasAudio: boolean; path: string | null }> {
+  const res = await fetch(`${BASE}/api/extract-audio`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  const data = (await res.json()) as {
+    hasAudio?: boolean;
+    path?: string | null;
+    error?: string;
+  };
+  if (!res.ok) throw new Error(data.error ?? "Audio extract failed");
+  return { hasAudio: Boolean(data.hasAudio), path: data.path ?? null };
+}
+
 export async function localStartExport(
   project: ProjectDocument,
   preset: RenderResolutionPreset,

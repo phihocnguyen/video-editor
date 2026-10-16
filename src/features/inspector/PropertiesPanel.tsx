@@ -10,6 +10,7 @@ import {
   BLEND_MODE_OPTIONS,
   clipDisplayTitle,
   clipDurationTicks,
+  findMatchingFilterTemplate,
   effectsAtProgress,
   findKeyframeNear,
   getParamTrack,
@@ -22,9 +23,6 @@ import {
   paramHasKeyframes,
   progressFromTicks,
   DEFAULT_CLIP_EFFECTS,
-  EFFECT_PRESETS,
-  applyEffectPreset,
-  findMatchingEffectPreset,
   findPreviousClipOnTrack,
   setClipEffectKeyframes,
   setEffectParamAtPlayhead,
@@ -33,15 +31,22 @@ import {
   TRANSITION_DEFS,
   TRANSITION_GROUPS,
   transitionDef,
+  applyTransformPatch,
+  findTransformKeyframeNear,
+  getTransformTrack,
+  paramHasTransformKeyframes,
+  setClipLinkLocked,
+  transformAtProgress,
+  toggleTransformKeyframeAtPlayhead,
   updateClipEffects,
   updateClipText,
-  updateClipTransform,
   updateClipTransition,
   updateClipVolume,
   withListStyle,
   type BlendMode,
   type Clip,
   type EffectParamKey,
+  type TransformParamKey,
   type TextAnimType,
   type TextStyle,
   type TransitionType,
@@ -392,6 +397,18 @@ function FlipVIcon() {
   );
 }
 
+/** Shown when nothing is selected. */
+function NoSelectionPanel() {
+  return (
+    <div className={styles.propsPanel}>
+      <div className={styles.propsEmpty}>
+        <p className={styles.propsEmptyTitle}>Properties</p>
+        <p className={styles.propsEmptyHint}>Select a clip to edit its properties.</p>
+      </div>
+    </div>
+  );
+}
+
 /** Selection-driven CapCut-style properties column (right of preview). */
 export function PropertiesPanel() {
   const project = useProjectStore((s) => s.project);
@@ -422,17 +439,23 @@ export function PropertiesPanel() {
   }, [clip?.id]);
 
   if (!clip) {
+    return <NoSelectionPanel />;
+  }
+
+  const selected = clip;
+  if (selected.kind === "filter") {
+    const look = findMatchingFilterTemplate(selected.effects);
     return (
       <div className={styles.propsPanel}>
         <div className={styles.propsEmpty}>
-          <p className={styles.propsEmptyTitle}>Properties</p>
-          <p className={styles.propsEmptyHint}>Select a clip to edit its properties.</p>
+          <p className={styles.propsEmptyTitle}>{look?.label ?? "Filter"}</p>
+          <p className={styles.propsEmptyHint}>
+            This wash sits on its own track. Trim or move the clip to cover only the section you want.
+          </p>
         </div>
       </div>
     );
   }
-
-  const selected = clip;
   const asset =
     (selected.assetId ? assets.find((a) => a.id === selected.assetId) : null) ?? null;
   const isText = selected.kind === "text";
@@ -476,16 +499,67 @@ export function PropertiesPanel() {
   const title = clipDisplayTitle(project, selected, asset);
   const fillKind = isText ? "Text" : asset?.kind === "image" ? "Image" : "Video";
 
+  const resolved = transformAtProgress(
+    selected.transform,
+    selected.transformKeyframes,
+    clipProgress,
+  );
+  const xTracked = paramHasTransformKeyframes(selected.transformKeyframes, "x");
+  const yTracked = paramHasTransformKeyframes(selected.transformKeyframes, "y");
   const geom = isVisual && !isText
-    ? mediaGeometry(selected.transform, canvas.width, canvas.height, asset)
+    ? mediaGeometry(resolved, canvas.width, canvas.height, asset)
     : null;
-  const center = isText
+  const baseCenter = isText
     ? { x: selected.transform.x, y: selected.transform.y }
     : mediaCenter(selected.transform, canvas.width, canvas.height);
+  const center = {
+    x: xTracked ? resolved.x : baseCenter.x,
+    y: yTracked ? resolved.y : baseCenter.y,
+  };
+  if (geom && (xTracked || yTracked)) {
+    geom.centerX = center.x;
+    geom.centerY = center.y;
+  }
 
   function patchTransform(patch: Partial<Clip["transform"]>) {
     commitProjectChange((p) =>
-      updateClipTransform(p, selected.id, { ...selected.transform, ...patch }),
+      applyTransformPatch(p, selected.id, patch, playheadTicks),
+    );
+  }
+
+  function transformDiamond(param: TransformParamKey) {
+    const track = getTransformTrack(selected.transformKeyframes, param);
+    const on = Boolean(track && findTransformKeyframeNear(track.points, clipProgress));
+    const active = paramHasTransformKeyframes(selected.transformKeyframes, param);
+    return (
+      <button
+        type="button"
+        title={on ? "Remove keyframe at playhead" : "Add keyframe at playhead"}
+        aria-label={`Keyframe ${param}`}
+        aria-pressed={on}
+        className={
+          on
+            ? "grid h-7 w-6 place-items-center rounded-md text-primary"
+            : active
+              ? "grid h-7 w-6 place-items-center rounded-md text-foreground/80 hover:bg-accent"
+              : "grid h-7 w-6 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        }
+        onClick={() =>
+          commitProjectChange((p) =>
+            toggleTransformKeyframeAtPlayhead(p, selected.id, param, playheadTicks),
+          )
+        }
+      >
+        <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden>
+          <path
+            d="M6 1.2 L10.8 6 L6 10.8 L1.2 6 Z"
+            fill={on ? "currentColor" : "none"}
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
     );
   }
 
@@ -603,10 +677,11 @@ export function PropertiesPanel() {
 
               <div className={styles.layerRow}>
                 <label className={styles.rotateField} title="Rotation degrees">
+                  {transformDiamond("rotation")}
                   <input
                     type="number"
                     step={1}
-                    value={Math.round(selected.transform.rotation)}
+                    value={Math.round(resolved.rotation)}
                     onChange={(e) =>
                       patchTransform({ rotation: Number(e.target.value) || 0 })
                     }
@@ -650,10 +725,15 @@ export function PropertiesPanel() {
                 </div>
               </div>
 
-              <OpacityBar
-                value={selected.transform.opacity}
-                onChange={(opacity) => patchTransform({ opacity })}
-              />
+              <div className="flex items-center gap-1">
+                {transformDiamond("opacity")}
+                <div className="min-w-0 flex-1">
+                  <OpacityBar
+                    value={resolved.opacity}
+                    onChange={(opacity) => patchTransform({ opacity })}
+                  />
+                </div>
+              </div>
 
               <label className={styles.blendSelect} title="Blend mode">
                 <select
@@ -687,7 +767,9 @@ export function PropertiesPanel() {
                 <div className={styles.sizeBlock}>
                   <div className={styles.row}>
                     <label className={styles.field}>
-                      <span>X</span>
+                      <span className="inline-flex items-center gap-0.5">
+                        X{transformDiamond("x")}
+                      </span>
                       <input
                         type="number"
                         value={Math.round(center.x)}
@@ -697,7 +779,9 @@ export function PropertiesPanel() {
                       />
                     </label>
                     <label className={styles.field}>
-                      <span>Y</span>
+                      <span className="inline-flex items-center gap-0.5">
+                        Y{transformDiamond("y")}
+                      </span>
                       <input
                         type="number"
                         value={Math.round(center.y)}
@@ -710,7 +794,9 @@ export function PropertiesPanel() {
                   {!isText ? (
                     <div className={styles.row}>
                       <label className={styles.field}>
-                        <span>Scale X</span>
+                        <span className="inline-flex items-center gap-0.5">
+                          Scale X{transformDiamond("scaleX")}
+                        </span>
                         <input
                           type="number"
                           min={0.02}
@@ -725,7 +811,9 @@ export function PropertiesPanel() {
                         />
                       </label>
                       <label className={styles.field}>
-                        <span>Scale Y</span>
+                        <span className="inline-flex items-center gap-0.5">
+                          Scale Y{transformDiamond("scaleY")}
+                        </span>
                         <input
                           type="number"
                           min={0.02}
@@ -1151,6 +1239,23 @@ export function PropertiesPanel() {
             </Section>
           ) : null}
 
+          {selected.linkedClipId ? (
+            <Section title="Link">
+              <label className="flex items-center justify-between gap-2 text-xs font-semibold text-muted-foreground">
+                <span>Link audio and video</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(selected.linkLocked)}
+                  onChange={(e) =>
+                    commitProjectChange((p) =>
+                      setClipLinkLocked(p, selected.id, e.target.checked),
+                    )
+                  }
+                />
+              </label>
+            </Section>
+          ) : null}
+
           {showVolume ? (
             <Section title="Audio">
               <StepperField
@@ -1218,39 +1323,6 @@ export function PropertiesPanel() {
                     }
                   />
                 ) : null}
-              </Section>
-
-              <Section title="Filters">
-                <div className={styles.filterGrid}>
-                  {EFFECT_PRESETS.map((preset) => {
-                    const active = findMatchingEffectPreset(effects)?.id === preset.id;
-                    return (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        title={preset.label}
-                        className={`${styles.filterBtn}${active ? ` ${styles.filterBtnActive}` : ""}`}
-                        onClick={() =>
-                          commitProjectChange((p) =>
-                            updateClipEffects(
-                              p,
-                              selected.id,
-                              applyEffectPreset(effects, preset),
-                            ),
-                          )
-                        }
-                      >
-                        <span
-                          className={styles.filterSwatch}
-                          style={{ background: preset.swatch }}
-                        >
-                          {active ? <span className={styles.filterCheck}>✓</span> : null}
-                        </span>
-                        <span className={styles.filterLabel}>{preset.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
               </Section>
 
               <Section

@@ -22,6 +22,7 @@ pub fn run() {
             commands::media::check_media_paths,
             commands::media::import_media_paths,
             commands::media::generate_thumbnail,
+            commands::media::extract_audio_track,
             commands::project::open_project,
             commands::project::save_project,
             commands::project::validate_project,

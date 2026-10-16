@@ -152,6 +152,15 @@ export function effectsMatchPreset(
       return false;
     }
   }
+  if (!near(e.sepia, p.sepia) || !near(e.hueRotate, p.hueRotate, 0.6)) return false;
+  if (!near(e.tintAmount, p.tintAmount)) return false;
+  if (e.tintGradient.join(",") !== p.tintGradient.join(",")) return false;
+  if (e.tintAmount > 0.02 || p.tintAmount > 0.02) {
+    if (e.tintGradient.length < 2 && e.tintColor.toLowerCase() !== p.tintColor.toLowerCase()) {
+      return false;
+    }
+    if (e.tintBlend !== p.tintBlend) return false;
+  }
   return true;
 }
 
@@ -174,8 +183,16 @@ export function applyEffectPreset(
 ): ClipEffects {
   return normalizeClipEffects({
     ...current,
+    sepia: 0,
+    hueRotate: 0,
+    tintColor: DEFAULT_CLIP_EFFECTS.tintColor,
+    tintGradient: [],
+    tintAmount: 0,
+    tintBlend: "soft-light",
     ...preset.patch,
     fadeInSec: current.fadeInSec,
     fadeOutSec: current.fadeOutSec,
+    strobeFrames: current.strobeFrames,
+    strobeColor: current.strobeColor,
   });
 }

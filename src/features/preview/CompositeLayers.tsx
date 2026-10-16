@@ -3,6 +3,8 @@ import {
   blendModeToCss,
   clipDurationTicks,
   cssFilterFromEffects,
+  tintOverlayFromEffects,
+  type TintOverlay,
   effectsAtProgress,
   fadeOpacityMultiplier,
   strobeIsFlashFrame,
@@ -13,6 +15,10 @@ import {
   hasActiveRamp,
   incomingTransitionProgress,
   clipMediaGeometry,
+  hasTransformKeyframes,
+  mediaCenter,
+  paramHasTransformKeyframes,
+  transformAtProgress,
   normalizeClipEffects,
   normalizeClipTransition,
   layerStackZ,
@@ -170,6 +176,8 @@ interface LayerStyle {
   heightPct: number;
   /** 0 = no vignette overlay; otherwise dark corner veil opacity. */
   vignetteOpacity: number;
+  /** Color wash above the filtered media. Null = off. */
+  tint: TintOverlay | null;
   /** Solid flash colour for Vegas-style strobe frame, or null. */
   strobeFlash: string | null;
   /** CSS transform for the whole layer (centring + scale + rotation). */
@@ -204,7 +212,7 @@ function layerVisualStyle(
   const preMount = isPreTransitionMount(project, clip, playheadTicks) ? 0 : 1;
   const filter = cssFilterFromEffects(effects, pxScale) || undefined;
 
-  const geom = clipMediaGeometry(clip, canvasWidth, canvasHeight, asset);
+  const geom = geometryAtPlayhead(clip, asset, canvasWidth, canvasHeight, progress);
   const parts = [
     "translate(-50%, -50%)",
     `rotate(${geom.rotation}deg)`,
@@ -213,7 +221,7 @@ function layerVisualStyle(
 
   return {
     zIndex,
-    opacity: clip.transform.opacity * fadeMul * opacityMul * preMount,
+    opacity: geom.opacity * fadeMul * opacityMul * preMount,
     filter,
     clipPath: txVisual.clipPath,
     leftPct: (geom.centerX / Math.max(1, canvasWidth)) * 100 + txVisual.offsetXPct,
@@ -221,6 +229,7 @@ function layerVisualStyle(
     widthPct: (geom.fitWidth / Math.max(1, canvasWidth)) * 100,
     heightPct: (geom.fitHeight / Math.max(1, canvasHeight)) * 100,
     vignetteOpacity: vignetteOverlayOpacity(effects),
+    tint: tintOverlayFromEffects(effects),
     strobeFlash: flash ? effects.strobeColor : null,
     transform: parts.join(" "),
     mixBlendMode: blendModeToCss(clip.transform.blendMode),
@@ -240,6 +249,25 @@ function syncStrobeFlash(host: HTMLElement, color: string | null) {
     host.appendChild(flash);
   }
   flash.style.background = color;
+}
+
+function syncTintOverlay(host: HTMLElement, tint: TintOverlay | null) {
+  let overlay = host.querySelector("[data-tint]") as HTMLElement | null;
+  if (!tint) {
+    overlay?.remove();
+    return;
+  }
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.setAttribute("data-tint", "");
+    overlay.className = styles.tintOverlay;
+    const vignette = host.querySelector("[data-vignette]");
+    if (vignette) host.insertBefore(overlay, vignette);
+    else host.appendChild(overlay);
+  }
+  overlay.style.background = tint.color;
+  overlay.style.opacity = String(tint.opacity);
+  overlay.style.mixBlendMode = tint.blend;
 }
 
 function syncVignetteOverlay(host: HTMLElement, opacity: number) {
@@ -268,6 +296,7 @@ type StyleCache = {
   width: string;
   height: string;
   vignetteOpacity: number;
+  tintKey: string;
   strobeFlash: string | null;
   mixBlendMode: string;
 };
@@ -283,7 +312,6 @@ const styleCache = new WeakMap<HTMLElement, StyleCache>();
 function clearPooledVideoLayoutStyles(video: HTMLElement) {
   video.style.zIndex = "";
   video.style.opacity = "";
-  video.style.filter = "";
   video.style.clipPath = "";
   video.style.left = "";
   video.style.top = "";
@@ -324,13 +352,12 @@ function applyMediaStyle(
   );
   // Geometry always lives on the layer host. Never fall back to styling the
   // pooled <video> — orphan frames during remount would bake % size onto it.
-  const host = el.parentElement?.hasAttribute("data-layer-host")
-    ? el.parentElement
-    : el.hasAttribute("data-layer-host")
-      ? el
-      : null;
-  if (!host) return;
-  if (el !== host) clearPooledVideoLayoutStyles(el);
+  const host = el.closest("[data-layer-host]");
+  if (!(host instanceof HTMLElement)) return;
+  if (el !== host) {
+    clearPooledVideoLayoutStyles(el);
+    el.style.filter = "";
+  }
 
   const target = host;
   const filter = style.filter ?? "";
@@ -341,6 +368,9 @@ function applyMediaStyle(
   const height = `${style.heightPct}%`;
   const transform = style.transform;
   const vignetteOpacity = style.vignetteOpacity;
+  const tintKey = style.tint
+    ? `${style.tint.color}|${style.tint.opacity}|${style.tint.blend}`
+    : "";
   const strobeFlash = style.strobeFlash;
   const mixBlendMode = style.mixBlendMode;
   const prev = styleCache.get(target);
@@ -356,6 +386,7 @@ function applyMediaStyle(
     prev.width === width &&
     prev.height === height &&
     prev.vignetteOpacity === vignetteOpacity &&
+    prev.tintKey === tintKey &&
     prev.strobeFlash === strobeFlash &&
     prev.mixBlendMode === mixBlendMode
   ) {
@@ -372,6 +403,7 @@ function applyMediaStyle(
     width,
     height,
     vignetteOpacity,
+    tintKey,
     strobeFlash,
     mixBlendMode,
   });
@@ -385,17 +417,49 @@ function applyMediaStyle(
   target.style.height = height;
   target.style.transform = transform;
   target.style.mixBlendMode = mixBlendMode;
+  // Filter a wrapper, not the <video>. A filter on the video element letterboxes
+  // the frame and the color wash shows up as bars in the empty sides.
+  target.style.filter = "";
+  const grade = target.querySelector(":scope > [data-grade]");
+  if (grade instanceof HTMLElement) grade.style.filter = filter;
+  syncTintOverlay(target, style.tint);
   syncVignetteOverlay(target, vignetteOpacity);
   syncStrobeFlash(target, strobeFlash);
 }
 
 /** True when opacity is still changing this frame (fade / transition). */
+function geometryAtPlayhead(
+  clip: Clip,
+  asset: MediaAsset | null,
+  canvasWidth: number,
+  canvasHeight: number,
+  progress: number,
+) {
+  const tr = transformAtProgress(clip.transform, clip.transformKeyframes, progress);
+  const geom = clipMediaGeometry(
+    { ...clip, transform: tr },
+    canvasWidth,
+    canvasHeight,
+    asset,
+  );
+  const xAbs = paramHasTransformKeyframes(clip.transformKeyframes, "x");
+  const yAbs = paramHasTransformKeyframes(clip.transformKeyframes, "y");
+  if (!xAbs && !yAbs) return geom;
+  const center = mediaCenter(clip.transform, canvasWidth, canvasHeight);
+  return {
+    ...geom,
+    centerX: xAbs ? tr.x : center.x,
+    centerY: yAbs ? tr.y : center.y,
+  };
+}
+
 function needsPerFrameVisual(
   project: ProjectDocument,
   clip: Clip,
   playheadTicks: number,
 ): boolean {
   if (clip.effectKeyframes?.tracks?.length) return true;
+  if (hasTransformKeyframes(clip.transformKeyframes)) return true;
   const effects = normalizeClipEffects(clip.effects);
   if (effects.strobeFrames > 0) return true;
   const dur = ticksToSeconds(clipDurationTicks(clip));
@@ -664,8 +728,16 @@ export function CompositeLayers({
     video.className = styles.layerMedia;
     video.playsInline = true;
     clearPooledVideoLayoutStyles(video);
-    if (video.parentElement !== host) {
-      host.replaceChildren(video);
+    video.style.filter = "";
+    let grade = host.querySelector(":scope > [data-grade]");
+    if (!(grade instanceof HTMLElement)) {
+      grade = document.createElement("div");
+      grade.setAttribute("data-grade", "");
+      grade.className = styles.gradeWrap;
+      host.insertBefore(grade, host.firstChild);
+    }
+    if (video.parentElement !== grade) {
+      grade.replaceChildren(video);
     }
     attachVideo(clipId, video);
   };
@@ -1016,7 +1088,10 @@ export function CompositeLayers({
         liveVisualByClipRef.current.set(layer.clip.id, liveVisual);
 
         const muted =
-          !layer.isTopVideo || layer.track.muted || !layer.asset.hasAudio;
+          !layer.isTopVideo ||
+          layer.track.muted ||
+          !layer.asset.hasAudio ||
+          Boolean(layer.clip.suppressEmbeddedAudio);
         if (video.muted !== muted) video.muted = muted;
         const durSec = Math.max(
           0.01,
@@ -1356,7 +1431,6 @@ export function CompositeLayers({
           height: `${style.heightPct}%`,
           transform: style.transform,
           opacity: style.opacity,
-          filter: style.filter,
           // Explicit "none" so React clears a prior wipe clip-path on remount.
           clipPath: style.clipPath ?? "none",
           mixBlendMode: style.mixBlendMode as CSSProperties["mixBlendMode"],
@@ -1369,15 +1443,28 @@ export function CompositeLayers({
               data-layer-host
               style={boxStyle}
             >
-              <img
-                ref={(el) => {
-                  if (el) imageRefs.current.set(layer.clip.id, el);
-                  else imageRefs.current.delete(layer.clip.id);
-                }}
-                className={styles.layerMedia}
-                src={url}
-                alt=""
-              />
+              <div className={styles.gradeWrap} data-grade style={{ filter: style.filter }}>
+                <img
+                  ref={(el) => {
+                    if (el) imageRefs.current.set(layer.clip.id, el);
+                    else imageRefs.current.delete(layer.clip.id);
+                  }}
+                  className={styles.layerMedia}
+                  src={url}
+                  alt=""
+                />
+              </div>
+              {style.tint ? (
+                <div
+                  className={styles.tintOverlay}
+                  data-tint
+                  style={{
+                    background: style.tint.color,
+                    opacity: style.tint.opacity,
+                    mixBlendMode: style.tint.blend,
+                  }}
+                />
+              ) : null}
               {style.vignetteOpacity > 0.01 ? (
                 <div
                   className={styles.vignetteOverlay}

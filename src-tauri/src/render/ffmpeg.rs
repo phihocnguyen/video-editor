@@ -47,6 +47,8 @@ pub struct RenderClipPlan {
     pub media_width: Option<f64>,
     #[serde(default)]
     pub media_height: Option<f64>,
+    #[serde(default)]
+    pub transform_keyframes: Option<EffectKeyframes>,
 }
 
 fn default_canvas_dim() -> f64 {
@@ -154,6 +156,18 @@ pub struct RenderClipEffects {
     #[serde(default)]
     pub sharpen: f64,
     #[serde(default)]
+    pub sepia: f64,
+    #[serde(default)]
+    pub hue_rotate: f64,
+    #[serde(default = "default_tint_color")]
+    pub tint_color: String,
+    #[serde(default)]
+    pub tint_gradient: Vec<String>,
+    #[serde(default)]
+    pub tint_amount: f64,
+    #[serde(default = "default_tint_blend")]
+    pub tint_blend: String,
+    #[serde(default)]
     pub strobe_frames: f64,
     #[serde(default = "default_strobe_color")]
     pub strobe_color: String,
@@ -165,6 +179,14 @@ pub struct RenderClipEffects {
 
 fn default_strobe_color() -> String {
     "#000000".into()
+}
+
+fn default_tint_color() -> String {
+    "#000000".into()
+}
+
+fn default_tint_blend() -> String {
+    "soft-light".into()
 }
 
 fn default_one() -> f64 {
@@ -275,6 +297,10 @@ pub struct RenderTextPlan {
     pub background_padding: f64,
     #[serde(default = "default_slide_dist")]
     pub slide_dist: f64,
+    #[serde(default)]
+    pub transform_keyframes: Option<EffectKeyframes>,
+    #[serde(default)]
+    pub base_font_size: f64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -285,6 +311,8 @@ pub struct RenderPlan {
     pub frame_rate: f64,
     #[serde(default = "default_bg_color")]
     pub background_color: String,
+    #[serde(default)]
+    pub letterbox: RenderLetterbox,
     pub duration_sec: f64,
     #[serde(default = "default_vbitrate")]
     pub video_bitrate: String,
@@ -292,7 +320,44 @@ pub struct RenderPlan {
     pub audio_bitrate: String,
     pub clips: Vec<RenderClipPlan>,
     pub texts: Vec<RenderTextPlan>,
+    /// Filter-track washes. Missing on older plans.
+    #[serde(default)]
+    pub washes: Vec<RenderWashPlan>,
     pub missing_asset_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderWashPlan {
+    pub clip_id: String,
+    pub track_id: String,
+    pub track_order: i32,
+    pub timeline_start_sec: f64,
+    pub timeline_end_sec: f64,
+    #[serde(default = "default_one")]
+    pub opacity: f64,
+    pub effects: RenderClipEffects,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderLetterbox {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub top_pct: f64,
+    #[serde(default)]
+    pub bottom_pct: f64,
+    #[serde(default)]
+    pub left_pct: f64,
+    #[serde(default)]
+    pub right_pct: f64,
+    #[serde(default = "default_bar_color")]
+    pub color: String,
+}
+
+fn default_bar_color() -> String {
+    "#000000".into()
 }
 
 fn default_vbitrate() -> String {
@@ -852,6 +917,156 @@ fn clamp_scale(value: f64) -> f64 {
     }
 }
 
+fn track_points(kf: &Option<EffectKeyframes>, param: &str) -> Vec<(f64, f64)> {
+    let Some(kf) = kf else {
+        return Vec::new();
+    };
+    let Some(track) = kf.tracks.iter().find(|t| t.param == param) else {
+        return Vec::new();
+    };
+    let pts = if track.points.is_empty() {
+        &track.tracks
+    } else {
+        &track.points
+    };
+    pts.iter().map(|p| (p.at_progress, p.value)).collect()
+}
+
+fn has_geometry_keyframes(kf: &Option<EffectKeyframes>) -> bool {
+    ["x", "y", "scaleX", "scaleY", "rotation"]
+        .iter()
+        .any(|param| !track_points(kf, param).is_empty())
+}
+
+fn linear_track_expr(
+    kf: &Option<EffectKeyframes>,
+    param: &str,
+    dur: f64,
+    before: f64,
+    origin: f64,
+    time_var: &str,
+) -> Option<String> {
+    let points = track_points(kf, param);
+    if points.is_empty() {
+        return None;
+    }
+    Some(linear_expr(&points, dur.max(0.01), before, origin, time_var))
+}
+
+fn linear_expr(points: &[(f64, f64)], dur: f64, before: f64, origin: f64, time_var: &str) -> String {
+    let mut mapped: Vec<(f64, f64)> = points
+        .iter()
+        .map(|(progress, value)| (origin + progress.clamp(0.0, 1.0) * dur, *value))
+        .collect();
+    mapped.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    if mapped.len() == 1 {
+        let (t, v) = mapped[0];
+        if (before - v).abs() < 1e-6 {
+            return format!("{v:.4}");
+        }
+        return format!("if(lt({time_var}\\,{t:.4})\\,{before:.4}\\,{v:.4})");
+    }
+    let mut expr = format!("{:.4}", mapped.last().unwrap().1);
+    for i in (0..mapped.len() - 1).rev() {
+        let (ta, va) = mapped[i];
+        let (tb, vb) = mapped[i + 1];
+        let span = (tb - ta).max(0.0001);
+        let blend = format!("{va:.4}+({vb:.4}-{va:.4})*({time_var}-{ta:.4})/{span:.4}");
+        expr = format!("if(lt({time_var}\\,{tb:.4})\\,{blend}\\,{expr})");
+    }
+    let (t0, _) = mapped[0];
+    format!("if(lt({time_var}\\,{t0:.4})\\,{before:.4}\\,{expr})")
+}
+
+fn even_expr(inner: &str) -> String {
+    format!("max(2\\,2*trunc(({inner})/2))")
+}
+
+/// Time-varying scale / rotate / pad. Full frame so later overlay stays aligned.
+fn animated_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) -> String {
+    let tr = &clip.transform;
+    let cw = clip.canvas_width.max(1.0);
+    let chh = clip.canvas_height.max(1.0);
+    let mw = clip.media_width.filter(|v| *v > 0.0).unwrap_or(cw);
+    let mh = clip.media_height.filter(|v| *v > 0.0).unwrap_or(chh);
+    let fit_scale = (cw / mw).min(chh / mh);
+    let out_sx = width as f64 / cw;
+    let out_sy = height as f64 / chh;
+    let fit_w = mw * fit_scale * out_sx;
+    let fit_h = mh * fit_scale * out_sy;
+    let dur = (clip.timeline_end_sec - clip.timeline_start_sec).max(0.01);
+    let legacy = tr.x == 0.0 && tr.y == 0.0 && track_points(&clip.transform_keyframes, "x").is_empty()
+        && track_points(&clip.transform_keyframes, "y").is_empty();
+    let x_before = if legacy { cw / 2.0 } else { tr.x };
+    let y_before = if legacy { chh / 2.0 } else { tr.y };
+
+    let box_w = match linear_track_expr(&clip.transform_keyframes, "scaleX", dur, tr.scale_x, 0.0, "t") {
+        Some(expr) => even_expr(&format!("{fit_w:.4}*abs({expr})")),
+        None => {
+            let even = ((fit_w * clamp_scale(tr.scale_x)).round().max(2.0) as i64 & !1).max(2);
+            even.to_string()
+        }
+    };
+    let box_h = match linear_track_expr(&clip.transform_keyframes, "scaleY", dur, tr.scale_y, 0.0, "t") {
+        Some(expr) => even_expr(&format!("{fit_h:.4}*abs({expr})")),
+        None => {
+            let even = ((fit_h * clamp_scale(tr.scale_y)).round().max(2.0) as i64 & !1).max(2);
+            even.to_string()
+        }
+    };
+    let center_x = match linear_track_expr(&clip.transform_keyframes, "x", dur, x_before, 0.0, "t") {
+        Some(expr) => format!("({expr})*{out_sx:.6}"),
+        None => {
+            let x = if track_points(&clip.transform_keyframes, "x").is_empty() && legacy {
+                width as f64 / 2.0
+            } else {
+                x_before * out_sx
+            };
+            format!("{x:.3}")
+        }
+    };
+    let center_y = match linear_track_expr(&clip.transform_keyframes, "y", dur, y_before, 0.0, "t") {
+        Some(expr) => format!("({expr})*{out_sy:.6}"),
+        None => {
+            let y = if track_points(&clip.transform_keyframes, "y").is_empty() && legacy {
+                height as f64 / 2.0
+            } else {
+                y_before * out_sy
+            };
+            format!("{y:.3}")
+        }
+    };
+    let mut parts = vec![format!(
+        "scale=w='{box_w}':h='{box_h}':eval=frame:flags=lanczos"
+    )];
+    if tr.scale_x < 0.0 {
+        parts.push("hflip".into());
+    }
+    if tr.scale_y < 0.0 {
+        parts.push("vflip".into());
+    }
+    let rot_pts = track_points(&clip.transform_keyframes, "rotation");
+    let mut pad_w = box_w.clone();
+    let mut pad_h = box_h.clone();
+    if !rot_pts.is_empty() || tr.rotation.abs() > 0.01 {
+        let rot = linear_track_expr(&clip.transform_keyframes, "rotation", dur, tr.rotation, 0.0, "t")
+            .unwrap_or_else(|| format!("{:.4}", tr.rotation));
+        let rad = format!("({rot})*0.0174533");
+        let ow = format!("abs(({box_w})*cos(abs({rad})))+abs(({box_h})*sin(abs({rad})))");
+        let oh = format!("abs(({box_w})*sin(abs({rad})))+abs(({box_h})*cos(abs({rad})))");
+        parts.push(format!(
+            "rotate={rad}:ow='{ow}':oh='{oh}':c=black@0:eval=frame"
+        ));
+        pad_w = ow;
+        pad_h = oh;
+    }
+    parts.push(format!(
+        "pad={width}:{height}:x='({center_x})-({pad_w})/2':y='({center_y})-({pad_h})/2':color=black@0:eval=frame"
+    ));
+    parts.push("setsar=1".into());
+    parts.join(",")
+}
+
 /// Scale/rotate/pad a media clip into the output frame honouring its transform.
 ///
 /// Mirrors preview (`mediaGeometry` + CSS): contain-fit, then scale/flip/
@@ -859,6 +1074,9 @@ fn clamp_scale(value: f64) -> f64 {
 /// canvas (pad), so no trailing resample softens the frame — `setsar=1` keeps
 /// geometry exact like the preview stage.
 fn media_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) -> String {
+    if has_geometry_keyframes(&clip.transform_keyframes) {
+        return animated_placement_filters(clip, width, height);
+    }
     let tr = &clip.transform;
     let cw = clip.canvas_width.max(1.0);
     let chh = clip.canvas_height.max(1.0);
@@ -1011,6 +1229,7 @@ fn build_filter_complex(
             format!(",{}", extras.join(","))
         };
         let placement = media_placement_filters(clip, width, height);
+        let animated = has_geometry_keyframes(&clip.transform_keyframes);
         // Shift PTS so stream local 0 lands at timeline `overlay_start`.
         // Without this, `overlay` syncs by PTS: clip 2 (start 5s) would be
         // sampled at PTS 5s (near EOF) during the transition -> black/frozen.
@@ -1020,9 +1239,25 @@ fn build_filter_complex(
         } else {
             String::new()
         };
-        parts.push(format!(
-            "[{input_index}:v]{placement},{setpts},format=rgba{extra_part}{delay_part},colorchannelmixer=aa={opacity:.3}[v{index}]"
-        ));
+        let opacity_part = match linear_track_expr(
+            &clip.transform_keyframes,
+            "opacity",
+            clip_dur,
+            opacity,
+            0.0,
+            "T",
+        ) {
+            Some(expr) => format!(
+                ",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*({expr})'"
+            ),
+            None => format!(",colorchannelmixer=aa={opacity:.3}"),
+        };
+        let head = if animated {
+            format!("[{input_index}:v]{setpts},{placement},format=rgba{extra_part}")
+        } else {
+            format!("[{input_index}:v]{placement},{setpts},format=rgba{extra_part}")
+        };
+        parts.push(format!("{head}{opacity_part}{delay_part}[v{index}]"));
         prepared.push(Prepared {
             vlabel: format!("[v{index}]"),
             track_order: clip.track_order,
@@ -1040,11 +1275,12 @@ fn build_filter_complex(
     #[derive(Clone, Copy)]
     enum PaintStep {
         Clip(usize),
+        Wash(usize),
         Text(usize),
     }
     struct PaintKey {
         track_order: i32,
-        kind_rank: u8, // media (0) before text (1) on the same track
+        kind_rank: u8, // media (0), wash (1), text (2) on the same track
         start: f64,
         step: PaintStep,
     }
@@ -1057,10 +1293,18 @@ fn build_filter_complex(
             step: PaintStep::Clip(i),
         });
     }
+    for (wi, wash) in plan.washes.iter().enumerate() {
+        steps.push(PaintKey {
+            track_order: wash.track_order,
+            kind_rank: 1,
+            start: wash.timeline_start_sec.max(0.0),
+            step: PaintStep::Wash(wi),
+        });
+    }
     for (ti, text) in plan.texts.iter().enumerate() {
         steps.push(PaintKey {
             track_order: text.track_order,
-            kind_rank: 1,
+            kind_rank: 2,
             start: text.timeline_start_sec.max(0.0),
             step: PaintStep::Text(ti),
         });
@@ -1097,6 +1341,33 @@ fn build_filter_complex(
                 }
                 current = next;
             }
+            PaintStep::Wash(wi) => {
+                let wash = &plan.washes[wi];
+                let start = wash.timeline_start_sec.max(0.0);
+                let end = wash.timeline_end_sec.max(start + 0.01);
+                let Some(plate) = wash_plate(
+                    &wash.effects,
+                    width,
+                    height,
+                    end.max(plan.duration_sec),
+                    fps,
+                ) else {
+                    continue;
+                };
+                let opacity = wash.opacity.clamp(0.0, 1.0);
+                let alpha = if opacity < 0.999 {
+                    format!(",colorchannelmixer=aa={opacity:.3}")
+                } else {
+                    String::new()
+                };
+                let layer = format!("[wash{wi}]");
+                let next = format!("[wmix{wi}]");
+                parts.push(format!("{plate}{alpha}{layer}"));
+                parts.push(format!(
+                    "{current}{layer}overlay=x=0:y=0:format=auto:eof_action=pass:enable='between(t\\,{start:.3}\\,{end:.3})'{next}"
+                ));
+                current = next;
+            }
             PaintStep::Text(ti) => {
                 let text = &plan.texts[ti];
                 let next = format!("[txt{ti}]");
@@ -1117,6 +1388,40 @@ fn build_filter_complex(
     }
 
     if current != "[outv]" {
+        // Cinematic bars last (mirrors TS builder + preview overlay %).
+        if plan.letterbox.enabled {
+            let bar = ffmpeg_color_literal(&plan.letterbox.color);
+            let clamp = |v: f64| v.clamp(0.0, 45.0);
+            let top = ((clamp(plan.letterbox.top_pct) / 100.0) * height as f64).round() as i64;
+            let bottom = ((clamp(plan.letterbox.bottom_pct) / 100.0) * height as f64).round() as i64;
+            let left = ((clamp(plan.letterbox.left_pct) / 100.0) * width as f64).round() as i64;
+            let right = ((clamp(plan.letterbox.right_pct) / 100.0) * width as f64).round() as i64;
+            let mut li = 0usize;
+            if top > 0 {
+                let next = format!("[lb{li}]");
+                li += 1;
+                parts.push(format!("{current}drawbox=x=0:y=0:w=iw:h={top}:c={bar}:t=fill{next}"));
+                current = next;
+            }
+            if bottom > 0 {
+                let next = format!("[lb{li}]");
+                li += 1;
+                parts.push(format!("{current}drawbox=x=0:y=ih-{bottom}:w=iw:h={bottom}:c={bar}:t=fill{next}"));
+                current = next;
+            }
+            if left > 0 {
+                let next = format!("[lb{li}]");
+                li += 1;
+                parts.push(format!("{current}drawbox=x=0:y=0:w={left}:h=ih:c={bar}:t=fill{next}"));
+                current = next;
+            }
+            if right > 0 {
+                let next = format!("[lb{li}]");
+                li += 1;
+                parts.push(format!("{current}drawbox=x=iw-{right}:y=0:w={right}:h=ih:c={bar}:t=fill{next}"));
+                current = next;
+            }
+        }
         // Force constant frame rate = canvas fps so motion matches preview
         // (sources may be VFR or a different fps; the lavfi base alone
         // doesn't normalize them).
@@ -1405,6 +1710,144 @@ fn kf_windows(
     windows
 }
 
+/// Sepia, hue, and tint wash. Mirrors `ffmpegColorGradeChain` in TypeScript.
+fn append_color_grade(parts: &mut Vec<String>, effects: &RenderClipEffects) {
+    if effects.sepia > 0.02 {
+        let t = effects.sepia.clamp(0.0, 1.0);
+        let mix = |identity: f64, sepia: f64| identity * (1.0 - t) + sepia * t;
+        parts.push(format!(
+            "colorchannelmixer=rr={:.3}:rg={:.3}:rb={:.3}:gr={:.3}:gg={:.3}:gb={:.3}:br={:.3}:bg={:.3}:bb={:.3}",
+            mix(1.0, 0.393),
+            mix(0.0, 0.769),
+            mix(0.0, 0.189),
+            mix(0.0, 0.349),
+            mix(1.0, 0.686),
+            mix(0.0, 0.168),
+            mix(0.0, 0.272),
+            mix(0.0, 0.534),
+            mix(1.0, 0.131),
+        ));
+    }
+    if effects.hue_rotate.abs() > 0.5 {
+        parts.push(format!(
+            "hue=h={:.1}",
+            effects.hue_rotate.clamp(-180.0, 180.0)
+        ));
+    }
+    if effects.tint_amount >= 0.02 {
+        if let Some(geq) = tint_geq(effects) {
+            parts.push(geq);
+        }
+    }
+}
+
+fn tint_geq(effects: &RenderClipEffects) -> Option<String> {
+    let amount = effects.tint_amount.clamp(0.0, 1.0);
+    let blend = effects.tint_blend.as_str();
+    let gradient: Vec<(f64, f64, f64)> = effects
+        .tint_gradient
+        .iter()
+        .filter_map(|stop| parse_hex_rgb(stop))
+        .take(6)
+        .collect();
+    let solid = parse_hex_rgb(&effects.tint_color);
+    if gradient.len() < 2 && solid.is_none() {
+        return None;
+    }
+    let expr = |channel: usize, name: &str| {
+        let cb = format!("{name}(X,Y)");
+        let cs = if gradient.len() >= 2 {
+            gradient_channel_expr(&gradient, channel)
+        } else {
+            let (r, g, b) = solid.unwrap_or((0.0, 0.0, 0.0));
+            format!("{:.2}", [r, g, b][channel])
+        };
+        let a = format!("{amount:.3}");
+        let blended = match blend {
+            "normal" => format!("({cs})"),
+            "multiply" => format!("({cb})*({cs})/255"),
+            "screen" => format!("255-(255-{cb})*(255-{cs})/255"),
+            "overlay" => format!(
+                "if(lt({cb},128),2*({cb})*({cs})/255,255-2*(255-{cb})*(255-{cs})/255)"
+            ),
+            _ => format!("((255-2*({cs}))*({cb})*({cb})/65025+2*({cs})*({cb})/255)"),
+        };
+        format!("clip(({cb})*(1-{a})+({blended})*{a},0,255)").replace(',', "\\,")
+    };
+    Some(format!(
+        "geq=r='{}':g='{}':b='{}':a='alpha(X\\,Y)'",
+        expr(0, "r"),
+        expr(1, "g"),
+        expr(2, "b"),
+    ))
+}
+
+/// Top-to-bottom mix. `Y/H` is 0 at the top stop and 1 at the bottom stop.
+fn gradient_channel_expr(stops: &[(f64, f64, f64)], channel: usize) -> String {
+    let n = stops.len();
+    let span = 1.0 / (n - 1) as f64;
+    let sample = |rgb: (f64, f64, f64)| [rgb.0, rgb.1, rgb.2][channel];
+    let mut expr = format!("{:.2}", sample(stops[n - 1]));
+    for i in (0..n - 1).rev() {
+        let t0 = i as f64 * span;
+        let t1 = (i + 1) as f64 * span;
+        let c0 = sample(stops[i]);
+        let c1 = sample(stops[i + 1]);
+        let lerp = format!("({c0:.2}+({c1:.2}-{c0:.2})*((Y/H)-{t0:.4})/{span:.4})");
+        expr = format!("if(lt((Y/H),{t1:.4}),{lerp},{expr})");
+    }
+    expr
+}
+
+/// Full-frame wash plate. Alpha is the tint amount. None when the wash is off.
+fn wash_plate(
+    effects: &RenderClipEffects,
+    width: u32,
+    height: u32,
+    dur: f64,
+    fps: f64,
+) -> Option<String> {
+    if effects.tint_amount < 0.02 {
+        return None;
+    }
+    let alpha = (effects.tint_amount.clamp(0.0, 1.0) * 255.0).round();
+    let gradient: Vec<(f64, f64, f64)> = effects
+        .tint_gradient
+        .iter()
+        .filter_map(|stop| parse_hex_rgb(stop))
+        .take(6)
+        .collect();
+    let channel = |index: usize| {
+        if gradient.len() >= 2 {
+            gradient_channel_expr(&gradient, index).replace(',', "\\,")
+        } else {
+            let (r, g, b) = parse_hex_rgb(&effects.tint_color).unwrap_or((0.0, 0.0, 0.0));
+            format!("{:.2}", [r, g, b][index])
+        }
+    };
+    let duration = dur.max(0.01);
+    Some(format!(
+        "color=c=black:s={width}x{height}:r={}:d={duration:.3},format=rgba,geq=r='{}':g='{}':b='{}':a='{alpha:.0}'",
+        format_fps(fps),
+        channel(0),
+        channel(1),
+        channel(2),
+    ))
+}
+
+fn parse_hex_rgb(color: &str) -> Option<(f64, f64, f64)> {
+    let hex = color.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+    let n = u32::from_str_radix(hex, 16).ok()?;
+    Some((
+        ((n >> 16) & 255) as f64,
+        ((n >> 8) & 255) as f64,
+        (n & 255) as f64,
+    ))
+}
+
 fn ffmpeg_video_effects_chain_animated(
     effects: &RenderClipEffects,
     keyframes: &Option<EffectKeyframes>,
@@ -1446,6 +1889,7 @@ fn ffmpeg_video_effects_chain_animated(
             ));
         }
     }
+    append_color_grade(&mut parts, effects);
     if let Some(p) = kf_track(keyframes, "blur") {
         for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.05, effects.blur) {
             parts.push(format!(
@@ -1561,13 +2005,50 @@ fn drawtext_core(text: &RenderTextPlan) -> (String, f64, f64) {
     )
     .map(|p| format!(":fontfile={}", quote_filter_path(&p)))
     .unwrap_or_default();
-    let base_size = text.font_size.max(8.0).round();
+    let base_size = if let Some(expr) = linear_track_expr(
+        &text.transform_keyframes,
+        "scaleX",
+        dur,
+        1.0,
+        start,
+        "t",
+    ) {
+        let size = if text.base_font_size > 0.0 {
+            text.base_font_size
+        } else {
+            text.font_size
+        };
+        format!("'({size:.3})*abs({expr})'")
+    } else {
+        format!("{}", text.font_size.max(8.0).round() as i64)
+    };
     let color = normalize_color(&text.color);
-    let base_alpha = text.opacity.clamp(0.0, 1.0);
-    let x_expr = drawtext_x_expr(&text.align, text.x, start, dur, text.slide_dist, &text.text_animation);
-    let y_expr = drawtext_y_expr(text.y, start, dur, text.slide_dist, &text.text_animation);
+    let base_alpha = match linear_track_expr(
+        &text.transform_keyframes,
+        "opacity",
+        dur,
+        text.opacity.clamp(0.0, 1.0),
+        start,
+        "t",
+    ) {
+        Some(expr) => expr,
+        None => format!("{:.3}", text.opacity.clamp(0.0, 1.0)),
+    };
+    let x_base = linear_track_expr(&text.transform_keyframes, "x", dur, text.x, start, "t")
+        .unwrap_or_else(|| format!("{}", text.x.max(0.0) as i64));
+    let y_base = linear_track_expr(&text.transform_keyframes, "y", dur, text.y, start, "t")
+        .unwrap_or_else(|| format!("{}", text.y.max(0.0) as i64));
+    let x_expr = drawtext_x_expr(
+        &text.align,
+        &x_base,
+        start,
+        dur,
+        text.slide_dist,
+        &text.text_animation,
+    );
+    let y_expr = drawtext_y_expr(&y_base, start, dur, text.slide_dist, &text.text_animation);
     let alpha_expr = drawtext_alpha_expr(
-        base_alpha,
+        &base_alpha,
         start,
         end,
         text.fade_in_sec,
@@ -1648,16 +2129,16 @@ fn slide_axis_offset(
 
 fn drawtext_x_expr(
     align: &str,
-    x: f64,
+    x_base: &str,
     start: f64,
     dur: f64,
     slide_dist: f64,
     anim: &RenderTextAnimation,
 ) -> String {
     let base = match align {
-        "left" => format!("{}", x.max(0.0) as i64),
-        "right" => format!("{}-text_w", x.max(0.0) as i64),
-        _ => format!("{}-(text_w/2)", x.max(0.0) as i64),
+        "left" => x_base.to_string(),
+        "right" => format!("({x_base})-text_w"),
+        _ => format!("({x_base})-(text_w/2)"),
     };
     let in_dur = anim.in_duration_sec.min(dur);
     let out_dur = anim.out_duration_sec.min(dur);
@@ -1676,8 +2157,8 @@ fn drawtext_x_expr(
     }
 }
 
-fn drawtext_y_expr(y: f64, start: f64, dur: f64, slide_dist: f64, anim: &RenderTextAnimation) -> String {
-    let base = format!("{}-(text_h/2)", y.max(0.0) as i64);
+fn drawtext_y_expr(y_base: &str, start: f64, dur: f64, slide_dist: f64, anim: &RenderTextAnimation) -> String {
+    let base = format!("({y_base})-(text_h/2)");
     let in_dur = anim.in_duration_sec.min(dur);
     let out_dur = anim.out_duration_sec.min(dur);
     let out_start = start + (dur - out_dur).max(0.0);
@@ -1696,7 +2177,7 @@ fn drawtext_y_expr(y: f64, start: f64, dur: f64, slide_dist: f64, anim: &RenderT
 }
 
 fn drawtext_alpha_expr(
-    base_alpha: f64,
+    base_alpha: &str,
     start: f64,
     end: f64,
     fade_in: f64,
@@ -1704,7 +2185,7 @@ fn drawtext_alpha_expr(
     anim: &RenderTextAnimation,
 ) -> String {
     let dur = (end - start).max(0.01);
-    let mut terms: Vec<String> = vec![format!("{base_alpha:.3}")];
+    let mut terms: Vec<String> = vec![base_alpha.to_string()];
     let fi = fade_in.min(dur);
     if fi > 0.001 {
         terms.push(format!("min(1\\,max(0\\,(t-{start:.3})/{fi:.3}))"));
@@ -1986,7 +2467,37 @@ pub fn parse_progress_time(line: &str) -> Option<f64> {
     Some(hours * 3600.0 + minutes * 60.0 + seconds)
 }
 
-fn media_has_audio_stream(path: &str) -> bool {
+/// Copy the audio stream to `dest` (.m4a). Falls back to AAC when stream copy fails.
+pub fn extract_audio_file(source: &Path, dest: &Path) -> Result<(), String> {
+    if !source.is_file() {
+        return Err("Media file missing".into());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let program = ffmpeg_program();
+    let src = source.to_string_lossy().to_string();
+    let out = dest.to_string_lossy().to_string();
+    let copied = silent_command(&program)
+        .args(["-y", "-i", &src, "-vn", "-acodec", "copy", &out])
+        .output()
+        .map_err(|e| format!("ffmpeg failed to start ({e})"))?;
+    if copied.status.success() && dest.is_file() {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(dest);
+    let encoded = silent_command(&program)
+        .args(["-y", "-i", &src, "-vn", "-c:a", "aac", "-b:a", "192k", &out])
+        .output()
+        .map_err(|e| format!("ffmpeg failed to start ({e})"))?;
+    if encoded.status.success() && dest.is_file() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&encoded.stderr);
+    Err(format!("Could not extract audio: {stderr}"))
+}
+
+pub(crate) fn media_has_audio_stream(path: &str) -> bool {
     if !Path::new(path).is_file() {
         return false;
     }

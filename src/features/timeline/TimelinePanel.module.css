@@ -543,6 +543,17 @@
   border-color: rgba(52, 199, 123, 0.45);
 }
 
+.clip[data-kind="filter"] {
+  background: linear-gradient(90deg, #4e2038, #281e41);
+  border-color: rgba(196, 120, 180, 0.7);
+  align-items: center;
+  padding: 0 8px;
+}
+
+.clip[data-kind="filter"] .clipLabel {
+  margin: 0;
+}
+
 .clip[data-kind="text"] {
   background: var(--track-text-bg);
   border-color: rgba(160, 123, 255, 0.55);
@@ -575,6 +586,10 @@
 .clipFxBadge {
   right: auto;
   left: 5px;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   letter-spacing: 0.02em;
   pointer-events: auto;
 }

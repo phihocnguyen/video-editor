@@ -9,6 +9,7 @@
 
 import {
   DEFAULT_CLIP_EFFECTS,
+  ffmpegColorGradeChain,
   ffmpegVideoEffectsChain,
   normalizeClipEffects,
   type ClipEffects,
@@ -508,6 +509,8 @@ export function ffmpegVideoEffectsChainAnimated(
     const c = cExpr ?? e.contrast.toFixed(4);
     const s = sExpr ?? e.saturation.toFixed(4);
     parts.push(`eq=brightness='${b}':contrast='${c}':saturation='${s}':eval=frame`);
+    const grade = ffmpegColorGradeChain(e);
+    if (grade) parts.push(grade);
   } else {
     const staticEq = ffmpegVideoEffectsChain(
       {

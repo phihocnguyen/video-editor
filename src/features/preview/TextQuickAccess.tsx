@@ -9,8 +9,8 @@ import {
   deleteClips,
   moveClipLayer,
   normalizeTextStyle,
+  applyTransformPatch,
   updateClipText,
-  updateClipTransform,
   withListStyle,
   type TextStyle,
 } from "../../domain";
@@ -237,10 +237,12 @@ export function TextQuickAccess({ stageRef, wrapRef }: TextQuickAccessProps) {
                     label="Flip horizontal"
                     onClick={() => {
                       commitProjectChange((p) =>
-                        updateClipTransform(p, clipId, {
-                          ...clip.transform,
-                          scaleX: -(clip.transform.scaleX || 1),
-                        }),
+                        applyTransformPatch(
+                          p,
+                          clipId,
+                          { scaleX: -(clip.transform.scaleX || 1) },
+                          useEditorUiStore.getState().playheadTicks,
+                        ),
                       );
                       patchTextQuickUi({ moreOpen: false });
                     }}
@@ -250,10 +252,12 @@ export function TextQuickAccess({ stageRef, wrapRef }: TextQuickAccessProps) {
                     label="Flip vertical"
                     onClick={() => {
                       commitProjectChange((p) =>
-                        updateClipTransform(p, clipId, {
-                          ...clip.transform,
-                          scaleY: -(clip.transform.scaleY || 1),
-                        }),
+                        applyTransformPatch(
+                          p,
+                          clipId,
+                          { scaleY: -(clip.transform.scaleY || 1) },
+                          useEditorUiStore.getState().playheadTicks,
+                        ),
                       );
                       patchTextQuickUi({ moreOpen: false });
                     }}

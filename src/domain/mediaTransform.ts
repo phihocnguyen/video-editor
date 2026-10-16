@@ -117,11 +117,11 @@ export function clipMediaGeometry(
  */
 export function layerStackZ(
   trackOrder: number,
-  kind: "media" | "mediaHit" | "text",
+  kind: "media" | "mediaHit" | "filter" | "text",
 ): number {
   // Large bias so order 0 stays above any realistic number of tracks.
   const base = (1000 - Math.max(0, trackOrder)) * 10;
   if (kind === "media") return base;
-  if (kind === "mediaHit") return base + 1;
+  if (kind === "mediaHit" || kind === "filter") return base + 1;
   return base + 2;
 }

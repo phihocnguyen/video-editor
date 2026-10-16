@@ -37,6 +37,7 @@ import { ExportPanel } from "../export/ExportPanel";
 import { ExportProgressModal } from "../export/ExportProgressModal";
 import { PhotosPanel } from "../library/PhotosPanel";
 import { ShapePanel } from "../library/ShapePanel";
+import { TemplatePanel } from "../library/TemplatePanel";
 import {
   AudioIcon,
   ExportIcon,
@@ -47,6 +48,7 @@ import {
   RedoIcon,
   ShapeIcon,
   SubtitlesIcon,
+  TemplateIcon,
   TextIcon,
   UndoIcon,
 } from "../../components/icons";
@@ -58,6 +60,7 @@ const RAIL_ITEMS: { id: EditorPanel; label: string; Icon: typeof MediaIcon }[] =
   { id: "audio", label: "Audio", Icon: AudioIcon },
   { id: "photos", label: "Photos", Icon: PhotosIcon },
   { id: "shape", label: "Shape", Icon: ShapeIcon },
+  { id: "template", label: "Template", Icon: TemplateIcon },
   { id: "subtitles", label: "Subs", Icon: SubtitlesIcon },
 ];
 
@@ -650,6 +653,7 @@ export function EditorShell() {
           {activePanel === "audio" && <MediaBinPanel filter="audio" />}
           {activePanel === "photos" && <PhotosPanel />}
           {activePanel === "shape" && <ShapePanel />}
+          {activePanel === "template" && <TemplatePanel />}
           {activePanel === "subtitles" && <InspectorPanel mode="subtitles" />}
           {activePanel === "export" && <ExportPanel />}
         </aside>
