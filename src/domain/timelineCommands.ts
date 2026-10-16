@@ -401,6 +401,39 @@ export function setClipLinkLocked(
   return linkPair(project, clip.id, partner.id, locked);
 }
 
+/**
+ * Clip a shift-click range starts from. The clip the user already selected
+ * wins over whichever clip happens to sit under the playhead.
+ */
+export function shiftRangeAnchorId(
+  ordered: readonly { id: string }[],
+  selectedIds: readonly string[],
+  storedAnchorId: string | null,
+  playheadClipId: string | null,
+): string | null {
+  const selected = new Set(selectedIds);
+  const onTrack = (id: string | null): id is string =>
+    id != null && ordered.some((clip) => clip.id === id);
+  if (onTrack(storedAnchorId) && selected.has(storedAnchorId)) return storedAnchorId;
+  const selectedOnTrack = ordered.find((clip) => selected.has(clip.id));
+  if (selectedOnTrack) return selectedOnTrack.id;
+  return onTrack(playheadClipId) ? playheadClipId : null;
+}
+
+/** Inclusive media clips from the selected anchor through the shift-clicked clip. */
+export function clipsInShiftRange<T extends { id: string }>(
+  ordered: readonly T[],
+  targetId: string,
+  anchorId: string,
+): T[] {
+  const anchorIndex = ordered.findIndex((clip) => clip.id === anchorId);
+  const targetIndex = ordered.findIndex((clip) => clip.id === targetId);
+  if (anchorIndex < 0 || targetIndex < 0) return [];
+  const start = Math.min(anchorIndex, targetIndex);
+  const end = Math.max(anchorIndex, targetIndex);
+  return ordered.slice(start, end + 1);
+}
+
 /** The clip plus its locked partner, for selection that should move together. */
 export function linkedClipIds(project: ProjectDocument, clipId: string): string[] {
   const clip = project.clips.find((c) => c.id === clipId);

@@ -15,6 +15,7 @@ import {
   applySpeedToRange,
   clipDisplayTitle,
   clipDurationTicks,
+  clipsInShiftRange,
   clipHasEffectLook,
   clipShortLabel,
   deleteClips,
@@ -39,6 +40,7 @@ import {
   relockClipDuration,
   removeTrack,
   setClipRamp,
+  shiftRangeAnchorId,
   snapTicks,
   splitClipAt,
   ticksToSeconds,
@@ -192,6 +194,7 @@ export function TimelinePanel() {
     h: number;
   } | null>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
+  const shiftAnchorRef = useRef<string | null>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
   const timecodeRef = useRef<HTMLSpanElement>(null);
   const scrubbingRef = useRef(false);
@@ -518,27 +521,23 @@ export function TimelinePanel() {
         event.preventDefault();
         setPlaying(false);
         const project = useProjectStore.getState().project;
-        const playhead = useEditorUiStore.getState().playheadTicks;
+        const ui = useEditorUiStore.getState();
         const onTrack = project.clips
           .filter((clip) => clip.trackId === trackId && clip.kind === "media")
           .slice()
           .sort((a, b) => a.startTicks - b.startTicks);
-        const target = onTrack.find((clip) => clip.id === clipId);
         const underPlayhead = onTrack.find((clip) => {
           const end = clip.startTicks + clipDurationTicks(clip);
-          return playhead >= clip.startTicks && playhead < end;
+          return ui.playheadTicks >= clip.startTicks && ui.playheadTicks < end;
         });
-        const selectedOnTrack = onTrack.filter((clip) =>
-          useEditorUiStore.getState().selectedClipIds.includes(clip.id),
+        const anchorId = shiftRangeAnchorId(
+          onTrack,
+          ui.selectedClipIds,
+          shiftAnchorRef.current,
+          underPlayhead?.id ?? null,
         );
-        const anchor = underPlayhead ?? selectedOnTrack[selectedOnTrack.length - 1];
-        if (target && anchor) {
-          const i0 = onTrack.findIndex((clip) => clip.id === anchor.id);
-          const i1 = onTrack.findIndex((clip) => clip.id === target.id);
-          const slice =
-            i0 >= 0 && i1 >= 0
-              ? onTrack.slice(Math.min(i0, i1), Math.max(i0, i1) + 1)
-              : [target];
+        const slice = anchorId ? clipsInShiftRange(onTrack, clipId, anchorId) : [];
+        if (slice.length > 0) {
           const ids = [
             ...new Set(slice.flatMap((clip) => linkedClipIds(project, clip.id))),
           ];
@@ -555,6 +554,7 @@ export function TimelinePanel() {
       const ids = alt
         ? [clipId]
         : linkedClipIds(useProjectStore.getState().project, clipId);
+      shiftAnchorRef.current = clipId;
       setSelectedClipIds(ids);
       if (alt) setLinkBypassClipIds([clipId]);
       setSelectedTrackId(trackId);
@@ -1019,10 +1019,8 @@ export function TimelinePanel() {
                     if (root) {
                       for (const clip of project.clips) {
                         if (clip.kind !== "media") continue;
-                        const lane = project.tracks.find((item) => item.id === clip.trackId);
-                        if (!lane || lane.kind !== "video") continue;
-                        const asset = project.assets.find((item) => item.id === clip.assetId);
-                        if (asset?.kind === "audio") continue;
+                        // No lane/asset filter: a box touching only the audio
+                        // side of a linked pair must still select the pair.
                         const el = root.querySelector<HTMLElement>(
                           `[data-clip-id="${clip.id}"]`,
                         );

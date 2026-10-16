@@ -7,6 +7,7 @@ import {
   applySpeedToRange,
   clipDurationTicks,
   deleteClips,
+  linkedClipIds,
   moveClip,
   moveClipLayer,
   moveRampPoint,
@@ -17,8 +18,10 @@ import {
   setClipRamp,
   setEffectParamAtPlayhead,
   setRampPointSpeed,
+  clipsInShiftRange,
   closeGapAtPlayhead,
   findVideoGapAtPlayhead,
+  shiftRangeAnchorId,
   splitClipAt,
   setClipLinkLocked,
   unlinkClip,
@@ -609,6 +612,16 @@ describe("detach video audio", () => {
     }
   });
 
+  it("selects the pair from either side (marquee hitting audio still grabs video)", () => {
+    const project = addMediaClip(pairProject(), "asset-1", { startTicks: 0 });
+    const video = project.clips.find((c) => c.assetId === "asset-1")!;
+    const audio = project.clips.find((c) => c.assetId === "audio-1")!;
+    // Box touching the video pulls the soundtrack along.
+    expect(new Set(linkedClipIds(project, video.id))).toEqual(new Set([video.id, audio.id]));
+    // Box touching only the audio pulls the picture along (symmetric).
+    expect(new Set(linkedClipIds(project, audio.id))).toEqual(new Set([video.id, audio.id]));
+  });
+
   it("keeps the link on the overlapping piece when unlocked", () => {
     let project = addMediaClip(pairProject(), "asset-1");
     const video = project.clips.find((c) => c.assetId === "asset-1")!;
@@ -649,6 +662,40 @@ describe("detach video audio", () => {
     expect(solo.linkedClipId).toBeNull();
     expect(solo.linkLocked).toBe(false);
     expect(project.clips.find((c) => c.id === audio.id)!.linkedClipId).toBeNull();
+  });
+});
+
+describe("shiftRangeAnchorId", () => {
+  const ordered = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }, { id: "e" }];
+
+  it("ranges from the selected clip when the playhead sits on another clip", () => {
+    const anchor = shiftRangeAnchorId(ordered, ["a"], "a", "c");
+    expect(anchor).toBe("a");
+    expect(clipsInShiftRange(ordered, "e", anchor!).map((clip) => clip.id)).toEqual([
+      "a",
+      "b",
+      "c",
+      "d",
+      "e",
+    ]);
+  });
+
+  it("keeps the original selection when the range is clicked again", () => {
+    const anchor = shiftRangeAnchorId(ordered, ["a", "b", "c", "d", "e"], "a", "c");
+    expect(clipsInShiftRange(ordered, "c", anchor!).map((clip) => clip.id)).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+  });
+
+  it("uses the clip under the playhead when nothing is selected", () => {
+    const anchor = shiftRangeAnchorId(ordered, [], null, "c");
+    expect(clipsInShiftRange(ordered, "e", anchor!).map((clip) => clip.id)).toEqual([
+      "c",
+      "d",
+      "e",
+    ]);
   });
 });
 
