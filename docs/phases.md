@@ -24,6 +24,7 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 1. **Machine verify / packaging** — MSVC; `pnpm tauri:dev`; NSIS install; offline QA. Rust export mirrors the new filters, but this machine has no Rust toolchain to compile it.
 2. **Phase 6 Pro** — remaining polish (captions…).
 4. **Optional polish** — export with the exact custom `.ttf` (else Arial/Segoe fallback).
+5. **Phase 7 — Strip templates** — planned, not started. See below.
 
 ---
 
@@ -177,6 +178,94 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 1. **Captions** — SRT import + burn-in (drawtext / ass)
 2. **Color grading** — curves / LUTs (beyond simple eq)
 3. **Proxy / GPU compositor** — smoother multi-track preview
-4. **Templates** — starter timelines
+4. **Strip templates** — moved to Phase 7
 5. **Platforms** — macOS / Linux packaging
 6. **Optional** — AI assist, licensing hooks
+
+---
+
+## Phase 7 — Strip templates (planned 2026-10-17)
+
+**Goal:** A catalog of ready-made strip layouts (4 videos, 8 videos, and the same idea at other counts). The user drops that many clips. The app opens a normal 9:16 project with every cell filled. No music in the template. The user can still edit the result on the timeline.
+
+**Not in this phase:** bundled music, beat-matching, remixing a reference video, captions, sequential layouts (photo dump, letterbox sequence, product story). Those can reuse the applier later. They are not required to ship strips.
+
+### What a template is
+
+A template is data, not a new player. Applying it builds a `ProjectDocument` the editor already understands.
+
+- Canvas `1080×1920`, 30 fps, background `#000000`.
+- Duration is fixed at **10 seconds**. Every cell is on screen for all 10 seconds. This is a collage, not a cut sequence.
+- No audio clips. The empty audio track from `createEmptyProject` stays empty.
+- One video track per cell. Preview stacks by `track.order` (`layerStackZ`: lower order paints above). Cells use orders `1…n`. The frame sits on order `0` so it paints above the cells. The frame track is locked.
+- Each cell is a media clip (image or video) whose transform **covers** the cell, then a **hard crop** to that rectangle. The frame graphic does not hide overflow: neighboring cells would show each other's spill without the crop. Preview uses the cell rect as `clip-path`. Export crops the same rect before overlay.
+- Cover math is new. Today a layer is contain-fit into the full canvas, then `scaleX`/`scaleY` and a center `x`/`y` (`containFitBox` in `src/domain/mediaTransform.ts`). Add `coverTransform(cell, mediaSize, canvas)` that returns the center and the uniform scale relative to that contain-fit box: `scale = max(cellW / fitW, cellH / fitH)`.
+- Grayscale cells set `effects.grayscale` (already previewed and exported).
+- Images hold for the full 10 seconds. Videos play from the start. A video shorter than 10 seconds plays once and **holds its last frame** for the rest, in preview and export.
+- Drop order is row-major: top-left, across, then the next row.
+- Fewer files than cells: the extra cells stay empty (canvas black shows through). Extra files are imported into the media bin and not placed.
+
+Slot rectangles are normalized `0…1` of the canvas, top-left origin, authored next to the frame SVG. Do not infer slots by measuring the SVG at runtime.
+
+The film rebate (sprocket holes, edge numbers, vertical edge label) is one SVG at `1080×1920`, added as a shape image on the locked frame track. The same path convention as Shape library assets (`/shapes/`). Edge copy is original (frame numbers and a house label). Do not print the Kodak wordmark or "Portra" on the frame.
+
+### Catalog
+
+One generator. A template is `{ cols, rows, twin, frame }`.
+
+| id | User drops | Cells | Layout |
+|---|---|---|---|
+| `strip-4` | 4 | 4 | 2×2, no frame |
+| `strip-8` | 8 | 8 | 2×4, no frame |
+| `film-4` | 4 | 4 | 2×2 inside a film rebate |
+| `film-8` | 8 | 8 | 2×4 inside a film rebate |
+| `film-pair-4` | 4 | 8 | Two 2×2 strips. Left is the grayscale copy of the same 4 clips. Right is color. Film rebate. |
+| `film-pair-8` | 8 | 16 | Two 2×4 strips, same rule. This is the contact-sheet layout. |
+
+`film-pair-*` places file *i* in cell *i* on the left (grayscale) and the matching cell on the right (color). The user does not drop 16 files for an 8-video pair.
+
+The generator also covers later counts without new apply code: 2 (1×2), 3 (1×3), 6 (2×3), 9 (3×3), 12 (3×4), each with or without `frame` and `twin`. Those ids are data. They do not block the first ship.
+
+Gutters between cells are part of the slot rects (the rect is the photo window, not the full strip). The SVG draws the black gap, the sprockets, and the edge text.
+
+### Apply flow
+
+1. User opens the template list and picks one. The card shows the slot count ("8 videos") and a still of the empty frame.
+2. User drops files in order, or picks that many from the media bin.
+3. Domain function `applyStripTemplate(template, assets)` returns a new project: canvas, cell tracks, clips, frame asset, grayscale flags. Import and probe stay outside this function. The function is pure and unit-tested.
+4. The editor opens that project. Undo history starts after the apply.
+
+Replacing one cell is a later slice: click a cell, pick another file, rewrite that clip's asset and `coverTransform`. No schema field is required for the first ship. Track name (`cell-3`) is enough to find the clip.
+
+### Slices
+
+#### Slice A — Place 4 and 8
+
+- [ ] `LayoutTemplate` type and the `strip-4` / `strip-8` definitions (slot rects for a 9:16 canvas with even gutters)
+- [ ] `coverTransform` plus tests: wide photo, tall photo, square photo, each covers the cell and stays centered
+- [ ] `applyStripTemplate` for `strip-4` and `strip-8`: canvas size, 10 s, one track per cell, no audio clips, row-major assignment
+- [ ] Tests for too few files (empty cells) and too many files (extras not placed)
+- [ ] No UI yet
+
+#### Slice B — Crop, film frame, pair
+
+- [ ] Cell crop in preview (`clip-path` from the slot rect) so cover overflow does not enter the next cell
+- [ ] The same crop in export (TS render plan and the Rust mirror)
+- [ ] Last-frame hold for a video shorter than 10 seconds, preview and export
+- [ ] Film-rebate SVG on the locked top track (`film-4`, `film-8`)
+- [ ] `film-pair-4` and `film-pair-8`: each file placed twice, left grayscale, right untouched
+- [ ] Tests: pair uses `n` assets and `2n` clips; only the left clip has `grayscale: true`
+
+#### Slice C — Picker
+
+- [ ] Template list in the editor library (next to the existing shape / filter panels)
+- [ ] Card shows name, "4 videos" / "8 videos", and a static preview of the frame
+- [ ] Drop or pick files, then open the new project
+- [ ] Apply is one undo step
+
+#### Slice D — More counts, swap one cell
+
+- [ ] Register 2, 3, 6, 9, and 12 from the same generator, plain and with the film frame
+- [ ] Click a filled cell and replace its media. Recompute `coverTransform` for the new dimensions. Leave the other cells alone.
+
+**Exit:** Drop 8 videos on `film-pair-8`, preview shows two strips (left gray, right color) with no spill between cells, export matches the preview, and the timeline is a normal project the user can still move and trim. `strip-4` and `strip-8` pass the same check without the frame.
