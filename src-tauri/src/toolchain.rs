@@ -1,7 +1,7 @@
 //! Locate the FFmpeg / ffprobe binaries.
 //!
 //! Resolution order (first hit wins):
-//! 1. `CUTLINE_FFMPEG` / `FFMPEG_PATH` env (a binary file or a directory)
+//! 1. `KLIPCUT_FFMPEG` / `FFMPEG_PATH` env (a binary file or a directory)
 //! 2. Bundled sidecars next to the app executable
 //!    (`ffmpeg[.exe]`, `ffmpeg-<target-triple>[.exe]`, same for ffprobe)
 //! 3. Dev tree: `tools/ffmpeg[/bin]/` walking up from CWD and the executable
@@ -86,7 +86,7 @@ fn first_existing(dir: &Path, tool: &str) -> Option<PathBuf> {
 }
 
 fn from_env(tool: &str) -> Option<PathBuf> {
-    for key in ["CUTLINE_FFMPEG", "FFMPEG_PATH"] {
+    for key in ["KLIPCUT_FFMPEG", "FFMPEG_PATH"] {
         let raw = std::env::var(key).ok()?;
         if raw.trim().is_empty() {
             continue;

@@ -11,7 +11,7 @@ pub struct AppInfo {
 #[tauri::command]
 pub fn get_app_info() -> AppInfo {
     AppInfo {
-        name: "Cutline".into(),
+        name: "KlipCut".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         offline_capable: true,
     }

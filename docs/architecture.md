@@ -1,6 +1,6 @@
 # Architecture
 
-Cutline is a **modular desktop monolith**: React UI + Tauri/Rust native layer + FFmpeg child processes. No backend server or cloud dependency for core editing.
+KlipCut is a **modular desktop monolith**: React UI + Tauri/Rust native layer + FFmpeg child processes. No backend server or cloud dependency for core editing.
 
 ## Layers
 

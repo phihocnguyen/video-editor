@@ -1,4 +1,4 @@
 import { createRoot } from "react-dom/client";
-import CutlineLanding from "./CutlineLanding";
+import KlipCutLanding from "./KlipCutLanding";
 
-createRoot(document.getElementById("root") as HTMLElement).render(<CutlineLanding />);
+createRoot(document.getElementById("root") as HTMLElement).render(<KlipCutLanding />);

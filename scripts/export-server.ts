@@ -37,8 +37,8 @@ async function loadExportModules() {
   return { buildFfmpegArgs, buildRenderPlan };
 }
 
-const PORT = Number(process.env.CUTLINE_EXPORT_PORT ?? 1421);
-const ROOT = resolve(process.cwd(), ".cutline-cache");
+const PORT = Number(process.env.KLIPCUT_EXPORT_PORT ?? 1421);
+const ROOT = resolve(process.cwd(), ".klipcut-cache");
 const MEDIA = join(ROOT, "media");
 const EXPORTS = join(ROOT, "exports");
 const AUDIO = join(ROOT, "audio");
@@ -212,7 +212,7 @@ async function handleExport(req: IncomingMessage, res: ServerResponse) {
   }
 
   const id = randomUUID();
-  const downloadName = `${(raw.outputName || project.name || "cutline-export")
+  const downloadName = `${(raw.outputName || project.name || "klipcut-export")
     .replace(/[^\w.\-]+/g, "_")
     .slice(0, 64)}.mp4`;
   const outputPath = join(EXPORTS, `${id}-${downloadName}`);
@@ -245,7 +245,7 @@ async function handleExport(req: IncomingMessage, res: ServerResponse) {
           : `Rendering with ${ffmpeg}…`;
       job.progress = 0.2;
       console.log(
-        `[cutline-export] job ${id}: ${safePlan.clips.length} clips, ${textCount} texts, ${safePlan.width}x${safePlan.height}`,
+        `[klipcut-export] job ${id}: ${safePlan.clips.length} clips, ${textCount} texts, ${safePlan.width}x${safePlan.height}`,
       );
       await runFfmpeg(ffmpeg, built.args);
       try {
@@ -344,12 +344,12 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, "127.0.0.1", () => {
   const ffmpeg = resolveFfmpegPath();
   const found = ffmpeg !== "ffmpeg" && existsSync(ffmpeg);
-  console.log(`[cutline-export] http://127.0.0.1:${PORT}`);
-  console.log(`[cutline-export] media cache: ${MEDIA}`);
-  console.log(`[cutline-export] exports: ${EXPORTS}`);
+  console.log(`[klipcut-export] http://127.0.0.1:${PORT}`);
+  console.log(`[klipcut-export] media cache: ${MEDIA}`);
+  console.log(`[klipcut-export] exports: ${EXPORTS}`);
   console.log(
     found
-      ? `[cutline-export] ffmpeg: ${ffmpeg}`
-      : `[cutline-export] WARNING: ffmpeg not found — put tools/ffmpeg/bin/ffmpeg.exe or set FFMPEG_PATH`,
+      ? `[klipcut-export] ffmpeg: ${ffmpeg}`
+      : `[klipcut-export] WARNING: ffmpeg not found — put tools/ffmpeg/bin/ffmpeg.exe or set FFMPEG_PATH`,
   );
 });

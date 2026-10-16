@@ -18,7 +18,7 @@ Windows x64 (this project's target):
 
 - https://www.gyan.dev/ffmpeg/builds/ → **ffmpeg-release-essentials.zip**
   (~25–30 MB per binary instead of ~80 MB full). Essentials covers
-  libx264 + aac + image2 + ffprobe, i.e. everything Cutline uses.
+  libx264 + aac + image2 + ffprobe, i.e. everything KlipCut uses.
 - Extract `bin/ffmpeg.exe` → rename → drop here (same for ffprobe).
 
 Verify after dropping in:
@@ -31,7 +31,7 @@ Verify after dropping in:
 ## Fallbacks (no rebuild needed)
 
 If the sidecars are absent at runtime (dev machines), the app resolves in order:
-`CUTLINE_FFMPEG`/`FFMPEG_PATH` → `tools/ffmpeg[/bin]/` → common install dirs →
+`KLIPCUT_FFMPEG`/`FFMPEG_PATH` → `tools/ffmpeg[/bin]/` → common install dirs →
 `PATH` → bare `ffmpeg`. The Export panel shows which binary is active
 (bundled vs system path).
 

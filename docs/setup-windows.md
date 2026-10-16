@@ -16,14 +16,14 @@ Restart `pnpm dev` after installing FFmpeg. Export panel should show `Helper: on
 `pnpm dev` starts Vite **and** a local export helper on `http://127.0.0.1:1421`.
 
 1. Open the app in the browser  
-2. **Import media** (cached under `.cutline-cache/media`)  
+2. **Import media** (cached under `.klipcut-cache/media`)  
 3. Edit the timeline  
 4. Click **Export** — MP4 downloads when finished  
 
 ### Optional CLI
 
 ```powershell
-pnpm export:video -- path\to\project.cutline.json path\to\out.mp4
+pnpm export:video -- path\to\project.klipcut.json path\to\out.mp4
 ```
 
 ## Desktop app (optional — needs MSVC)

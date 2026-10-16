@@ -1,12 +1,12 @@
 [package]
-name = "cutline"
+name = "klipcut"
 version = "0.1.1"
-description = "Cutline — local-first Windows desktop video editor"
-authors = ["Cutline"]
+description = "KlipCut — local-first Windows desktop video editor"
+authors = ["KlipCut"]
 edition = "2021"
 
 [lib]
-name = "cutline_lib"
+name = "klipcut_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

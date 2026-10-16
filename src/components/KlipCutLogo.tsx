@@ -2,9 +2,9 @@ import { useId } from "react";
 import { cn } from "@/lib/utils";
 
 /** Brand mark — split play glyph on dark rounded square. */
-export function CutlineLogo({
+export function KlipCutLogo({
   className,
-  title = "Cutline",
+  title = "KlipCut",
 }: {
   className?: string;
   title?: string;

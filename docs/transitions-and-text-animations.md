@@ -1,6 +1,6 @@
 # Video Transitions & Text Animations
 
-Catalog animation khả thi cho Cutline, gắn với preview (CSS) và export (FFmpeg). Dựa trên hiện trạng codebase.
+Catalog animation khả thi cho KlipCut, gắn với preview (CSS) và export (FFmpeg). Dựa trên hiện trạng codebase.
 
 ## Hiện trạng
 

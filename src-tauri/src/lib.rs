@@ -39,5 +39,5 @@ pub fn run() {
             toolchain::ffmpeg_status,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Cutline");
+        .expect("error while running KlipCut");
 }

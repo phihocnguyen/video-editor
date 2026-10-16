@@ -6,7 +6,7 @@ export interface RecentProjectEntry {
   openedAt: string;
 }
 
-const STORAGE_KEY = "cutline.recentProjects";
+const STORAGE_KEY = "klipcut.recentProjects";
 const MAX_RECENT = 12;
 
 function loadRecent(): RecentProjectEntry[] {

@@ -158,7 +158,7 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
                   className={styles.thumbBtn}
                   draggable
                   onDragStart={(e) => {
-                    e.dataTransfer.setData("text/cutline-asset", asset.id);
+                    e.dataTransfer.setData("text/klipcut-asset", asset.id);
                     e.dataTransfer.effectAllowed = "copy";
                   }}
                   onDoubleClick={() => handleAddToTimeline(asset.id)}

@@ -88,7 +88,7 @@ export function ExportPanel() {
           setStatusMessage("Export is unavailable. Please reinstall the app.");
           return;
         }
-        const outputPath = await pickExportOutputPath(project.name || "cutline-export");
+        const outputPath = await pickExportOutputPath(project.name || "klipcut-export");
         if (!outputPath) {
           setStatusMessage("Export cancelled");
           return;

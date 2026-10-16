@@ -85,7 +85,7 @@ export interface LibraryProjectInfo {
   updatedAt: string;
 }
 
-/** Write/create AppData draft at projects/<id>/project.cutline.json */
+/** Write/create AppData draft at projects/<id>/project.klipcut.json. Older drafts used project.cutline.json. */
 export async function saveLibraryProject(project: ProjectDocument): Promise<string> {
   return invoke<string>("save_library_project", { project });
 }
@@ -114,15 +114,15 @@ export async function deleteLibraryProject(projectId: string): Promise<void> {
 export async function pickOpenProjectPath(): Promise<string | null> {
   const selected = await open({
     multiple: false,
-    filters: [{ name: "Cutline Project", extensions: ["cutline.json", "json"] }],
+    filters: [{ name: "KlipCut Project", extensions: ["klipcut.json", "cutline.json", "json"] }],
   });
   return typeof selected === "string" ? selected : null;
 }
 
 export async function pickSaveProjectPath(defaultName: string): Promise<string | null> {
   const selected = await save({
-    defaultPath: `${defaultName}.cutline.json`,
-    filters: [{ name: "Cutline Project", extensions: ["cutline.json", "json"] }],
+    defaultPath: `${defaultName}.klipcut.json`,
+    filters: [{ name: "KlipCut Project", extensions: ["klipcut.json", "json"] }],
   });
   return selected;
 }

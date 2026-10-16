@@ -89,7 +89,7 @@ export async function actionSaveProject(
   options?: { saveAs?: boolean },
 ): Promise<string | null> {
   if (!isTauriRuntime()) {
-    downloadBrowserText(`${project.name || "project"}.cutline.json`, serializeProject(project));
+    downloadBrowserText(`${project.name || "project"}.klipcut.json`, serializeProject(project));
     return currentPath;
   }
 
@@ -162,9 +162,11 @@ export async function actionDeleteLibraryProject(options: {
 
   let id = options.projectId?.trim() || "";
   if (!id && options.path) {
-    // …/projects/<id>/project.cutline.json
+    // …/projects/<id>/project.klipcut.json
     const parts = options.path.split(/[/\\]/).filter(Boolean);
-    const fileIdx = parts.findIndex((p) => p === "project.cutline.json");
+    const fileIdx = parts.findIndex(
+      (p) => p === "project.klipcut.json" || p === "project.cutline.json",
+    );
     if (fileIdx > 0) id = parts[fileIdx - 1]!;
   }
   if (!id) {
@@ -343,7 +345,7 @@ async function pickBrowserTextFile(): Promise<string> {
   return new Promise((resolve, reject) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".json,.cutline.json,application/json";
+    input.accept = ".json,.klipcut.json,.cutline.json,application/json";
     input.onchange = () => {
       const file = input.files?.[0];
       if (!file) {

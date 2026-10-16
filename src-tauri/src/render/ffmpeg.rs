@@ -686,7 +686,7 @@ fn rasterized_svg_path(source: &str) -> String {
         hash ^= meta.len().wrapping_add(meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0));
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    let out = std::env::temp_dir().join(format!("cutline-svg-{hash:x}.png"));
+    let out = std::env::temp_dir().join(format!("klipcut-svg-{hash:x}.png"));
     if out.is_file() {
         return out.to_string_lossy().to_string();
     }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CutlineLogo } from "@/components/CutlineLogo";
+import { KlipCutLogo } from "@/components/KlipCutLogo";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -18,7 +18,7 @@ const STEPS = [
   {
     kicker: "Welcome",
     title: "Cut, arrange, export — on your PC",
-    body: "Cutline is a local-first video editor. Import footage from disk, cut it on a multi-track timeline, and export a finished MP4. No account, no cloud, no upload.",
+    body: "KlipCut is a local-first video editor. Import footage from disk, cut it on a multi-track timeline, and export a finished MP4. No account, no cloud, no upload.",
     points: [
       { Icon: MediaIcon, label: "Import local media" },
       { Icon: SplitIcon, label: "Trim, split & arrange" },
@@ -79,9 +79,9 @@ export function OnboardingScreen() {
         {/* Brand panel — product mock, accent blue only */}
         <div className="relative hidden flex-col justify-between gap-8 overflow-hidden bg-[linear-gradient(160deg,rgba(62,166,255,0.16),rgba(62,166,255,0.03)_55%,transparent),var(--bg-rail)] p-7 md:flex">
           <div className="flex items-center gap-2.5">
-            <CutlineLogo className="size-9" />
+            <KlipCutLogo className="size-9" />
             <span className="text-sm font-extrabold tracking-[0.18em] text-foreground uppercase">
-              Cutline
+              KlipCut
             </span>
           </div>
 
@@ -109,9 +109,9 @@ export function OnboardingScreen() {
         {/* Content */}
         <div className="flex min-w-0 flex-col p-7 sm:p-8">
           <div className="mb-6 flex items-center gap-3 md:hidden">
-            <CutlineLogo className="size-9" />
+            <KlipCutLogo className="size-9" />
             <span className="text-sm font-extrabold tracking-[0.18em] text-foreground uppercase">
-              Cutline
+              KlipCut
             </span>
           </div>
 

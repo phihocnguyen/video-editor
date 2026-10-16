@@ -5,7 +5,7 @@ import type { RenderPlan } from "../src/domain/renderPlan.ts";
 
 const CANDIDATES = [
   process.env.FFMPEG_PATH,
-  process.env.CUTLINE_FFMPEG,
+  process.env.KLIPCUT_FFMPEG,
   "ffmpeg",
   // Common Windows install locations
   "C:\\ffmpeg\\bin\\ffmpeg.exe",

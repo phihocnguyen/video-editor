@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { CutlineLogo } from "@/components/CutlineLogo";
+import { KlipCutLogo } from "@/components/KlipCutLogo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -481,8 +481,8 @@ export function HomeScreen() {
       {/* ───── Sidebar ───── */}
       <aside className="flex min-h-0 flex-col gap-6 border-b border-border bg-[var(--bg-rail)] p-4 md:border-r md:border-b-0">
         <div className="flex h-10 items-center gap-3 px-2">
-          <CutlineLogo className="size-8" />
-          <span className="text-base font-bold tracking-tight">Cutline</span>
+          <KlipCutLogo className="size-8" />
+          <span className="text-base font-bold tracking-tight">KlipCut</span>
         </div>
 
         <nav className="flex flex-col gap-1" aria-label="Home">

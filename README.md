@@ -1,10 +1,10 @@
-# Cutline
+# KlipCut
 
 A lightweight, local-first video editor for Windows.
 
-Cutline is a desktop video editor that lets you import media, edit footage on a multi-track timeline, and export finished videos to MP4 — all directly on your machine.
+KlipCut is a desktop video editor that lets you import media, edit footage on a multi-track timeline, and export finished videos to MP4 — all directly on your machine.
 
-Designed with privacy and local workflows in mind, Cutline keeps your projects, media files, and exports on your device. No account required. No cloud uploads.
+Designed with privacy and local workflows in mind, KlipCut keeps your projects, media files, and exports on your device. No account required. No cloud uploads.
 
 Built with React, TypeScript, Vite, Tauri 2, Rust, and FFmpeg.
 
@@ -14,7 +14,7 @@ Built with React, TypeScript, Vite, Tauri 2, Rust, and FFmpeg.
 - **Flexible media management** — Import video, audio, and image files, with support for relinking moved media.
 - **Real-time composition preview** — Preview layered video, text, effects, and transitions directly in the editor.
 - **MP4 export** — Render videos using H.264 video and AAC audio, with configurable resolution and quality presets.
-- **Project management** — Create, open, save, and automatically save projects in `.cutline.json` format.
+- **Project management** — Create, open, save, and automatically save projects in `.klipcut.json` format.
 - **Local-first workflow** — Keep projects, source media, and rendered exports on your machine, without requiring an account or cloud storage.
 
 ## Technology stack
@@ -30,7 +30,7 @@ Built with React, TypeScript, Vite, Tauri 2, Rust, and FFmpeg.
 
 ## System requirements
 
-Cutline's development environment requires the following:
+KlipCut's development environment requires the following:
 
 - **Operating system:** Windows 10 or Windows 11 (64-bit)
 - **Node.js:** Version 20 or later
@@ -104,7 +104,7 @@ src-tauri/target/release/bundle/nsis/
 
 ## Rendering and preview limitations
 
-Cutline uses browser-based compositing for timeline previews. It does not currently implement a dedicated GPU-based compositor.
+KlipCut uses browser-based compositing for timeline previews. It does not currently implement a dedicated GPU-based compositor.
 
 Preview rendering and final video export are separate workflows. FFmpeg handles media processing and final export, while the browser provides the editing preview.
 
@@ -126,6 +126,6 @@ For additional technical details, see:
 - **Application type:** Native desktop video editor
 - **Export format:** MP4 (H.264/AAC)
 
-Cutline is under active development. Features, workflows, and implementation details may evolve as the project progresses.
+KlipCut is under active development. Features, workflows, and implementation details may evolve as the project progresses.
 
-Cutline — Video editing, on your machine.
+KlipCut — Video editing, on your machine.

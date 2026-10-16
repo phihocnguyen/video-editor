@@ -9,7 +9,7 @@
 @custom-variant dark (&:is(.dark *));
 
 /* =========================================================================
-   Cutline — design tokens
+   KlipCut — design tokens
    Neutral dark UI, single blue accent, 4px spacing scale, layered elevation.
    ========================================================================= */
 
@@ -50,7 +50,7 @@
   --warn: #f0b429;
   --ok: #34c77b;
 
-  /* shadcn/ui tokens (mapped to Cutline dark) */
+  /* shadcn/ui tokens (mapped to KlipCut dark) */
   --background: #0d0d10;
   --foreground: #ececf1;
   --card: #141418;

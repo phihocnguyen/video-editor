@@ -68,7 +68,7 @@ export async function localStartExport(
       project,
       preset,
       quality,
-      outputName: project.name || "cutline-export",
+      outputName: project.name || "klipcut-export",
     }),
   });
   const data = (await res.json()) as ExportJobStatus & { error?: string };

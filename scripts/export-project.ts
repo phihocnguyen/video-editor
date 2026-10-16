@@ -1,7 +1,7 @@
 /**
  * CLI export — no Tauri / MSVC required. Needs FFmpeg on PATH.
  *
- *   pnpm export:video -- path/to/project.cutline.json path/to/out.mp4
+ *   pnpm export:video -- path/to/project.klipcut.json path/to/out.mp4
  *   pnpm export:video -- project.json out.mp4 --preset 720 --quality high
  *   pnpm export:video -- project.json out.mp4 --dry-run
  */

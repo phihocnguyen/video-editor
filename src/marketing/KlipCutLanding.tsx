@@ -1,5 +1,5 @@
 /**
- * CutlineLanding.tsx — Marketing landing page for Cutline Video Editor
+ * KlipCutLanding.tsx — Marketing landing page for KlipCut Video Editor
  */
 import {
   lazy,
@@ -11,7 +11,7 @@ import {
 } from "react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import "./CutlineLanding.css";
+import "./KlipCutLanding.css";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -20,16 +20,16 @@ const Scene3D = lazy(() => import("./Scene3D"));
 /* ============================ CONFIG ============================ */
 const env = import.meta.env;
 const APP = {
-  name: "Cutline",
+  name: "KlipCut",
   version: env.VITE_APP_VERSION || "0.1.0",
   size: env.VITE_DOWNLOAD_SIZE || "~ 56 MB",
   os: "Windows 10 / 11 (64-bit)",
   // Vercel build fills these from the latest GitHub Release. Local fallback
   // is a file dropped in public/downloads.
   downloadUrl:
-    env.VITE_DOWNLOAD_URL || "/downloads/Cutline_0.1.0_x64-setup.exe",
-  fileName: env.VITE_DOWNLOAD_NAME || "Cutline_0.1.0_x64-setup.exe",
-  contact: "hello@cutline.app",
+    env.VITE_DOWNLOAD_URL || "/downloads/KlipCut_0.1.0_x64-setup.exe",
+  fileName: env.VITE_DOWNLOAD_NAME || "KlipCut_0.1.0_x64-setup.exe",
+  contact: "hello@klipcut.app",
 };
 
 const FEATURES = [
@@ -68,7 +68,7 @@ const FEATURES = [
 ];
 
 const STEPS = [
-  { n: "01", title: "Import media", desc: "Drag in video, images, and audio. Cutline builds proxies so preview stays smooth even with heavy 4K footage." },
+  { n: "01", title: "Import media", desc: "Drag in video, images, and audio. KlipCut builds proxies so preview stays smooth even with heavy 4K footage." },
   { n: "02", title: "Cut & arrange", desc: "Smart shortcuts, instant splits, speed changes, reverse, and layering — done in seconds." },
   { n: "03", title: "Add the magic", desc: "Effects, transitions, titles, and color — all in real time, with no waiting on a render." },
   { n: "04", title: "Ship it", desc: "Pick a preset and hit Export. GPU-backed background render lets you keep working while it finishes." },
@@ -82,8 +82,8 @@ const STATS: { v: number; suffix: string; prefix?: string; label: string }[] = [
 ];
 
 const FAQ = [
-  { q: "Is Cutline free?", a: "You can download and try it right away. Update this answer with your pricing and license details." },
-  { q: "Which operating systems are supported?", a: "Cutline currently supports Windows 10 and Windows 11 (64-bit). Other platforms will come later." },
+  { q: "Is KlipCut free?", a: "You can download and try it right away. Update this answer with your pricing and license details." },
+  { q: "Which operating systems are supported?", a: "KlipCut currently supports Windows 10 and Windows 11 (64-bit). Other platforms will come later." },
   { q: "What are the minimum requirements?", a: "A 4-core CPU, 8 GB RAM, and a DirectX 11 GPU. For smooth 4K editing, 16 GB RAM and a discrete GPU are recommended." },
   { q: "Windows shows 'Unknown publisher' when installing?", a: "That's a normal SmartScreen warning for new software. Choose More info → Run anyway to continue." },
 ];
@@ -112,7 +112,7 @@ const Icon = ({ name, size = 22, fill }: IconProps) => (
 
 const Logo = () => (
   <span className="logo">
-    <img src="/cutline-logo.svg" width={26} height={26} alt="" draggable={false} />
+    <img src="/klipcut-logo.svg" width={26} height={26} alt="" draggable={false} />
     {APP.name}
   </span>
 );
@@ -191,7 +191,7 @@ const EditorMock = () => {
     <div className="mock" ref={root}>
       <div className="mk-bar">
         <span /><span /><span />
-        <b>Cutline — Untitled Project.cut</b>
+        <b>KlipCut — Untitled Project.cut</b>
       </div>
       <div className="mk-body">
         <aside className="mk-bin">
@@ -242,7 +242,7 @@ const SplitWords = ({ text, className }: SplitWordsProps) => (
   </span>
 );
 
-export default function CutlineLanding() {
+export default function KlipCutLanding() {
   const root = useRef<HTMLDivElement>(null);
   const cursor = useRef<HTMLDivElement>(null);
   const [openFaq, setOpenFaq] = useState<number | null>(0);

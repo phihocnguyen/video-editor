@@ -28,12 +28,12 @@ Thumbs.db
 *.tmp
 
 # App cache / user projects (local)
-.cutline/
-.cutline-cache/
+.klipcut/
+.klipcut-cache/
 tools/ffmpeg/
 tools/ffmpeg.zip
 tools/ffmpeg-extract/
-*.cutline.bak
+*.klipcut.bak
 
 # Bundled FFmpeg sidecars (large, machine-local — see src-tauri/binaries/README.md)
 src-tauri/binaries/*.exe

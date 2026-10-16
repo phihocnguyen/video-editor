@@ -520,12 +520,12 @@ export function EditorShell() {
 
   const helpMenu: MenuItem[] = [
     {
-      label: appInfo ? `About ${appInfo.name} v${appInfo.version}` : "About Cutline",
+      label: appInfo ? `About ${appInfo.name} v${appInfo.version}` : "About KlipCut",
       onSelect: () =>
         setStatusMessage(
           appInfo
             ? `${appInfo.name} v${appInfo.version} — local, offline desktop editor`
-            : "Cutline — local, offline desktop editor",
+            : "KlipCut — local, offline desktop editor",
         ),
     },
   ];
@@ -540,7 +540,7 @@ export function EditorShell() {
                 <path d="M4 2.6v10.8l9-5.4-9-5.4Z" fill="currentColor" />
               </svg>
             </span>
-            <span className={styles.brandName}>Cutline</span>
+            <span className={styles.brandName}>KlipCut</span>
           </div>
           <div className={styles.projectMeta}>
             <input

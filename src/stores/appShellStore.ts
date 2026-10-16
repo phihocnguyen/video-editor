@@ -2,8 +2,8 @@ import { create } from "zustand";
 
 export type AppScreen = "onboarding" | "home" | "editor";
 
-const ONBOARDING_KEY = "cutline.onboardingDone";
-const HOME_TIP_KEY = "cutline.homeTipDismissed";
+const ONBOARDING_KEY = "klipcut.onboardingDone";
+const HOME_TIP_KEY = "klipcut.homeTipDismissed";
 
 function readBool(key: string): boolean {
   try {

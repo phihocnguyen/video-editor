@@ -90,7 +90,7 @@ jobs:
             fs.writeFileSync('src-tauri/Cargo.toml', cargo);
             try {
               let lock = fs.readFileSync('src-tauri/Cargo.lock', 'utf8');
-              lock = lock.replace(/(name = \"cutline\"\nversion = \")[^\"]+(\")/, '\$1' + v + '\$2');
+              lock = lock.replace(/(name = \"klipcut\"\nversion = \")[^\"]+(\")/, '\$1' + v + '\$2');
               fs.writeFileSync('src-tauri/Cargo.lock', lock);
             } catch {}
             console.log('Bumped to', v);

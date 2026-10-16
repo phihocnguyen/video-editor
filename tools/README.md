@@ -4,7 +4,7 @@
 
 Export needs `ffmpeg.exe`. Resolution order:
 
-1. `FFMPEG_PATH` / `CUTLINE_FFMPEG`
+1. `FFMPEG_PATH` / `KLIPCUT_FFMPEG`
 2. `tools/ffmpeg/bin/ffmpeg.exe`
 3. `ffmpeg` on system `PATH`
 

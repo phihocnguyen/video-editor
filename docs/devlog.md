@@ -8,7 +8,7 @@ Phase 6 slice A–D đã có trong codebase. Phiên này hoàn tất hai hạng 
 
 Soundtrack của video không còn đi cùng clip hình. Khi import hoặc mở project, ffprobe xác định audio stream. Có stream thì trích bằng `ffmpeg -vn -acodec copy` ra `.m4a`; stream copy thất bại thì encode AAC. Video gốc không bị encode lại.
 
-- Browser: `POST /api/extract-audio` trên helper `:1421`, file nằm trong `.cutline-cache/audio`.
+- Browser: `POST /api/extract-audio` trên helper `:1421`, file nằm trong `.klipcut-cache/audio`.
 - Desktop: lệnh Tauri `extract_audio_track`.
 - Không có FFmpeg thì clip giữ playback audio nhúng như trước.
 

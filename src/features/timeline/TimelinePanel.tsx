@@ -902,7 +902,7 @@ export function TimelinePanel() {
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={(e) => {
                   e.preventDefault();
-                  const assetId = e.dataTransfer.getData("text/cutline-asset");
+                  const assetId = e.dataTransfer.getData("text/klipcut-asset");
                   if (!assetId) return;
                   const startTicks = ticksFromClientX(e.clientX);
                   try {

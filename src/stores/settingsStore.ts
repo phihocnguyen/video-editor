@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { useEditorUiStore } from "./editorUiStore";
 
-const STORAGE_KEY = "cutline.settings";
+const STORAGE_KEY = "klipcut.settings";
 
 interface SettingsState {
   snapEnabled: boolean;

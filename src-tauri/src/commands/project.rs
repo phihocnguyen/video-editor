@@ -99,7 +99,7 @@ pub fn list_library_projects(app: AppHandle) -> Result<Vec<LibraryProjectInfo>, 
         if !dir.is_dir() {
             continue;
         }
-        let file = dir.join("project.cutline.json");
+        let file = dir.join("project.klipcut.json");
         if !file.is_file() {
             continue;
         }

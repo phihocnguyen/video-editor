@@ -1,15 +1,15 @@
 // Point the marketing page at the newest GitHub Release installer.
 // Writes .env.local (gitignored). If no release is reachable, the page
-// keeps the fallback link in CutlineLanding.tsx.
+// keeps the fallback link in KlipCutLanding.tsx.
 import { execSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 
-const STABLE_NAME = "Cutline-windows-setup.exe";
+const STABLE_NAME = "KlipCut-windows-setup.exe";
 
 function repoSlug() {
   const direct =
     process.env.GITHUB_REPOSITORY ||
-    process.env.CUTLINE_GITHUB_REPOSITORY ||
+    process.env.KLIPCUT_GITHUB_REPOSITORY ||
     "";
   if (direct.includes("/")) return direct;
 
@@ -45,7 +45,7 @@ if (!repo) {
 
 const headers = {
   Accept: "application/vnd.github+json",
-  "User-Agent": "cutline-marketing",
+  "User-Agent": "klipcut-marketing",
   "X-GitHub-Api-Version": "2022-11-28",
 };
 if (process.env.GITHUB_TOKEN) {

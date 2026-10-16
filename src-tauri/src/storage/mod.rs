@@ -15,7 +15,7 @@ pub fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 pub fn autosave_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app_data_dir(app)?.join("autosave");
     ensure_dir(&dir)?;
-    Ok(dir.join("recovery.cutline.json"))
+    Ok(dir.join("recovery.klipcut.json"))
 }
 
 pub fn projects_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -32,7 +32,7 @@ pub fn project_dir(app: &tauri::AppHandle, project_id: &str) -> Result<PathBuf, 
 }
 
 pub fn project_file_path(app: &tauri::AppHandle, project_id: &str) -> Result<PathBuf, String> {
-    Ok(project_dir(app, project_id)?.join("project.cutline.json"))
+    Ok(project_dir(app, project_id)?.join("project.klipcut.json"))
 }
 
 pub fn project_media_dir(app: &tauri::AppHandle, project_id: &str) -> Result<PathBuf, String> {

@@ -36,7 +36,7 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 - [x] Typed `get_app_info` / `probe_media` commands
 - [x] Docs stubs + preview ADR
 - [x] Vitest smoke tests for time math
-- [x] CapCut-like editor chrome (Cutline branding)
+- [x] CapCut-like editor chrome (KlipCut branding)
 - [x] Minimal CI: `pnpm typecheck` + `pnpm test`
 - [x] Setup docs for MSVC + FFmpeg (`docs/setup-windows.md`)
 - [ ] Machine verify: MSVC installed; `pnpm tauri:dev` launches a window

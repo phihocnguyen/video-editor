@@ -1,5 +1,5 @@
 # Attach the installer built by Build to a GitHub Release.
-# Release calls this last. The .exe is the cutline-windows-setup artifact
+# Release calls this last. The .exe is the klipcut-windows-setup artifact
 # from the same workflow run.
 name: Publish
 
@@ -39,7 +39,7 @@ jobs:
       - name: Download installer
         uses: actions/download-artifact@v4
         with:
-          name: cutline-windows-setup
+          name: klipcut-windows-setup
           path: release-assets
 
       - name: Publish GitHub Release
@@ -52,7 +52,7 @@ jobs:
           shopt -s nullglob
           files=(release-assets/*.exe)
           if [ ${#files[@]} -eq 0 ]; then
-            echo "No installer found in cutline-windows-setup"
+            echo "No installer found in klipcut-windows-setup"
             exit 1
           fi
           src="${files[0]}"
@@ -61,8 +61,8 @@ jobs:
               *[Ss]etup.exe) src="$f"; break ;;
             esac
           done
-          cp "$src" release-assets/Cutline-windows-setup.exe
-          files=("$src" release-assets/Cutline-windows-setup.exe)
+          cp "$src" release-assets/KlipCut-windows-setup.exe
+          files=("$src" release-assets/KlipCut-windows-setup.exe)
           if [ "$DRAFT" = "true" ]; then
             draft_flag=(--draft)
           else
@@ -73,7 +73,7 @@ jobs:
           else
             gh release create "$TAG" "${files[@]}" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "Cutline $TAG" \
+              --title "KlipCut $TAG" \
               "${draft_flag[@]}"
           fi
 
