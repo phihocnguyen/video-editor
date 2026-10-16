@@ -318,6 +318,24 @@ export function normalizeProjectDocument(project: ProjectDocument): ProjectDocum
         string,
         unknown
       >;
+      const cropRaw = (raw as { crop?: unknown }).crop as {
+        x?: unknown;
+        y?: unknown;
+        w?: unknown;
+        h?: unknown;
+      } | null | undefined;
+      const num01 = (v: unknown) =>
+        typeof v === "number" && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : null;
+      const cx = cropRaw ? num01(cropRaw.x) : null;
+      const cy = cropRaw ? num01(cropRaw.y) : null;
+      const cw = cropRaw ? num01(cropRaw.w) : null;
+      const chh = cropRaw ? num01(cropRaw.h) : null;
+      const crop =
+        cx != null && cy != null && cw != null && chh != null && cw > 0.001 && chh > 0.001
+          ? { x: cx, y: cy, w: cw, h: chh }
+          : null;
+      const slotRaw = (raw as { slotId?: unknown }).slotId;
+      const slotId = typeof slotRaw === "string" && slotRaw.length > 0 ? slotRaw : null;
       const text =
         raw.text == null
           ? raw.text
@@ -331,6 +349,8 @@ export function normalizeProjectDocument(project: ProjectDocument): ProjectDocum
             } as Partial<import("./project").TextStyle>);
       return {
         ...rest,
+        crop,
+        slotId,
         text: text as Clip["text"],
         transform: {
           ...DEFAULT_TRANSFORM,

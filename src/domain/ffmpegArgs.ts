@@ -475,6 +475,17 @@ export function mediaPlacementFilters(
   // pad already yields exactly width x height — a trailing scale would force a
   // redundant full-frame resample (softening). setsar keeps geometry exact.
   parts.push("setsar=1");
+  // Strip cell hard crop: isolate this cell so cover overflow never spills
+  // into neighbours, then re-pad so the layer stays a full frame.
+  if (clip.crop && clip.crop.w > 0.001 && clip.crop.h > 0.001) {
+    const cx = Math.max(0, Math.round(clip.crop.x * width));
+    const cy = Math.max(0, Math.round(clip.crop.y * height));
+    const cw = Math.max(2, Math.round(clip.crop.w * width) & ~1);
+    const ch = Math.max(2, Math.round(clip.crop.h * height) & ~1);
+    parts.push(`crop=${cw}:${ch}:${cx}:${cy}`);
+    parts.push(`pad=${width}:${height}:${cx}:${cy}:black@0`);
+    parts.push("setsar=1");
+  }
   return parts.join(",");
 }
 
@@ -638,6 +649,21 @@ function buildTrackChain(
 
     if (hold > 0.001) {
       bits.push(`tpad=stop_mode=clone:stop_duration=${hold.toFixed(3)}`);
+    }
+    // Short video in a longer timeline slot (strip cells): hold last frame.
+    if (clip.kind === "video" && !clip.speedRamp) {
+      const speed = clip.speed > 0 ? clip.speed : 1;
+      const streamLen = Math.max(0.01, (clip.sourceOutSec - clip.sourceInSec) / speed);
+      const need = clipDur + hold - streamLen;
+      if (need > 0.05) {
+        if (hold > 0.001) {
+          // Already pushed transition hold above — extend it to cover the gap.
+          bits.pop();
+          bits.push(`tpad=stop_mode=clone:stop_duration=${(hold + need).toFixed(3)}`);
+        } else {
+          bits.push(`tpad=stop_mode=clone:stop_duration=${need.toFixed(3)}`);
+        }
+      }
     }
     const opacityTrack = getTransformTrack(clip.transformKeyframes, "opacity");
     if (opacityTrack) {

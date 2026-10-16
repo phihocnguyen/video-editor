@@ -52,6 +52,7 @@ function clipPlan(overrides: Partial<RenderClipPlan> = {}): RenderClipPlan {
     canvasHeight: 1080,
     mediaWidth: 1280,
     mediaHeight: 720,
+    crop: null,
     ...overrides,
   };
 }

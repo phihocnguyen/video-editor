@@ -24,7 +24,7 @@ Maps `implementation_plan.md` milestones into executable phases. Keep the app bu
 1. **Machine verify / packaging** — MSVC; `pnpm tauri:dev`; NSIS install; offline QA. Rust export mirrors the new filters, but this machine has no Rust toolchain to compile it.
 2. **Phase 6 Pro** — remaining polish (captions…).
 4. **Optional polish** — export with the exact custom `.ttf` (else Arial/Segoe fallback).
-5. **Phase 7 — Strip templates** — planned, not started. See below.
+5. **Phase 7 — Strip templates** — done (Slices A–D; see below).
 
 ---
 
@@ -241,31 +241,31 @@ Replacing one cell is a later slice: click a cell, pick another file, rewrite th
 
 #### Slice A — Place 4 and 8
 
-- [ ] `LayoutTemplate` type and the `strip-4` / `strip-8` definitions (slot rects for a 9:16 canvas with even gutters)
-- [ ] `coverTransform` plus tests: wide photo, tall photo, square photo, each covers the cell and stays centered
-- [ ] `applyStripTemplate` for `strip-4` and `strip-8`: canvas size, 10 s, one track per cell, no audio clips, row-major assignment
-- [ ] Tests for too few files (empty cells) and too many files (extras not placed)
-- [ ] No UI yet
+- [x] `LayoutTemplate` type and the `strip-4` / `strip-8` definitions (slot rects for a 9:16 canvas with even gutters)
+- [x] `coverTransform` plus tests: wide photo, tall photo, square photo, each covers the cell and stays centered
+- [x] `applyStripTemplate` for `strip-4` and `strip-8`: canvas size, 10 s, one track per cell, no audio clips, row-major assignment
+- [x] Tests for too few files (empty cells) and too many files (extras not placed)
+- [x] No UI yet
 
 #### Slice B — Crop, film frame, pair
 
-- [ ] Cell crop in preview (`clip-path` from the slot rect) so cover overflow does not enter the next cell
-- [ ] The same crop in export (TS render plan and the Rust mirror)
-- [ ] Last-frame hold for a video shorter than 10 seconds, preview and export
-- [ ] Film-rebate SVG on the locked top track (`film-4`, `film-8`)
-- [ ] `film-pair-4` and `film-pair-8`: each file placed twice, left grayscale, right untouched
-- [ ] Tests: pair uses `n` assets and `2n` clips; only the left clip has `grayscale: true`
+- [x] Cell crop in preview (`clip-path` from the slot rect) so cover overflow does not enter the next cell
+- [x] The same crop in export (TS render plan and the Rust mirror)
+- [x] Last-frame hold for a video shorter than 10 seconds, preview and export
+- [x] Film-rebate SVG on the locked top track (`film-4`, `film-8`)
+- [x] `film-pair-4` and `film-pair-8`: each file placed twice, left grayscale, right untouched
+- [x] Tests: pair uses `n` assets and `2n` clips; only the left clip has `grayscale: true`
 
 #### Slice C — Picker
 
-- [ ] Template list in the editor library (next to the existing shape / filter panels)
-- [ ] Card shows name, "4 videos" / "8 videos", and a static preview of the frame
-- [ ] Drop or pick files, then open the new project
-- [ ] Apply is one undo step
+- [x] Template list in the editor library (next to the existing shape / filter panels)
+- [x] Card shows name, "4 videos" / "8 videos", and a static preview of the frame
+- [x] Drop or pick files, then open the new project
+- [x] Apply is one undo step
 
 #### Slice D — More counts, swap one cell
 
-- [ ] Register 2, 3, 6, 9, and 12 from the same generator, plain and with the film frame
-- [ ] Click a filled cell and replace its media. Recompute `coverTransform` for the new dimensions. Leave the other cells alone.
+- [x] Register 2, 3, 6, 9, and 12 from the same generator, plain and with the film frame
+- [x] Click a filled cell and replace its media. Recompute `coverTransform` for the new dimensions. Leave the other cells alone.
 
 **Exit:** Drop 8 videos on `film-pair-8`, preview shows two strips (left gray, right color) with no spill between cells, export matches the preview, and the timeline is a normal project the user can still move and trim. `strip-4` and `strip-8` pass the same check without the frame.

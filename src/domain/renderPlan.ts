@@ -59,6 +59,8 @@ export interface RenderClipPlan {
   /** Source media dimensions (for contain-fit export placement). */
   mediaWidth: number | null;
   mediaHeight: number | null;
+  /** Hard crop to a normalized canvas rect (strip cells). Null = no crop. */
+  crop: { x: number; y: number; w: number; h: number } | null;
 }
 
 export interface RenderTextPlan {
@@ -236,6 +238,7 @@ export function buildRenderPlan(
       canvasHeight: project.canvas.height,
       mediaWidth: asset.width,
       mediaHeight: asset.height,
+      crop: normalizeCrop(clip.crop),
     });
   }
 
@@ -326,4 +329,18 @@ function scaleToHeight(width: number, height: number, targetHeight: number) {
     width: Math.round((targetHeight * ratio) / 2) * 2,
     height: targetHeight,
   };
+}
+
+function normalizeCrop(
+  crop: { x: number; y: number; w: number; h: number } | null | undefined,
+): { x: number; y: number; w: number; h: number } | null {
+  if (!crop) return null;
+  const n = (v: unknown) =>
+    typeof v === "number" && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : NaN;
+  const x = n(crop.x);
+  const y = n(crop.y);
+  const w = n(crop.w);
+  const h = n(crop.h);
+  if (![x, y, w, h].every((v) => Number.isFinite(v)) || w < 0.001 || h < 0.001) return null;
+  return { x, y, w, h };
 }

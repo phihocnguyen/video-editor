@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1920" viewBox="0 0 1080 1920">
+  <!-- KlipCut film rebate frame: opaque borders, transparent photo window.
+       Window matches FILM_INSET (x 0.13–0.87, y 0.055–0.945). -->
+  <defs>
+    <clipPath id="win"><rect x="140" y="106" width="800" height="1708" rx="6"/></clipPath>
+  </defs>
+  <!-- side bands -->
+  <rect x="0" y="0" width="140" height="1920" fill="#0a0a0a"/>
+  <rect x="940" y="0" width="140" height="1920" fill="#0a0a0a"/>
+  <!-- top / bottom bands -->
+  <rect x="140" y="0" width="800" height="106" fill="#0a0a0a"/>
+  <rect x="140" y="1814" width="800" height="106" fill="#0a0a0a"/>
+  <!-- sprocket holes -->
+  <g fill="#d8d8d8">
+    <rect x="28" y="40" width="84" height="60" rx="10"/>
+    <rect x="28" y="180" width="84" height="60" rx="10"/>
+    <rect x="28" y="320" width="84" height="60" rx="10"/>
+    <rect x="28" y="460" width="84" height="60" rx="10"/>
+    <rect x="28" y="600" width="84" height="60" rx="10"/>
+    <rect x="28" y="740" width="84" height="60" rx="10"/>
+    <rect x="28" y="880" width="84" height="60" rx="10"/>
+    <rect x="28" y="1020" width="84" height="60" rx="10"/>
+    <rect x="28" y="1160" width="84" height="60" rx="10"/>
+    <rect x="28" y="1300" width="84" height="60" rx="10"/>
+    <rect x="28" y="1440" width="84" height="60" rx="10"/>
+    <rect x="28" y="1580" width="84" height="60" rx="10"/>
+    <rect x="28" y="1720" width="84" height="60" rx="10"/>
+    <rect x="968" y="40" width="84" height="60" rx="10"/>
+    <rect x="968" y="180" width="84" height="60" rx="10"/>
+    <rect x="968" y="320" width="84" height="60" rx="10"/>
+    <rect x="968" y="460" width="84" height="60" rx="10"/>
+    <rect x="968" y="600" width="84" height="60" rx="10"/>
+    <rect x="968" y="740" width="84" height="60" rx="10"/>
+    <rect x="968" y="880" width="84" height="60" rx="10"/>
+    <rect x="968" y="1020" width="84" height="60" rx="10"/>
+    <rect x="968" y="1160" width="84" height="60" rx="10"/>
+    <rect x="968" y="1300" width="84" height="60" rx="10"/>
+    <rect x="968" y="1440" width="84" height="60" rx="10"/>
+    <rect x="968" y="1580" width="84" height="60" rx="10"/>
+    <rect x="968" y="1720" width="84" height="60" rx="10"/>
+  </g>
+  <!-- frame numbers -->
+  <g fill="#e8e8e8" font-family="monospace" font-size="34" text-anchor="middle">
+    <text x="70" y="130">11</text>
+    <text x="70" y="990">12</text>
+    <text x="70" y="1830">13</text>
+    <text x="1010" y="130">11</text>
+    <text x="1010" y="990">12</text>
+    <text x="1010" y="1830">13</text>
+  </g>
+  <!-- house label, vertical -->
+  <g fill="#e8e8e8" font-family="monospace" font-size="30" text-anchor="middle">
+    <text x="70" y="960" transform="rotate(-90 70 960)" letter-spacing="6">KLIPCUT 400</text>
+    <text x="1010" y="960" transform="rotate(90 1010 960)" letter-spacing="6">KLIPCUT 400</text>
+  </g>
+  <!-- thin inner border around the window -->
+  <rect x="140" y="106" width="800" height="1708" rx="6" fill="none" stroke="#1c1c1c" stroke-width="4"/>
+</svg>

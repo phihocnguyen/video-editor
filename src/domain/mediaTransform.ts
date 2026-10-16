@@ -109,6 +109,92 @@ export function clipMediaGeometry(
   return mediaGeometry(clip.transform, canvasWidth, canvasHeight, asset);
 }
 
+export interface SlotRectNorm {
+  /** Normalized 0…1 of canvas, top-left origin. */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Cover a cell rect with a media source.
+ *
+ * The layer pipeline contain-fits into the full canvas first, then
+ * `scaleX`/`scaleY` multiply that box and `x`/`y` place its centre. This
+ * returns the centre (canvas px) and the uniform scale relative to that
+ * contain-fit box so the scaled box covers the cell:
+ * `scale = max(cellW / fitW, cellH / fitH)`.
+ */
+export function coverTransform(
+  cell: { x: number; y: number; w: number; h: number },
+  mediaSize: { width: number | null; height: number | null },
+  canvas: { width: number; height: number },
+): { x: number; y: number; scale: number } {
+  const cw = Math.max(1, canvas.width);
+  const ch = Math.max(1, canvas.height);
+  const fit = containFitBox(cw, ch, mediaSize.width, mediaSize.height);
+  const cellW = Math.max(1, cell.w);
+  const cellH = Math.max(1, cell.h);
+  const scale = Math.max(cellW / Math.max(1, fit.width), cellH / Math.max(1, fit.height));
+  return {
+    x: cell.x + cellW / 2,
+    y: cell.y + cellH / 2,
+    scale: Number.isFinite(scale) && scale > 0 ? scale : 1,
+  };
+}
+
+/** Normalized slot → canvas-pixel rect. */
+export function slotToPixels(
+  slot: SlotRectNorm,
+  canvasWidth: number,
+  canvasHeight: number,
+): { x: number; y: number; w: number; h: number } {
+  return {
+    x: slot.x * canvasWidth,
+    y: slot.y * canvasHeight,
+    w: slot.w * canvasWidth,
+    h: slot.h * canvasHeight,
+  };
+}
+
+/**
+ * CSS `clip-path: inset()` that shows only `crop` on the canvas.
+ *
+ * The layer host is the contain-fit box, centered on the cell and then scaled.
+ * `inset()` percentages are of that box, not of the canvas — a canvas-fraction
+ * inset crops a corner of the video and leaves the rest of the frame black.
+ */
+export function cropClipPath(
+  crop: SlotRectNorm,
+  box: {
+    centerX: number;
+    centerY: number;
+    fitWidth: number;
+    fitHeight: number;
+    scaleX: number;
+    scaleY: number;
+  },
+  canvasWidth: number,
+  canvasHeight: number,
+): string {
+  const cell = slotToPixels(crop, canvasWidth, canvasHeight);
+  const fitW = Math.max(1e-6, box.fitWidth);
+  const fitH = Math.max(1e-6, box.fitHeight);
+  const sx = box.scaleX === 0 || !Number.isFinite(box.scaleX) ? 1 : box.scaleX;
+  const sy = box.scaleY === 0 || !Number.isFinite(box.scaleY) ? 1 : box.scaleY;
+  const lx0 = fitW / 2 + (cell.x - box.centerX) / sx;
+  const ly0 = fitH / 2 + (cell.y - box.centerY) / sy;
+  const lx1 = fitW / 2 + (cell.x + cell.w - box.centerX) / sx;
+  const ly1 = fitH / 2 + (cell.y + cell.h - box.centerY) / sy;
+  const clamp = (n: number) => Math.min(100, Math.max(0, n));
+  const top = clamp((ly0 / fitH) * 100);
+  const left = clamp((lx0 / fitW) * 100);
+  const bottom = clamp(((fitH - ly1) / fitH) * 100);
+  const right = clamp(((fitW - lx1) / fitW) * 100);
+  return `inset(${top.toFixed(3)}% ${right.toFixed(3)}% ${bottom.toFixed(3)}% ${left.toFixed(3)}%)`;
+}
+
 /**
  * Preview stacking z-index from track order.
  * Lower `track.order` (higher in the timeline list) paints above — same as

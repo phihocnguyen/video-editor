@@ -13,14 +13,21 @@
   padding: var(--sp-5) var(--sp-6) var(--sp-2);
   min-height: 0;
   overflow: visible;
+  container-type: size;
   background:
     radial-gradient(ellipse at center, #16161c 0%, var(--bg-canvas) 70%);
 }
 
 .stage {
   position: relative;
-  width: min(100%, 960px);
-  max-height: 100%;
+  /* Fit the project canvas inside the pane. A definite width plus max-height
+     stretched 1080×1920 into a landscape box; size from the tighter side. */
+  width: min(100cqw, calc(100cqh * var(--canvas-ar, 1.777778)), 960px);
+  height: auto;
+  max-height: 100cqh;
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
   border-radius: var(--radius-xs);
   background: var(--bg-stage);
   border: 1px solid var(--border);

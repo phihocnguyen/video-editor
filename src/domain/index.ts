@@ -17,3 +17,4 @@ export * from "./timelineCommands";
 export * from "./renderPlan";
 export * from "./ffmpegArgs";
 export * from "./snap";
+export * from "./stripTemplates";

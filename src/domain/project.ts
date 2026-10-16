@@ -322,6 +322,14 @@ export interface Clip {
   transitionIn: ClipTransition;
   text: TextStyle | null;
   /**
+   * Hard crop to a normalized canvas rect (0…1, top-left origin). Used by
+   * strip templates: the transform covers the cell, then this crops spill.
+   * Missing/null = no crop. Survives save/open.
+   */
+  crop?: { x: number; y: number; w: number; h: number } | null;
+  /** Strip cell index for swap UX (`cell-0`, …). Missing = not a strip cell. */
+  slotId?: string | null;
+  /**
    * Optional speed ramp (variable speed over the source range). Missing on older
    * projects → constant `speed`. When present and non-flat it supersedes `speed`
    * for duration and preview mapping.

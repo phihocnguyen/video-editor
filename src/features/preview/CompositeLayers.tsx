@@ -22,6 +22,7 @@ import {
   normalizeClipEffects,
   normalizeClipTransition,
   layerStackZ,
+  cropClipPath,
   mediaSpeedAtTimelineTicks,
   ticksToSeconds,
   timelineOffsetForSourceOffset,
@@ -90,6 +91,21 @@ function isOutgoingHoldClip(
   const half = transitionHalfTicks(tin);
   const cut = next.startTicks;
   return playheadTicks >= cut - half && playheadTicks <= cut + half;
+}
+
+/**
+ * True when a video clip's source is exhausted at this playhead but its
+ * timeline slot continues (strip cells: short video in a 10s slot).
+ * The decoder should freeze on the last frame instead of looping.
+ */
+function isSourceExhaustedClip(clip: Clip, playheadTicks: number): boolean {
+  if (clip.speedRamp) return false;
+  const localSec = (playheadTicks - clip.startTicks) / 1_000_000;
+  if (localSec < 0) return false;
+  const speed = Number.isFinite(clip.speed) && clip.speed > 0 ? clip.speed : 1;
+  const sourceIn = clip.sourceInTicks / 1_000_000;
+  const sourceOut = clip.sourceOutTicks / 1_000_000;
+  return sourceIn + localSec * speed >= sourceOut - 0.03;
 }
 
 /**
@@ -218,12 +234,18 @@ function layerVisualStyle(
     `rotate(${geom.rotation}deg)`,
     `scale(${geom.scaleX}, ${geom.scaleY})`,
   ];
+  // Strip cell hard crop: cover overflow must not spill into neighbours.
+  // Strip clips carry no transitions, so the transition clipPath (when set)
+  // wins and the crop applies otherwise.
+  const cropPath = clip.crop
+    ? cropClipPath(clip.crop, geom, canvasWidth, canvasHeight)
+    : undefined;
 
   return {
     zIndex,
     opacity: geom.opacity * fadeMul * opacityMul * preMount,
     filter,
-    clipPath: txVisual.clipPath,
+    clipPath: txVisual.clipPath ?? cropPath,
     leftPct: (geom.centerX / Math.max(1, canvasWidth)) * 100 + txVisual.offsetXPct,
     topPct: (geom.centerY / Math.max(1, canvasHeight)) * 100 + txVisual.offsetYPct,
     widthPct: (geom.fitWidth / Math.max(1, canvasWidth)) * 100,
@@ -590,6 +612,18 @@ export function CompositeLayers({
         // Outgoing hold side must stay frozen — never (re)play it, not even from
         // a seeked-event wakeup, or it drifts and gets yanked back every ~120ms.
         if (isOutgoingHoldClip(layer.clip, ticks, projectRef.current)) {
+          try {
+            video.pause();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+        // Source exhausted (short video in a longer slot): freeze last frame.
+        if (isSourceExhaustedClip(layer.clip, ticks)) {
+          if (Math.abs(video.currentTime - (layer.clip.sourceOutTicks / 1_000_000 - 0.01)) > 0.15) {
+            safeSeek(video, transitionAwareMediaTimeSec(layer.clip, ticks));
+          }
           try {
             video.pause();
           } catch {
@@ -1176,6 +1210,18 @@ export function CompositeLayers({
                 lastSeekAtRef.current = now;
                 safeSeek(video, target);
               }
+            }
+            try {
+              video.pause();
+            } catch {
+              /* ignore */
+            }
+            return;
+          }
+          // Source exhausted (strip hold): freeze, don't loop.
+          if (isSourceExhaustedClip(layer.clip, playheadTicks)) {
+            if (Math.abs(video.currentTime - target) > 0.08) {
+              safeSeek(video, target);
             }
             try {
               video.pause();

@@ -368,6 +368,7 @@ export function PreviewPanel() {
           data-stage
           style={{
             aspectRatio: `${canvas.width} / ${canvas.height}`,
+            ["--canvas-ar" as string]: canvas.width / Math.max(1, canvas.height),
             background: canvas.backgroundColor,
           }}
           onPointerDown={(e) => {

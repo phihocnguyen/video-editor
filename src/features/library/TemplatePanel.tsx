@@ -16,6 +16,7 @@ import {
 import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
+import { StripPanel } from "./StripPanel";
 
 function filterSpan(
   project: ProjectDocument,
@@ -54,6 +55,7 @@ export function TemplatePanel() {
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
   const [group, setGroup] = useState<"all" | FilterTemplateGroup>("all");
+  const [tab, setTab] = useState<"looks" | "strips">("looks");
 
   const activeId = useMemo(() => {
     const selected = project.clips.find(
@@ -130,6 +132,28 @@ export function TemplatePanel() {
 
   return (
     <div className="flex h-full flex-col gap-3 overflow-auto p-4">
+      <div className="flex gap-1" role="tablist" aria-label="Template type">
+        {(["looks", "strips"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => setTab(t)}
+            className={
+              tab === t
+                ? "rounded-full bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground"
+                : "rounded-full px-2.5 py-1 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+            }
+          >
+            {t === "looks" ? "Looks" : "Strips"}
+          </button>
+        ))}
+      </div>
+      {tab === "strips" ? (
+        <StripPanel />
+      ) : (
+      <>
       <div>
         <h2 className="text-[15px] font-bold text-foreground">Template</h2>
         <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
@@ -194,6 +218,8 @@ export function TemplatePanel() {
           );
         })}
       </div>
+      </>
+      )}
     </div>
   );
 }

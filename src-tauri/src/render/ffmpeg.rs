@@ -49,6 +49,22 @@ pub struct RenderClipPlan {
     pub media_height: Option<f64>,
     #[serde(default)]
     pub transform_keyframes: Option<EffectKeyframes>,
+    /// Strip cell hard crop, normalized 0…1 (None = no crop).
+    #[serde(default)]
+    pub crop: Option<RenderClipCrop>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderClipCrop {
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+    #[serde(default)]
+    pub w: f64,
+    #[serde(default)]
+    pub h: f64,
 }
 
 fn default_canvas_dim() -> f64 {
@@ -1064,6 +1080,17 @@ fn animated_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) ->
         "pad={width}:{height}:x='({center_x})-({pad_w})/2':y='({center_y})-({pad_h})/2':color=black@0:eval=frame"
     ));
     parts.push("setsar=1".into());
+    if let Some(crop) = clip.crop {
+        if crop.w > 0.001 && crop.h > 0.001 {
+            let cx = (crop.x * width as f64).round().max(0.0);
+            let cy = (crop.y * height as f64).round().max(0.0);
+            let cw = ((crop.w * width as f64).round().max(2.0) as i64 & !1).max(2) as f64;
+            let ch = ((crop.h * height as f64).round().max(2.0) as i64 & !1).max(2) as f64;
+            parts.push(format!("crop={cw:.0}:{ch:.0}:{cx:.0}:{cy:.0}"));
+            parts.push(format!("pad={width}:{height}:{cx:.0}:{cy:.0}:black@0"));
+            parts.push("setsar=1".into());
+        }
+    }
     parts.join(",")
 }
 
@@ -1120,6 +1147,18 @@ fn media_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) -> St
     let off_y = (center_y - box_h / 2.0).round().max(0.0);
     parts.push(format!("pad={width}:{height}:{off_x:.0}:{off_y:.0}:black@0"));
     parts.push("setsar=1".into());
+    // Strip cell hard crop (mirrors TS export): isolate the cell, re-pad.
+    if let Some(crop) = clip.crop {
+        if crop.w > 0.001 && crop.h > 0.001 {
+            let cx = (crop.x * width as f64).round().max(0.0);
+            let cy = (crop.y * height as f64).round().max(0.0);
+            let cw = ((crop.w * width as f64).round().max(2.0) as i64 & !1).max(2) as f64;
+            let ch = ((crop.h * height as f64).round().max(2.0) as i64 & !1).max(2) as f64;
+            parts.push(format!("crop={cw:.0}:{ch:.0}:{cx:.0}:{cy:.0}"));
+            parts.push(format!("pad={width}:{height}:{cx:.0}:{cy:.0}:black@0"));
+            parts.push("setsar=1".into());
+        }
+    }
     parts.join(",")
 }
 
@@ -1210,6 +1249,15 @@ fn build_filter_complex(
         if hold > 0.001 {
             let cut_at = overlap + clip_dur;
             extras.push(format!("tpad=stop_mode=clone:stop_duration={hold:.3}"));
+            // Short video in a longer slot (strip cells): hold last frame.
+            if clip.kind == "video" && clip_ramp_profile(clip).is_none() {
+                let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
+                let stream_len = ((clip.source_out_sec - clip.source_in_sec) / speed).max(0.01);
+                let need = clip_dur + hold - stream_len;
+                if need > 0.05 {
+                    extras.push(format!("tpad=stop_mode=clone:stop_duration={need:.3}"));
+                }
+            }
             let next_type = next_sibling.map(|c| c.transition_in.kind.as_str()).unwrap_or("none");
             if next_type == "fade" || next_type == "fadeWhite" {
                 extras.push(ffmpeg_smooth_fade_out_alpha(
@@ -1221,6 +1269,14 @@ fn build_filter_complex(
                     (cut_at - out_half).max(0.0),
                     out_full,
                 ));
+            }
+        } else if clip.kind == "video" && clip_ramp_profile(clip).is_none() {
+            // No transition hold, but source is shorter than the slot.
+            let speed = if clip.speed > 0.0 { clip.speed } else { 1.0 };
+            let stream_len = ((clip.source_out_sec - clip.source_in_sec) / speed).max(0.01);
+            let need = clip_dur - stream_len;
+            if need > 0.05 {
+                extras.push(format!("tpad=stop_mode=clone:stop_duration={need:.3}"));
             }
         }
         let extra_part = if extras.is_empty() {
