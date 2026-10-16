@@ -1109,8 +1109,10 @@ export function TimelinePanel() {
                         />
                       ) : null}
                       {(() => {
-                        const canFade =
-                          clip.kind === "media" && asset?.kind !== "audio";
+                        const isMusic =
+                          clip.kind === "media" &&
+                          (track.kind === "audio" || asset?.kind === "audio");
+                        const canFade = clip.kind === "media" && (isMusic || asset?.kind !== "audio");
                         if (!canFade) return null;
                         const fx = normalizeClipEffects(clip.effects);
                         const durSec = Math.max(
@@ -1129,8 +1131,8 @@ export function TimelinePanel() {
                           e: ReactPointerEvent<HTMLSpanElement>,
                           edge: "in" | "out",
                         ) => {
-                          // Vegas-style: Ctrl/Cmd + drag top corner → black fade.
-                          if (!e.ctrlKey && !e.metaKey) return;
+                          // Video fades stay Ctrl/Cmd + drag. Music intro/outro drag freely.
+                          if (!isMusic && !e.ctrlKey && !e.metaKey) return;
                           e.stopPropagation();
                           e.preventDefault();
                           e.currentTarget.setPointerCapture(e.pointerId);
@@ -1141,8 +1143,12 @@ export function TimelinePanel() {
                           useHistoryStore.getState().pushHistory(before);
                           setStatusMessage(
                             edge === "in"
-                              ? "Fade in (black) — drag right to lengthen"
-                              : "Fade out (black) — drag left to lengthen",
+                              ? isMusic
+                                ? "Intro — drag right to lengthen"
+                                : "Fade in (black) — drag right to lengthen"
+                              : isMusic
+                                ? "Outro — drag left to lengthen"
+                                : "Fade out (black) — drag left to lengthen",
                           );
                           const onMove = (ev: PointerEvent) => {
                             const deltaSec = (ev.clientX - originX) / pxPerSecond;
@@ -1179,8 +1185,8 @@ export function TimelinePanel() {
                             );
                             setStatusMessage(
                               edge === "in"
-                                ? `Fade in ${live.fadeInSec.toFixed(2)}s`
-                                : `Fade out ${live.fadeOutSec.toFixed(2)}s`,
+                                ? `${isMusic ? "Intro" : "Fade in"} ${live.fadeInSec.toFixed(2)}s`
+                                : `${isMusic ? "Outro" : "Fade out"} ${live.fadeOutSec.toFixed(2)}s`,
                             );
                           };
                           window.addEventListener("pointermove", onMove);
@@ -1206,12 +1212,12 @@ export function TimelinePanel() {
                               <>
                                 <span
                                   className={`${styles.fadeHandle} ${styles.fadeHandleLeft}`}
-                                  title="Ctrl+drag: fade in (black)"
+                                  title={isMusic ? "Intro — drag right" : "Ctrl+drag: fade in (black)"}
                                   onPointerDown={(e) => beginFadeDrag(e, "in")}
                                 />
                                 <span
                                   className={`${styles.fadeHandle} ${styles.fadeHandleRight}`}
-                                  title="Ctrl+drag: fade out (black)"
+                                  title={isMusic ? "Outro — drag left" : "Ctrl+drag: fade out (black)"}
                                   onPointerDown={(e) => beginFadeDrag(e, "out")}
                                 />
                               </>
