@@ -483,6 +483,41 @@ export function TimelinePanel() {
         return;
       }
 
+      if (event.shiftKey) {
+        event.stopPropagation();
+        event.preventDefault();
+        setPlaying(false);
+        const project = useProjectStore.getState().project;
+        const playhead = useEditorUiStore.getState().playheadTicks;
+        const onTrack = project.clips
+          .filter((clip) => clip.trackId === trackId && clip.kind === "media")
+          .slice()
+          .sort((a, b) => a.startTicks - b.startTicks);
+        const target = onTrack.find((clip) => clip.id === clipId);
+        const underPlayhead = onTrack.find((clip) => {
+          const end = clip.startTicks + clipDurationTicks(clip);
+          return playhead >= clip.startTicks && playhead < end;
+        });
+        const selectedOnTrack = onTrack.filter((clip) =>
+          useEditorUiStore.getState().selectedClipIds.includes(clip.id),
+        );
+        const anchor = underPlayhead ?? selectedOnTrack[selectedOnTrack.length - 1];
+        if (target && anchor) {
+          const i0 = onTrack.findIndex((clip) => clip.id === anchor.id);
+          const i1 = onTrack.findIndex((clip) => clip.id === target.id);
+          const slice =
+            i0 >= 0 && i1 >= 0
+              ? onTrack.slice(Math.min(i0, i1), Math.max(i0, i1) + 1)
+              : [target];
+          const ids = [
+            ...new Set(slice.flatMap((clip) => linkedClipIds(project, clip.id))),
+          ];
+          setSelectedClipIds(ids);
+          setSelectedTrackId(trackId);
+          return;
+        }
+      }
+
       event.stopPropagation();
       event.preventDefault();
       setPlaying(false);
