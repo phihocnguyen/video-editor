@@ -355,6 +355,10 @@ function buildFilterComplex(
       const bottom = Math.round((Math.min(45, Math.max(0, lb.bottomPct)) / 100) * height);
       const left = Math.round((Math.min(45, Math.max(0, lb.leftPct)) / 100) * width);
       const right = Math.round((Math.min(45, Math.max(0, lb.rightPct)) / 100) * width);
+      // Side bars sit *between* top/bottom (same as preview overlay's
+      // `top: topPct% / bottom: bottomPct%`) so corners belong to top/bottom.
+      const sideY = Math.min(top, height);
+      const sideH = Math.max(0, height - top - bottom);
       const next = (i: number) => `[lb${i}]`;
       let li = 0;
       let cur = current;
@@ -368,14 +372,14 @@ function buildFilterComplex(
         parts.push(`${cur}drawbox=x=0:y=ih-${bottom}:w=iw:h=${bottom}:c=${bar}:t=fill${n}`);
         cur = n;
       }
-      if (left > 0) {
+      if (left > 0 && sideH > 0) {
         const n = next(li++);
-        parts.push(`${cur}drawbox=x=0:y=0:w=${left}:h=ih:c=${bar}:t=fill${n}`);
+        parts.push(`${cur}drawbox=x=0:y=${sideY}:w=${left}:h=${sideH}:c=${bar}:t=fill${n}`);
         cur = n;
       }
-      if (right > 0) {
+      if (right > 0 && sideH > 0) {
         const n = next(li++);
-        parts.push(`${cur}drawbox=x=iw-${right}:y=0:w=${right}:h=ih:c=${bar}:t=fill${n}`);
+        parts.push(`${cur}drawbox=x=iw-${right}:y=${sideY}:w=${right}:h=${sideH}:c=${bar}:t=fill${n}`);
         cur = n;
       }
       current = cur;

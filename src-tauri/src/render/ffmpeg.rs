@@ -1396,6 +1396,10 @@ fn build_filter_complex(
             let bottom = ((clamp(plan.letterbox.bottom_pct) / 100.0) * height as f64).round() as i64;
             let left = ((clamp(plan.letterbox.left_pct) / 100.0) * width as f64).round() as i64;
             let right = ((clamp(plan.letterbox.right_pct) / 100.0) * width as f64).round() as i64;
+            // Side bars sit *between* top/bottom (same as preview overlay) so
+            // corners belong to top/bottom.
+            let side_y = top.min(height as i64);
+            let side_h = (height as i64 - top - bottom).max(0);
             let mut li = 0usize;
             if top > 0 {
                 let next = format!("[lb{li}]");
@@ -1409,16 +1413,16 @@ fn build_filter_complex(
                 parts.push(format!("{current}drawbox=x=0:y=ih-{bottom}:w=iw:h={bottom}:c={bar}:t=fill{next}"));
                 current = next;
             }
-            if left > 0 {
+            if left > 0 && side_h > 0 {
                 let next = format!("[lb{li}]");
                 li += 1;
-                parts.push(format!("{current}drawbox=x=0:y=0:w={left}:h=ih:c={bar}:t=fill{next}"));
+                parts.push(format!("{current}drawbox=x=0:y={side_y}:w={left}:h={side_h}:c={bar}:t=fill{next}"));
                 current = next;
             }
-            if right > 0 {
+            if right > 0 && side_h > 0 {
                 let next = format!("[lb{li}]");
                 li += 1;
-                parts.push(format!("{current}drawbox=x=iw-{right}:y=0:w={right}:h=ih:c={bar}:t=fill{next}"));
+                parts.push(format!("{current}drawbox=x=iw-{right}:y={side_y}:w={right}:h={side_h}:c={bar}:t=fill{next}"));
                 current = next;
             }
         }

@@ -5,6 +5,7 @@ import {
   buildFfmpegArgs,
   buildRenderPlan,
   createEmptyProject,
+  updateCanvas,
   updateClipEffects,
   type MediaAsset,
 } from "../../src/domain";
@@ -157,6 +158,43 @@ describe("buildFfmpegArgs", () => {
     expect(filter).toContain("box=1");
     expect(filter).toContain("boxcolor=");
     expect(filter).toContain("boxborderw=");
+  });
+
+  it("paints cinematic top/bottom bars without touching left/right", () => {
+    let project = createEmptyProject();
+    project = updateCanvas(project, {
+      letterbox: { enabled: true, topPct: 15, bottomPct: 18, leftPct: 0, rightPct: 0 },
+    });
+    // User Ctrl+drags only the top/bottom edges in preview.
+    project = updateCanvas(project, { letterbox: { topPct: 15 } });
+    project = updateCanvas(project, { letterbox: { bottomPct: 18 } });
+    const plan = buildRenderPlan(project, "source", "draft");
+    expect(plan.letterbox.leftPct).toBe(0);
+    expect(plan.letterbox.rightPct).toBe(0);
+    const built = buildFfmpegArgs(plan, "C:/out/export.mp4", {
+      fileExists: () => true,
+    });
+    const filter = built.args[built.args.indexOf("-filter_complex") + 1];
+    // 1080p canvas: top = 15% , bottom = 18%.
+    expect(filter).toContain("drawbox=x=0:y=0:w=iw:h=162");
+    expect(filter).toContain("drawbox=x=0:y=ih-194:w=iw:h=194");
+    // No full-height side bars.
+    expect(filter).not.toContain("h=ih:c=");
+  });
+
+  it("insets cinematic side bars between top/bottom (preview parity)", () => {
+    let project = createEmptyProject();
+    project = updateCanvas(project, {
+      letterbox: { enabled: true, topPct: 12, bottomPct: 12, leftPct: 5, rightPct: 5 },
+    });
+    const plan = buildRenderPlan(project, "source", "draft");
+    const built = buildFfmpegArgs(plan, "C:/out/export.mp4", {
+      fileExists: () => true,
+    });
+    const filter = built.args[built.args.indexOf("-filter_complex") + 1];
+    // 1080p canvas: top/bottom = 130px, sides sit between them (y=130, h=820).
+    expect(filter).toContain("drawbox=x=0:y=130:w=96:h=820");
+    expect(filter).toContain("drawbox=x=iw-96:y=130:w=96:h=820");
   });
 
   it("paints lower-order tracks above higher-order ones (preview parity)", () => {
