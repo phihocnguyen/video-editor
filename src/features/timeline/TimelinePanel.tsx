@@ -160,6 +160,7 @@ export function TimelinePanel() {
   const selectedTrackId = useEditorUiStore((s) => s.selectedTrackId);
   const trackHeightsPx = useEditorUiStore((s) => s.trackHeightsPx);
   const snapEnabled = useEditorUiStore((s) => s.snapEnabled);
+  const tool = useEditorUiStore((s) => s.tool);
   const setTimelineZoom = useEditorUiStore((s) => s.setTimelineZoom);
   const setPlayheadTicks = useEditorUiStore((s) => s.setPlayheadTicks);
   const setSelectedClipIds = useEditorUiStore((s) => s.setSelectedClipIds);
@@ -486,6 +487,19 @@ export function TimelinePanel() {
       const track = useProjectStore.getState().project.tracks.find((t) => t.id === trackId);
       if (track?.locked) {
         setStatusMessage("Track is locked");
+        return;
+      }
+
+      if (useEditorUiStore.getState().tool === "razor") {
+        event.stopPropagation();
+        event.preventDefault();
+        setPlaying(false);
+        const at = ticksFromClientX(event.clientX);
+        commitProjectChange((p) =>
+          splitClipAt(p, clipId, at, { followLink: editFollowsLink([clipId]) }),
+        );
+        setSelectedTrackId(trackId);
+        setStatusMessage("Split at cursor");
         return;
       }
 
@@ -892,7 +906,10 @@ export function TimelinePanel() {
           ))}
         </div>
 
-        <div ref={lanesRef} className={styles.lanes}>
+        <div
+          ref={lanesRef}
+          className={tool === "razor" ? `${styles.lanes} ${styles.lanesRazor}` : styles.lanes}
+        >
           <div
             className={styles.ruler}
             style={{ width: laneWidth }}
@@ -939,6 +956,14 @@ export function TimelinePanel() {
                 onPointerDown={(e) => {
                   if (e.button !== 0) return;
                   if ((e.target as HTMLElement).closest(`.${styles.clip}`)) return;
+                  if (tool === "razor") {
+                    e.preventDefault();
+                    setSelectedTrackId(track.id);
+                    setPlaying(false);
+                    setSelectedClipIds([]);
+                    applyScrubTicks(ticksFromClientX(e.clientX), true);
+                    return;
+                  }
                   e.preventDefault();
                   const originX = e.clientX;
                   const originY = e.clientY;

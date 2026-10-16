@@ -382,6 +382,20 @@ export function EditorShell() {
 
       if (typing) return;
 
+      const bare = event.key.toLowerCase();
+      if (!mod && !event.altKey && bare === "c") {
+        event.preventDefault();
+        useEditorUiStore.getState().setTool("razor");
+        useEditorUiStore.getState().setStatusMessage("Razor — click a clip to split");
+        return;
+      }
+      if (!mod && !event.altKey && bare === "v") {
+        event.preventDefault();
+        useEditorUiStore.getState().setTool("select");
+        useEditorUiStore.getState().setStatusMessage("Select");
+        return;
+      }
+
       if (mod && event.key.toLowerCase() === "c") {
         event.preventDefault();
         copySelectedClips();
@@ -508,7 +522,8 @@ export function EditorShell() {
       onSelect: () => setSnapEnabled(!snapEnabled),
     },
     {
-      label: tool === "select" ? "Tool: Select" : "Tool: Hand",
+      label:
+        tool === "razor" ? "Tool: Razor" : tool === "hand" ? "Tool: Hand" : "Tool: Select",
       onSelect: () => setTool(tool === "select" ? "hand" : "select"),
     },
     {

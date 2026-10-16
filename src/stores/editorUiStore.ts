@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { Clip } from "../domain/project";
 
-export type EditorTool = "select" | "hand";
+export type EditorTool = "select" | "hand" | "razor";
 
 export type EditorPanel =
   | "media"
