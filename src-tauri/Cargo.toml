@@ -1,6 +1,6 @@
 [package]
 name = "klipcut"
-version = "0.1.2"
+version = "0.1.3"
 description = "KlipCut — local-first Windows desktop video editor"
 authors = ["KlipCut"]
 edition = "2021"
