@@ -1705,12 +1705,55 @@ export function updateTrack(
  * Set (or clear) a clip's speed ramp. Passing null clears the ramp and returns
  * to the constant `speed` value.
  */
+/**
+ * Clips that start at or after this clip's previous end slide by the duration
+ * change. Source in/out of the edited clip is never touched: fast-forward
+ * shortens the timeline slot, slow-motion lengthens it.
+ */
+function rippleAfterDurationChange(
+  project: ProjectDocument,
+  clipId: string,
+  previousDuration: number,
+  boundary: number,
+  trackId: string,
+): ProjectDocument {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip) return project;
+  const delta = clipDurationTicks(clip) - previousDuration;
+  if (Math.abs(delta) <= 1) return project;
+  return {
+    ...project,
+    clips: project.clips.map((c) => {
+      if (c.id === clipId || c.trackId !== trackId) return c;
+      if (c.startTicks + 1 < boundary) return c;
+      return {
+        ...c,
+        startTicks: Math.max(0, Math.round(c.startTicks + delta)) as Tick,
+      };
+    }),
+  };
+}
+
+function editRamp(
+  project: ProjectDocument,
+  clipId: string,
+  edit: (project: ProjectDocument) => ProjectDocument,
+): ProjectDocument {
+  const clip = project.clips.find((c) => c.id === clipId);
+  const before = clip ? clipDurationTicks(clip) : 0;
+  const boundary = clip ? clip.startTicks + before : 0;
+  const trackId = clip?.trackId ?? "";
+  const next = edit(project);
+  if (!clip) return next;
+  return rippleAfterDurationChange(next, clipId, before, boundary, trackId);
+}
+
 export function setClipRamp(
   project: ProjectDocument,
   clipId: string,
   ramp: SpeedRamp | null,
 ): ProjectDocument {
-  return mapClip(project, clipId, (clip) => {
+  return editRamp(project, clipId, (current) => mapClip(current, clipId, (clip) => {
     if (clip.kind === "text" || clip.kind === "filter") {
       throw new Error("Text clips do not support speed ramps");
     }
@@ -1720,7 +1763,7 @@ export function setClipRamp(
       return rest as Clip;
     }
     return { ...clip, speedRamp: normalized };
-  });
+  }));
 }
 
 /**
@@ -1819,7 +1862,9 @@ export function addRampPointAtPlayhead(
   const next = normalizeSpeedRamp([...existing.points, point]);
   if (!next) throw new Error("Not enough space for another ramp point");
   return {
-    project: mapClip(project, clipId, (c) => ({ ...c, speedRamp: next })),
+    project: editRamp(project, clipId, (current) =>
+      mapClip(current, clipId, (c) => ({ ...c, speedRamp: next })),
+    ),
     pointId: point.id,
   };
 }
@@ -1833,7 +1878,7 @@ export function moveRampPoint(
   pointId: string,
   atProgress: number,
 ): ProjectDocument {
-  return mapClip(project, clipId, (clip) => {
+  return editRamp(project, clipId, (current) => mapClip(current, clipId, (clip) => {
     const ramp = normalizeSpeedRamp(clip.speedRamp);
     if (!ramp) throw new Error("Clip has no speed ramp");
     const idx = ramp.points.findIndex((p) => p.id === pointId);
@@ -1850,7 +1895,7 @@ export function moveRampPoint(
       p.id === pointId ? { ...p, atProgress: clamped } : p,
     );
     return { ...clip, speedRamp: normalizeSpeedRamp(points) ?? ramp };
-  });
+  }));
 }
 
 /** Change the speed carried by one anchor. */
@@ -1860,7 +1905,7 @@ export function setRampPointSpeed(
   pointId: string,
   speed: number,
 ): ProjectDocument {
-  return mapClip(project, clipId, (clip) => {
+  return editRamp(project, clipId, (current) => mapClip(current, clipId, (clip) => {
     const ramp = normalizeSpeedRamp(clip.speedRamp);
     if (!ramp) throw new Error("Clip has no speed ramp");
     if (!ramp.points.some((p) => p.id === pointId)) {
@@ -1870,7 +1915,7 @@ export function setRampPointSpeed(
       p.id === pointId ? { ...p, speed: clampRampSpeed(speed) } : p,
     );
     return { ...clip, speedRamp: normalizeSpeedRamp(points) ?? ramp };
-  });
+  }));
 }
 
 /**
@@ -1883,8 +1928,9 @@ export function updateRampPoint(
   clipId: string,
   pointId: string,
   patch: { atProgress?: number; speed?: number },
+  options?: { ripple?: boolean },
 ): ProjectDocument {
-  return mapClip(project, clipId, (clip) => {
+  const apply = (current: ProjectDocument) => mapClip(current, clipId, (clip) => {
     const ramp = normalizeSpeedRamp(clip.speedRamp);
     if (!ramp) throw new Error("Clip has no speed ramp");
     const idx = ramp.points.findIndex((p) => p.id === pointId);
@@ -1908,6 +1954,9 @@ export function updateRampPoint(
     }
     return { ...clip, speedRamp: normalizeSpeedRamp(points) ?? ramp };
   });
+  // Live drags skip the ripple so the timeline slot stays put until release.
+  if (options?.ripple === false) return apply(project);
+  return editRamp(project, clipId, apply);
 }
 
 /**
@@ -1954,84 +2003,44 @@ export function relockClipDuration(
 }
 
 /**
- * Drag-style ramp edit that never changes timeline duration: apply patch,
- * then relock. If media end blocks the relock, bisect the patch back so the
- * point stops at the wall instead of stretching the clip.
- *
- * (Premiere Time Remapping usually *does* grow/shrink the clip; we lock
- * width like CapCut so neighboring clips stay put.)
+ * Drag-style ramp edit. The source range stays; timeline duration follows the
+ * curve (fast shrinks the clip, slow lengthens it) and later clips on the
+ * track shift with it. `lockedDurationTicks` is ignored — kept so older call
+ * sites still compile.
  */
 export function updateRampPointLocked(
   project: ProjectDocument,
   clipId: string,
   pointId: string,
   patch: { atProgress?: number; speed?: number },
-  lockedDurationTicks: Tick,
+  _lockedDurationTicks?: Tick,
+  options?: { ripple?: boolean },
 ): { project: ProjectDocument; constrained: boolean } {
-  const clip = project.clips.find((c) => c.id === clipId);
-  if (!clip) throw new Error("Unknown clipId");
-  if (clip.kind === "text" || clip.kind === "filter") {
-    throw new Error("Text clips do not support speed ramps");
-  }
-  const ramp = normalizeSpeedRamp(clip.speedRamp);
-  if (!ramp) throw new Error("Clip has no speed ramp");
-  const current = ramp.points.find((p) => p.id === pointId);
-  if (!current) throw new Error("Unknown ramp point");
-
-  const fits = (candidate: ProjectDocument): boolean => {
-    const after = candidate.clips.find((c) => c.id === clipId);
-    return (
-      !!after && Math.abs(clipDurationTicks(after) - lockedDurationTicks) <= 1
-    );
-  };
-  const apply = (
-    base: ProjectDocument,
-    atProgress: number,
-    speed: number,
-  ): ProjectDocument =>
-    relockClipDuration(
-      updateRampPoint(base, clipId, pointId, { atProgress, speed }),
-      clipId,
-      lockedDurationTicks,
-    );
-
-  const wantProgress = patch.atProgress ?? current.atProgress;
-  const wantSpeed = patch.speed ?? current.speed;
-  const direct = apply(project, wantProgress, wantSpeed);
-  if (fits(direct)) return { project: direct, constrained: false };
-
-  // Pull the patch back toward the current state until the duration fits.
-  let feasible = 0;
-  let infeasible = 1;
-  for (let i = 0; i < 10; i += 1) {
-    const mid = (feasible + infeasible) / 2;
-    const trial = apply(
-      project,
-      current.atProgress + (wantProgress - current.atProgress) * mid,
-      current.speed + (wantSpeed - current.speed) * mid,
-    );
-    if (fits(trial)) feasible = mid;
-    else infeasible = mid;
-  }
-  if (feasible <= 0) return { project, constrained: true };
-  const progress =
-    current.atProgress + (wantProgress - current.atProgress) * feasible;
-  const speed = current.speed + (wantSpeed - current.speed) * feasible;
-  // Fully blocked (the patch collapses onto the current state) or moving by
-  // an imperceptible epsilon (sub-pixel): return the ORIGINAL project so
-  // zustand skips notifying (no re-render storm, no thumbnail/waveform
-  // recompute while the point sits at the wall).
-  const sameProgress = Math.abs(progress - current.atProgress) < 0.0005;
-  const sameSpeed =
-    Math.abs(speed - current.speed) < Math.abs(current.speed) * 0.002 + 1e-9;
-  if (sameProgress && sameSpeed) {
-    return { project, constrained: true };
-  }
-  const pulled = apply(project, progress, speed);
   return {
-    project: fits(pulled) ? pulled : project,
-    constrained: feasible < 0.999,
+    project: updateRampPoint(project, clipId, pointId, patch, options),
+    constrained: false,
   };
+}
+
+/**
+ * Shift later clips on the same track after a ramp drag that changed duration
+ * without rippling on each pointer move. `previousDuration` is the timeline
+ * length from before the drag.
+ */
+export function settleRampLayout(
+  project: ProjectDocument,
+  clipId: string,
+  previousDuration: number,
+): ProjectDocument {
+  const clip = project.clips.find((c) => c.id === clipId);
+  if (!clip) return project;
+  return rippleAfterDurationChange(
+    project,
+    clipId,
+    previousDuration,
+    clip.startTicks + previousDuration,
+    clip.trackId,
+  );
 }
 
 /**
@@ -2042,7 +2051,7 @@ export function removeRampPoint(
   clipId: string,
   pointId: string,
 ): ProjectDocument {
-  return mapClip(project, clipId, (clip) => {
+  return editRamp(project, clipId, (current) => mapClip(current, clipId, (clip) => {
     const ramp = normalizeSpeedRamp(clip.speedRamp);
     if (!ramp) throw new Error("Clip has no speed ramp");
     if (!ramp.points.some((p) => p.id === pointId)) {
@@ -2055,7 +2064,7 @@ export function removeRampPoint(
       return rest as Clip;
     }
     return { ...clip, speedRamp: next };
-  });
+  }));
 }
 
 /** Split a ramp at a source progress; used by splitClipAt for ramped clips. */

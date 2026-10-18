@@ -24,8 +24,8 @@
 import type { Tick } from "./time";
 
 export const MIN_RAMP_SPEED = 0.1;
-/** Premiere-like ceiling — 8× was too extreme for editing. */
-export const MAX_RAMP_SPEED = 3;
+/** Fast-forward ceiling. Slow motion stays at 0.1×. */
+export const MAX_RAMP_SPEED = 8;
 
 export interface SpeedPoint {
   id: string;

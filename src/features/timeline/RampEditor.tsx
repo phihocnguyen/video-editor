@@ -11,9 +11,10 @@ import type { Clip, ProjectDocument } from "../../domain/project";
 import {
   clipDurationTicks,
   removeRampPoint,
-  relockClipDuration,
+  settleRampLayout,
   updateRampPointLocked,
 } from "../../domain/timelineCommands";
+import { armClipLayoutEase, setRampLayoutHold } from "./clipLayoutMotion";
 import type { Tick } from "../../domain/time";
 import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
 import { useProjectStore } from "../../stores/projectStore";
@@ -33,13 +34,14 @@ const PAD_Y = 6;
 const DRAG_THRESHOLD_PX = 4;
 
 /** Click-menu speeds as % of 1× (slow → fast). */
-const SPEED_PERCENT_OPTIONS = [25, 50, 75, 100, 150, 200, 300] as const;
+const SPEED_PERCENT_OPTIONS = [25, 50, 75, 100, 150, 200, 300, 400, 600, 800] as const;
 
 /**
  * Speed-curve overlay on the selected clip.
  *
  * Click a point → pick speed % / delete. Double-click → reset to 1×.
- * Drag still reshapes the curve; timeline duration stays locked.
+ * Drag reshapes the curve while the clip width stays put. On release the
+ * slot glides to the new length. Source in/out never change.
  */
 export function RampEditor({ clip, widthPx, heightPx, interactive = true }: RampEditorProps) {
   const ramp = useMemo(
@@ -128,7 +130,7 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     ? ramp.points.find((p) => p.id === menu.pointId) ?? null
     : null;
 
-  const SNAP_SPEEDS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3];
+  const SNAP_SPEEDS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8];
 
   function snapSpeed(speed: number): number {
     for (const s of SNAP_SPEEDS) {
@@ -140,6 +142,8 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
   interface RampGesture {
     pointId: string;
     lockedDuration: Tick;
+    /** Timeline length when the drag started. Ripple uses this on release. */
+    layoutBefore: number;
     plotW: number;
     rect: DOMRect;
     startX: number;
@@ -164,6 +168,7 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
         speed: Number(snapSpeed(patch.speed).toFixed(3)),
       },
       g.lockedDuration,
+      { ripple: false },
     );
   }
 
@@ -178,6 +183,7 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
 
   function setPointSpeed(pointId: string, speed: number) {
     let constrained = false;
+    armClipLayoutEase();
     commitProjectChange((p) => {
       const cur = p.clips.find((c) => c.id === clip.id);
       const locked = clipDurationTicks(cur ?? clip);
@@ -195,13 +201,8 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
   }
 
   function handleRemovePoint(pointId: string) {
-    commitProjectChange((p) => {
-      const cur = p.clips.find((c) => c.id === clip.id);
-      const locked = clipDurationTicks(cur ?? clip);
-      const next = removeRampPoint(p, clip.id, pointId);
-      if (!next.clips.find((c) => c.id === clip.id)?.speedRamp) return next;
-      return relockClipDuration(next, clip.id, locked);
-    });
+    armClipLayoutEase();
+    commitProjectChange((p) => removeRampPoint(p, clip.id, pointId));
   }
 
   function openPointMenu(point: SpeedPoint, anchorEl?: HTMLElement | null) {
@@ -227,9 +228,11 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     }
     const store = useProjectStore.getState();
     const live = store.project.clips.find((c) => c.id === clip.id) ?? clip;
+    const layoutBefore = clipDurationTicks(live);
     const gesture: RampGesture = {
       pointId: point.id,
-      lockedDuration: clipDurationTicks(live),
+      lockedDuration: layoutBefore,
+      layoutBefore,
       plotW,
       rect: surface.getBoundingClientRect(),
       startX: event.clientX,
@@ -270,6 +273,7 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
         dx * dx + dy * dy >= DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX
       ) {
         gesture.dragging = true;
+        setRampLayoutHold({ clipId: clip.id, durationTicks: gesture.layoutBefore });
         if (clickTimerRef.current != null) {
           window.clearTimeout(clickTimerRef.current);
           clickTimerRef.current = null;
@@ -288,20 +292,25 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     const endGesture = () => {
       if (gesture.raf) cancelAnimationFrame(gesture.raf);
       gesture.raf = 0;
-      if (gesture.dragging && gesture.pending) {
-        const patch = gesture.pending;
-        gesture.pending = null;
-        if (!gesture.historyPushed) {
-          useHistoryStore.getState().pushHistory(useProjectStore.getState().project);
-          gesture.historyPushed = true;
-        }
+      if (gesture.dragging) {
         const st = useProjectStore.getState();
-        const cur = st.project.clips.find((c) => c.id === clip.id);
-        const { project: next, constrained } = applyGesturePatch(st.project, gesture, patch);
-        const nextClip = next.clips.find((c) => c.id === clip.id);
-        if (constrained && nextClip) setBlockedPointId(gesture.pointId);
-        if (!cur || !nextClip || !isNoopPatch(cur, nextClip, gesture.pointId)) {
-          st.setProject(next, { dirty: true });
+        let project = st.project;
+        if (gesture.pending) {
+          const patch = gesture.pending;
+          gesture.pending = null;
+          const result = applyGesturePatch(project, gesture, patch);
+          project = result.project;
+          if (result.constrained) setBlockedPointId(gesture.pointId);
+        }
+        const settled = settleRampLayout(project, clip.id, gesture.layoutBefore);
+        setRampLayoutHold(null);
+        if (settled !== st.project) {
+          if (!gesture.historyPushed) {
+            useHistoryStore.getState().pushHistory(st.project);
+            gesture.historyPushed = true;
+          }
+          armClipLayoutEase();
+          st.setProject(settled, { dirty: true });
         }
       } else if (!gesture.dragging) {
         // Click (no drag): open speed menu after a beat so double-click can cancel.

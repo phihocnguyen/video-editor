@@ -9,6 +9,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { claimInAppAssetDrop, isInAppAssetDrag } from "../../lib/projectActions";
+import { armClipLayoutEase, getRampLayoutHold, useEasedClipLayout } from "./clipLayoutMotion";
 import {
   addMediaClip,
   addRampPointAtPlayhead,
@@ -38,7 +39,6 @@ import {
   normalizeTransformKeyframes,
   projectDurationTicks,
   pruneEmptyTrack,
-  relockClipDuration,
   removeTrack,
   setClipRamp,
   shiftRangeAnchorId,
@@ -96,6 +96,16 @@ function formatClock(seconds: number): string {
 
 export function TimelinePanel() {
   const project = useProjectStore((s) => s.project);
+  const shownLayout = useEasedClipLayout(
+    project.clips.map((clip) => {
+      const hold = getRampLayoutHold();
+      return {
+        id: clip.id,
+        start: clip.startTicks,
+        dur: hold?.clipId === clip.id ? hold.durationTicks : clipDurationTicks(clip),
+      };
+    }),
+  );
   const tracks = useMemo(
     () => [...project.tracks].sort((a, b) => a.order - b.order),
     [project.tracks],
@@ -215,7 +225,13 @@ export function TimelinePanel() {
   const pxPerSecond = 64 * timelineZoom;
   pxPerSecondRef.current = pxPerSecond;
   const durationSeconds = ticksToSeconds(durationTicks);
-  const laneWidth = Math.max(800, durationSeconds * pxPerSecond);
+  let shownEndTicks = 0;
+  for (const item of shownLayout.values()) {
+    shownEndTicks = Math.max(shownEndTicks, item.start + item.dur);
+  }
+  if (shownEndTicks <= 0) shownEndTicks = durationTicks;
+  const layoutSeconds = ticksToSeconds(shownEndTicks);
+  const laneWidth = Math.max(800, layoutSeconds * pxPerSecond);
 
   useEffect(() => {
     const d = projectDurationTicks(clips);
@@ -364,14 +380,14 @@ export function TimelinePanel() {
   const marks = useMemo(() => {
     const step = timelineZoom >= 2 ? 1 : timelineZoom >= 1 ? 2 : 5;
     const out: { t: number; major: boolean }[] = [];
-    for (let t = 0; t <= durationSeconds + 0.001; t += step) {
+    for (let t = 0; t <= layoutSeconds + 0.001; t += step) {
       out.push({ t, major: true });
       // Light intermediate ticks halfway between labels for finer reading.
       const half = t + step / 2;
-      if (half <= durationSeconds + 0.001) out.push({ t: half, major: false });
+      if (half <= layoutSeconds + 0.001) out.push({ t: half, major: false });
     }
     return out;
-  }, [durationSeconds, timelineZoom]);
+  }, [layoutSeconds, timelineZoom]);
 
   const ticksFromClientX = useCallback(
     (clientX: number) => {
@@ -1087,8 +1103,12 @@ export function TimelinePanel() {
                         const asset = assets.find((item) => item.id === clip.assetId);
                         const nextAsset = assets.find((item) => item.id === next.assetId);
                         if (asset?.kind === "audio" || nextAsset?.kind === "audio") return [];
-                        const gapStart = clip.startTicks + clipDurationTicks(clip);
-                        const gapEnd = next.startTicks;
+                        const gapClip = shownLayout.get(clip.id);
+                        const gapNext = shownLayout.get(next.id);
+                        const gapStart =
+                          (gapClip?.start ?? clip.startTicks) +
+                          (gapClip?.dur ?? clipDurationTicks(clip));
+                        const gapEnd = gapNext?.start ?? next.startTicks;
                         if (gapEnd - gapStart < 1_000) return [];
                         return [
                           <div
@@ -1108,8 +1128,9 @@ export function TimelinePanel() {
                   .slice()
                   .sort((a, b) => a.startTicks - b.startTicks)
                   .map((clip, clipIndex, ordered) => {
-                  const start = ticksToSeconds(clip.startTicks);
-                  const dur = ticksToSeconds(clipDurationTicks(clip));
+                  const shown = shownLayout.get(clip.id);
+                  const start = ticksToSeconds(shown?.start ?? clip.startTicks);
+                  const dur = ticksToSeconds(shown?.dur ?? clipDurationTicks(clip));
                   const asset = assets.find((a) => a.id === clip.assetId);
                   const selected = selectedClipIds.includes(clip.id);
                   const dragging = draggingClipId === clip.id;
@@ -1735,23 +1756,19 @@ export function TimelinePanel() {
               if (!id) return;
               try {
                 let added = false;
+                armClipLayoutEase();
                 commitProjectChange((p) => {
                   const clip = p.clips.find((c) => c.id === id);
                   const already = hasActiveRamp(clip?.speedRamp);
                   // First time: 2 points centered on playhead. Otherwise clear.
-                  // Duration stays put (source range absorbs it, Premiere-style).
+                  // Source in/out stay; the timeline slot grows or shrinks.
                   if (already) return setClipRamp(p, id, null);
                   added = true;
                   if (!clip) throw new Error("Unknown clipId");
-                  const locked = clipDurationTicks(clip);
-                  return relockClipDuration(
-                    enableSpeedRamp(
-                      p,
-                      id,
-                      useEditorUiStore.getState().playheadTicks,
-                    ),
+                  return enableSpeedRamp(
+                    p,
                     id,
-                    locked,
+                    useEditorUiStore.getState().playheadTicks,
                   );
                 });
                 setStatusMessage(
@@ -1777,19 +1794,15 @@ export function TimelinePanel() {
               const id = useEditorUiStore.getState().selectedClipIds[0];
               if (!id) return;
               try {
+                armClipLayoutEase();
                 commitProjectChange((p) => {
                   const clip = p.clips.find((c) => c.id === id);
                   if (!clip) throw new Error("Unknown clipId");
-                  const locked = clipDurationTicks(clip);
-                  return relockClipDuration(
-                    addRampPointAtPlayhead(
-                      p,
-                      id,
-                      useEditorUiStore.getState().playheadTicks,
-                    ).project,
+                  return addRampPointAtPlayhead(
+                    p,
                     id,
-                    locked,
-                  );
+                    useEditorUiStore.getState().playheadTicks,
+                  ).project;
                 });
                 setStatusMessage("Ramp point added — drag vertically to change speed");
               } catch (error) {

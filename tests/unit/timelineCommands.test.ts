@@ -31,6 +31,7 @@ import {
   trimClip,
   updateCanvas,
   updateClipSpeed,
+  settleRampLayout,
   updateRampPoint,
   updateRampPointLocked,
   updateTrack,
@@ -302,8 +303,8 @@ describe("speed ramp commands", () => {
     expect(clipDurationTicks(slow)).toBeGreaterThan(10_000_000);
 
     // Fast-forward shortens the clip relative to the slow-mo edit.
-    // 4× is above the ceiling, so the anchor lands on MAX_RAMP_SPEED.
-    const fast = setRampPointSpeed(project, clipId, midId, 4);
+    // 20× is above the ceiling, so the anchor lands on MAX_RAMP_SPEED.
+    const fast = setRampPointSpeed(project, clipId, midId, 20);
     const fastClip = fast.clips[0];
     expect(fastClip.speedRamp!.points.find((p) => p.id === midId)!.speed).toBe(
       MAX_RAMP_SPEED,
@@ -402,7 +403,7 @@ describe("speed ramp commands", () => {
     expect(clipDurationTicks(project.clips[0])).toBeLessThan(before);
   });
 
-  it("updateRampPointLocked never changes the timeline duration", () => {
+  it("updateRampPointLocked keeps the source and changes timeline duration", () => {
     let { project, clipId } = clipProject();
     project = setClipRamp(project, clipId, {
       points: [
@@ -411,22 +412,20 @@ describe("speed ramp commands", () => {
         createSpeedPoint(0.8, 1),
       ],
     });
-    const locked = clipDurationTicks(project.clips[0]);
-    const midId = project.clips[0].speedRamp!.points[1].id;
+    const before = project.clips[0];
+    const source = before.sourceOutTicks - before.sourceInTicks;
+    const locked = clipDurationTicks(before);
+    const midId = before.speedRamp!.points[1].id;
 
-    // Slowing down fits: duration preserved, full patch applied.
     const slowed = updateRampPointLocked(project, clipId, midId, { speed: 0.5 }, locked);
+    const slowClip = slowed.project.clips[0];
     expect(slowed.constrained).toBe(false);
-    expect(
-      Math.abs(clipDurationTicks(slowed.project.clips[0]) - locked),
-    ).toBeLessThanOrEqual(1);
-    expect(
-      slowed.project.clips[0].speedRamp!.points[1].speed,
-    ).toBeCloseTo(0.5, 5);
+    expect(slowClip.sourceOutTicks - slowClip.sourceInTicks).toBe(source);
+    expect(clipDurationTicks(slowClip)).toBeGreaterThan(locked);
+    expect(slowClip.speedRamp!.points[1].speed).toBeCloseTo(0.5, 5);
   });
 
-  it("updateRampPointLocked blocks the patch at the media wall", () => {
-    // Trimmed clip: 8s of source used, 2s of headroom in the 10s asset.
+  it("updateRampPointLocked fast-forwards without eating extra source", () => {
     let { project, clipId } = clipProject();
     project = trimClip(project, clipId, 0, 8_000_000);
     project = setClipRamp(project, clipId, {
@@ -436,11 +435,10 @@ describe("speed ramp commands", () => {
         createSpeedPoint(0.95, 1),
       ],
     });
-    const locked = clipDurationTicks(project.clips[0]);
-    const midId = project.clips[0].speedRamp!.points[1].id;
+    const before = project.clips[0];
+    const locked = clipDurationTicks(before);
+    const midId = before.speedRamp!.points[1].id;
 
-    // Ceiling speed across most of the clip needs more source than the
-    // asset holds: the point stops partway at the wall.
     const pushed = updateRampPointLocked(
       project,
       clipId,
@@ -448,43 +446,64 @@ describe("speed ramp commands", () => {
       { speed: MAX_RAMP_SPEED },
       locked,
     );
-    expect(pushed.constrained).toBe(true);
-    expect(
-      Math.abs(clipDurationTicks(pushed.project.clips[0]) - locked),
-    ).toBeLessThanOrEqual(1);
+    expect(pushed.constrained).toBe(false);
     const after = pushed.project.clips[0];
-    const speed = after.speedRamp!.points[1].speed;
-    expect(speed).toBeGreaterThan(1.2);
-    expect(speed).toBeLessThan(MAX_RAMP_SPEED);
-    // Source extended into the headroom, never past the media end.
-    const span = after.sourceOutTicks - after.sourceInTicks;
-    expect(span).toBeGreaterThan(8_000_000);
-    expect(span).toBeLessThanOrEqual(10_000_000);
+    expect(after.speedRamp!.points[1].speed).toBe(MAX_RAMP_SPEED);
+    expect(after.sourceOutTicks - after.sourceInTicks).toBe(8_000_000);
+    expect(clipDurationTicks(after)).toBeLessThan(locked);
   });
 
-  it("updateRampPointLocked returns the identical project when fully blocked", () => {
-    // Full-media clip: no headroom, so pushing faster is fully resisted.
+  it("a faster ramp shortens the clip and pulls the next clip forward", () => {
     let { project, clipId } = clipProject();
-    project = setClipRamp(project, clipId, {
-      points: [
-        createSpeedPoint(0.2, 1),
-        createSpeedPoint(0.5, 1.5),
-        createSpeedPoint(0.8, 1),
-      ],
+    const first = project.clips[0];
+    project = addMediaClip(project, "asset-1", {
+      trackId: first.trackId,
+      startTicks: first.startTicks + clipDurationTicks(first),
     });
-    const locked = clipDurationTicks(project.clips[0]);
-    const midId = project.clips[0].speedRamp!.points[1].id;
-    const stuck = updateRampPointLocked(
+    const nextId = project.clips.find((c) => c.id !== clipId)!.id;
+    const nextStart = project.clips.find((c) => c.id === nextId)!.startTicks;
+    project = setClipRamp(project, clipId, {
+      points: [createSpeedPoint(0, 2), createSpeedPoint(1, 2)],
+    });
+    const edited = project.clips.find((c) => c.id === clipId)!;
+    const follower = project.clips.find((c) => c.id === nextId)!;
+    expect(edited.sourceOutTicks - edited.sourceInTicks).toBe(10_000_000);
+    expect(clipDurationTicks(edited)).toBeLessThan(10_000_000);
+    expect(follower.startTicks).toBeLessThan(nextStart);
+    expect(follower.startTicks).toBe(edited.startTicks + clipDurationTicks(edited));
+  });
+
+  it("a live ramp drag keeps neighbors still until settle", () => {
+    let { project, clipId } = clipProject();
+    const first = project.clips[0];
+    project = addMediaClip(project, "asset-1", {
+      trackId: first.trackId,
+      startTicks: first.startTicks + clipDurationTicks(first),
+    });
+    const nextId = project.clips.find((c) => c.id !== clipId)!.id;
+    project = setClipRamp(project, clipId, {
+      points: [createSpeedPoint(0, 1), createSpeedPoint(1, 1.2)],
+    });
+    const before = clipDurationTicks(project.clips.find((c) => c.id === clipId)!);
+    const nextStart = project.clips.find((c) => c.id === nextId)!.startTicks;
+    const pointId = project.clips.find((c) => c.id === clipId)!.speedRamp!.points[1]!.id;
+    const dragged = updateRampPoint(
       project,
       clipId,
-      midId,
-      { speed: MAX_RAMP_SPEED },
-      locked,
+      pointId,
+      { speed: 0.5 },
+      { ripple: false },
     );
-    expect(stuck.constrained).toBe(true);
-    // Same reference → zustand skips notifying (no re-render storm).
-    expect(stuck.project).toBe(project);
-    expect(stuck.project.clips[0].speedRamp!.points[1].speed).toBe(1.5);
+    const mid = dragged.clips.find((c) => c.id === clipId)!;
+    const held = dragged.clips.find((c) => c.id === nextId)!;
+    expect(clipDurationTicks(mid)).toBeGreaterThan(before);
+    expect(mid.sourceOutTicks - mid.sourceInTicks).toBe(10_000_000);
+    expect(held.startTicks).toBe(nextStart);
+
+    const settled = settleRampLayout(dragged, clipId, before);
+    const follower = settled.clips.find((c) => c.id === nextId)!;
+    const edited = settled.clips.find((c) => c.id === clipId)!;
+    expect(follower.startTicks).toBe(edited.startTicks + clipDurationTicks(edited));
   });
 
   it("clears a ramp with setClipRamp(null)", () => {

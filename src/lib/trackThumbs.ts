@@ -46,6 +46,33 @@ export function thumbKeyFor(assetId: string, timeSec: number): string {
   return `${assetId}@${quantizeThumbTime(timeSec).toFixed(1)}`;
 }
 
+/**
+ * Sample positions across a clip. A wider strip only adds points — every
+ * coarser count is a subset — so growing or shrinking the clip reuses the
+ * same cached frames instead of recapturing the whole filmstrip.
+ */
+export function stableFilmstripProgress(count: number): number[] {
+  const capped = Math.max(1, Math.min(10, Math.floor(count)));
+  const chosen: number[] = [];
+  const gaps: Array<[number, number]> = [[0, 1]];
+  for (let n = 0; n < capped; n += 1) {
+    let best = 0;
+    let bestWidth = -1;
+    for (let i = 0; i < gaps.length; i += 1) {
+      const width = gaps[i]![1] - gaps[i]![0];
+      if (width > bestWidth) {
+        bestWidth = width;
+        best = i;
+      }
+    }
+    const [start, end] = gaps[best]!;
+    const mid = (start + end) / 2;
+    chosen.push(mid);
+    gaps.splice(best, 1, [start, mid], [mid, end]);
+  }
+  return [...chosen].sort((a, b) => a - b);
+}
+
 const MAX_CACHE_ENTRIES = 240;
 const MAX_RETRIES = 4;
 const TAURI_MAX_INFLIGHT = 4;
@@ -75,6 +102,34 @@ export function getTrackThumbsVersion(): number {
 
 export function readTrackThumb(key: string): string | null {
   return urlCache.get(key) ?? null;
+}
+
+/** Closest cached frame for this asset, so a new slot can show something immediately. */
+export function readNearestTrackThumb(assetId: string, timeSec: number): string | null {
+  const prefix = `${assetId}@`;
+  const target = quantizeThumbTime(timeSec);
+  let bestUrl: string | null = null;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const [key, url] of urlCache) {
+    if (!key.startsWith(prefix)) continue;
+    const t = Number(key.slice(prefix.length));
+    if (!Number.isFinite(t)) continue;
+    const dist = Math.abs(t - target);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestUrl = url;
+    }
+  }
+  return bestUrl;
+}
+
+/** Remember a frame that was already captured. Used by tests and any warm cache. */
+export function primeTrackThumb(assetId: string, timeSec: number, url: string): void {
+  const key = thumbKeyFor(assetId, timeSec);
+  urlCache.delete(key);
+  urlCache.set(key, url);
+  trimCache();
+  bump();
 }
 
 function trimCache(): void {
