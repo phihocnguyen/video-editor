@@ -1,5 +1,6 @@
 import {
   detachVideoAudio,
+  unlinkClip,
   parseProjectJson,
   secondsToTicks,
   serializeProject,
@@ -308,6 +309,79 @@ export async function attachExtractedAudio(assets: MediaAsset[]): Promise<MediaA
     next.push(audioAssetFromVideo(asset, audioId, extracted.path));
   }
   return next;
+}
+
+/**
+ * Right-click "Separate audio": pull the soundtrack onto its own track.
+ * Uses the export helper when the video is still only a browser blob.
+ */
+export async function separateVideoSoundtrack(
+  project: ProjectDocument,
+  clipId: string,
+): Promise<ProjectDocument> {
+  const clip = project.clips.find((item) => item.id === clipId);
+  if (!clip || clip.kind !== "media" || !clip.assetId) {
+    throw new Error("Select a video clip");
+  }
+  if (clip.linkedClipId && project.clips.some((item) => item.id === clip.linkedClipId)) {
+    throw new Error("Audio is already on its own track");
+  }
+  let video = project.assets.find((asset) => asset.id === clip.assetId);
+  if (!video || video.kind !== "video") throw new Error("Select a video clip");
+
+  let assets = project.assets;
+  let helperAvailable = isTauriRuntime();
+  if (!helperAvailable) {
+    const { localExportHealth } = await import("./localExport");
+    const helper = await localExportHealth();
+    helperAvailable = helper.ok && helper.ffmpegFound;
+  }
+
+  if (helperAvailable && video.path.startsWith("blob:")) {
+    try {
+      const { localImportFile } = await import("./localExport");
+      const response = await fetch(video.path);
+      const blob = await response.blob();
+      const file = new File([blob], video.name || "video.mp4", {
+        type: blob.type || "video/mp4",
+      });
+      const cached = await localImportFile(file);
+      video = { ...video, path: cached.path };
+      assets = assets.map((asset) => (asset.id === video!.id ? video! : asset));
+    } catch {
+      helperAvailable = false;
+    }
+  }
+
+  if (helperAvailable && !video.extractedAudioAssetId) {
+    try {
+      assets = await attachExtractedAudio(assets);
+      video = assets.find((asset) => asset.id === video!.id) ?? video;
+    } catch {
+      helperAvailable = false;
+    }
+  }
+
+  let audioId = video.extractedAudioAssetId ?? null;
+  const extracted = audioId
+    ? assets.find((asset) => asset.id === audioId && asset.kind === "audio")
+    : null;
+  if (!extracted) {
+    if (helperAvailable && video.hasAudio === false) {
+      throw new Error("This video has no soundtrack to separate");
+    }
+    // No FFmpeg file yet. The soundtrack clip points at the same media so
+    // preview can play it, and deleting the video leaves this clip behind.
+    audioId = crypto.randomUUID();
+    video = { ...video, hasAudio: true, extractedAudioAssetId: audioId };
+    assets = [
+      ...assets.map((asset) => (asset.id === video!.id ? video! : asset)),
+      audioAssetFromVideo(video, audioId, video.path),
+    ];
+  }
+
+  // Independent clip: deleting or moving the video must leave the soundtrack.
+  return unlinkClip(detachVideoAudio({ ...project, assets }, clip.id, audioId!), clip.id);
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   registerMediaBinThumb,
   unregisterMediaBinThumb,
 } from "../lib/mediaFilmstrip";
+import { mediaFileFallbackUrl } from "../lib/mediaUrl";
 import { generateThumbnail, isTauriRuntime } from "../lib/tauri";
 import styles from "./VideoThumb.module.css";
 
@@ -18,23 +19,71 @@ interface VideoThumbProps {
   className?: string;
 }
 
-function capturePoster(video: HTMLVideoElement): string | null {
+interface PosterShot {
+  url: string;
+  bright: boolean;
+}
+
+/** Times likely to hold a picture. Lyric clips often stay black for the first second. */
+function posterTimes(duration: number): number[] {
+  const span = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  const last = Math.max(0, span - 0.05);
+  const raw =
+    span > 1.8 ? [1.6, 2.5, 4, span * 0.2, span * 0.45, 0.4] : [span * 0.5, span * 0.2, 0];
+  const times: number[] = [];
+  for (const t of raw) {
+    const clamped = Math.min(Math.max(0, t), last);
+    if (!times.some((item) => Math.abs(item - clamped) < 0.05)) times.push(clamped);
+  }
+  return times.length > 0 ? times : [0];
+}
+
+function capturePoster(video: HTMLVideoElement): PosterShot | null {
+  if (video.videoWidth < 2 || video.videoHeight < 2) return null;
   try {
-    const w = Math.max(1, Math.min(160, video.videoWidth || 160));
-    const h = Math.max(
-      1,
-      Math.round((w * (video.videoHeight || 90)) / (video.videoWidth || 160)),
-    );
+    const w = Math.min(160, video.videoWidth);
+    const h = Math.max(1, Math.round((w * video.videoHeight) / video.videoWidth));
     const canvas = document.createElement("canvas");
     canvas.width = w;
     canvas.height = h;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return null;
     ctx.drawImage(video, 0, 0, w, h);
-    return canvas.toDataURL("image/jpeg", 0.7);
+    const data = ctx.getImageData(0, 0, w, h).data;
+    let max = 0;
+    for (let i = 0; i < data.length; i += 16) {
+      const v = (data[i] ?? 0) + (data[i + 1] ?? 0) + (data[i + 2] ?? 0);
+      if (v > max) max = v;
+    }
+    return { url: canvas.toDataURL("image/jpeg", 0.7), bright: max > 24 };
   } catch {
     return null;
   }
+}
+
+function seekVideo(video: HTMLVideoElement, time: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (Math.abs(video.currentTime - time) < 0.08 && video.readyState >= 2) {
+      resolve(true);
+      return;
+    }
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      video.removeEventListener("seeked", onSeeked);
+      resolve(ok);
+    };
+    const onSeeked = () => finish(true);
+    const timer = window.setTimeout(() => finish(false), 2500);
+    video.addEventListener("seeked", onSeeked);
+    try {
+      video.currentTime = time;
+    } catch {
+      finish(false);
+    }
+  });
 }
 
 function releaseVideoEl(video: HTMLVideoElement): void {
@@ -95,59 +144,99 @@ export function VideoThumb({ src, filePath, className }: VideoThumbProps) {
           settled = true;
           window.clearTimeout(watchdog);
           video.removeEventListener("loadedmetadata", onMeta);
-          video.removeEventListener("seeked", onSeeked);
           video.removeEventListener("error", onError);
           resolve(ok);
+        };
+
+        const acceptPoster = (url: string) => {
+          releaseVideoEl(video);
+          gotPosterRef.current = true;
+          setPosterSrc(url);
+          setReady(true);
         };
 
         const onMeta = () => {
           void (async () => {
             await whenPreviewDecodeIdle();
-            if (cancelled || isDecodeEpochStale(epoch)) {
+            if (cancelled || isDecodeEpochStale(epoch) || gotPosterRef.current) {
               finish(false);
               return;
             }
-            try {
-              const t =
-                Number.isFinite(video.duration) && video.duration > 0
-                  ? Math.min(0.15, video.duration * 0.05)
-                  : 0.05;
-              video.currentTime = t;
-            } catch {
-              finish(false);
+            let fallback: string | null = null;
+            let moved = false;
+            for (const time of posterTimes(video.duration)) {
+              if (cancelled || isDecodeEpochStale(epoch) || gotPosterRef.current) {
+                finish(false);
+                return;
+              }
+              const before = video.currentTime;
+              const sought = await seekVideo(video, time);
+              if (!sought) continue;
+              if (Math.abs(video.currentTime - before) > 0.08) moved = true;
+              await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+              const shot = capturePoster(video);
+              if (!shot) continue;
+              fallback = shot.url;
+              if (shot.bright) {
+                acceptPoster(shot.url);
+                finish(true);
+                return;
+              }
+              if (!moved && time > 0.2) break;
             }
+            if (!fallback || !moved) {
+              try {
+                video.muted = true;
+                await video.play();
+              } catch {
+                /* autoplay can be blocked; fall through to the still we have */
+              }
+              const started = performance.now();
+              while (performance.now() - started < 3500 && !cancelled && !gotPosterRef.current) {
+                await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+                const shot = capturePoster(video);
+                if (shot?.bright) {
+                  video.pause();
+                  acceptPoster(shot.url);
+                  finish(true);
+                  return;
+                }
+                if (shot) fallback = shot.url;
+              }
+              video.pause();
+            }
+            if (fallback && !gotPosterRef.current) {
+              acceptPoster(fallback);
+              finish(true);
+              return;
+            }
+            setReady(true);
+            finish(true);
           })();
         };
 
-        const onSeeked = () => {
-          if (cancelled || isDecodeEpochStale(epoch) || gotPosterRef.current) {
-            finish(false);
+        const onError = () => {
+          const next = mediaFileFallbackUrl(video.currentSrc || video.src || src);
+          if (next && video.dataset.mediaFallback !== "1") {
+            video.dataset.mediaFallback = "1";
+            video.src = next;
+            video.load();
             return;
           }
-          const dataUrl = capturePoster(video);
-          releaseVideoEl(video);
-          if (dataUrl) {
-            gotPosterRef.current = true;
-            setPosterSrc(dataUrl);
-            setReady(true);
-            finish(true);
-          } else {
-            setReady(true);
-            finish(true);
-          }
-        };
-
-        const onError = () => {
           // Likely preempted by Play/quiet (src cleared) — retry, don't mark ready.
           finish(false);
         };
 
-        const watchdog = window.setTimeout(() => finish(false), 4000);
+        const watchdog = window.setTimeout(() => finish(false), 12000);
 
         video.addEventListener("loadedmetadata", onMeta);
-        video.addEventListener("seeked", onSeeked);
         video.addEventListener("error", onError);
-        video.preload = "metadata";
+        video.preload = "auto";
+        if (src.startsWith("http:") || src.startsWith("https:")) {
+          video.crossOrigin = "anonymous";
+        } else {
+          video.removeAttribute("crossorigin");
+        }
         video.src = src;
         video.load();
       });

@@ -5,15 +5,21 @@ import {
   cropClipPath,
   slotToPixels,
 } from "../../src/domain/mediaTransform";
+import { BOOTH_DECORS, boothDecorCenter, boothDecorsForGroups } from "../../src/domain/boothDecor";
+import { BOOTH_THEMES, boothThemeById } from "../../src/domain/boothThemes";
+import { BOOTH_FRAMES, BOOTH_PATTERNS } from "../../src/domain/boothOverlays";
 import { boothLayout, rotatePoint } from "../../src/domain/boothStrip";
 import {
-  STRIP_CANVAS,
-  STRIP_DURATION_TICKS,
-  applyStripTemplate,
-  getStripTemplate,
+  BOOTH_DURATION_TICKS,
+  applyBoothTemplate,
+  isStripGeneratedAsset,
   swapStripCellByClip,
 } from "../../src/domain/stripTemplates";
 import { clipDurationTicks } from "../../src/domain/timelineCommands";
+import {
+  clipVisibleWithTransition,
+  transitionAwareMediaTimeSec,
+} from "../../src/domain/transitions";
 import { buildFfmpegArgs, mediaPlacementFilters } from "../../src/domain/ffmpegArgs";
 import { buildRenderPlan } from "../../src/domain/renderPlan";
 import { DEFAULT_CLIP_EFFECTS } from "../../src/domain/effects";
@@ -93,103 +99,27 @@ describe("cropClipPath", () => {
   });
 });
 
-describe("applyStripTemplate", () => {
-  it("strip-4: canvas size, 10s, one track per cell, no audio clips", () => {
-    const t = getStripTemplate("strip-4")!;
-    const project = applyStripTemplate(
-      t,
-      [asset(0, 1920, 1080), asset(1, 1080, 1920), asset(2, 800, 800), asset(3, 640, 480)],
-    );
-    expect(project.canvas.width).toBe(STRIP_CANVAS.width);
-    expect(project.canvas.height).toBe(STRIP_CANVAS.height);
-    expect(project.canvas.frameRate).toBe(30);
-    expect(project.tracks.filter((tr) => tr.kind === "audio")).toHaveLength(1);
-    expect(project.clips.every((c) => c.kind === "media")).toBe(true);
-    const cells = project.clips.filter((c) => c.slotId);
-    expect(cells).toHaveLength(4);
-    // Row-major: clip i sits in slot i with matching crop.
-    cells.forEach((clip, i) => {
-      expect(clip.crop).toMatchObject(t.slots[i]!);
-      expect(clip.startTicks).toBe(0);
-    });
-    // Every cell transform covers its slot.
-    const dims: Record<string, { width: number; height: number }> = {
-      a0: { width: 1920, height: 1080 },
-      a1: { width: 1080, height: 1920 },
-      a2: { width: 800, height: 800 },
-      a3: { width: 640, height: 480 },
-    };
-    for (const clip of cells) {
-      const slot = clip.crop!;
-      const px = {
-        x: slot.x * project.canvas.width,
-        y: slot.y * project.canvas.height,
-        w: slot.w * project.canvas.width,
-        h: slot.h * project.canvas.height,
-      };
-      const cov = coverTransform(px, dims[clip.assetId!]!, project.canvas);
-      expect(clip.transform.x).toBeCloseTo(px.x + px.w / 2, 3);
-      expect(clip.transform.y).toBeCloseTo(px.y + px.h / 2, 3);
-      expect(clip.transform.scaleX).toBeCloseTo(cov.scale, 6);
-      void clip;
-    }
-  });
-
-  it("too few files leave empty cells; too many files are not placed", () => {
-    const t = getStripTemplate("strip-8")!;
-    const few = applyStripTemplate(t, [asset(0, 1920, 1080)]);
-    expect(few.clips.filter((c) => c.slotId)).toHaveLength(1);
-    const many = applyStripTemplate(
-      t,
-      Array.from({ length: 12 }, (_, i) => asset(i, 1920, 1080)),
-    );
-    const placedIds = many.clips.filter((c) => c.slotId).map((c) => c.assetId);
-    expect(placedIds).toHaveLength(8);
-    expect(placedIds).toEqual(Array.from({ length: 8 }, (_, i) => `a${i}`));
-  });
-
-  it("images hold the full 10 seconds", () => {
-    const t = getStripTemplate("strip-4")!;
-    const project = applyStripTemplate(t, [
-      { id: "img", kind: "image", width: 1200, height: 800, durationTicks: null },
-    ]);
-    const clip = project.clips.find((c) => c.slotId)!;
-    expect(clipDurationTicks(clip)).toBe(STRIP_DURATION_TICKS);
-  });
-
-  it("film-pair-8: n assets → 2n clips, only left is grayscale", () => {
-    const t = getStripTemplate("film-pair-8")!;
-    const files = Array.from({ length: 8 }, (_, i) => asset(i, 1920, 1080));
-    const project = applyStripTemplate(t, files);
-    const cells = project.clips.filter((c) => c.slotId);
-    expect(cells).toHaveLength(16);
-    const left = cells.slice(0, 8);
-    const right = cells.slice(8);
-    expect(left.every((c) => c.effects.grayscale)).toBe(true);
-    expect(right.every((c) => !c.effects.grayscale)).toBe(true);
-    // File i is in left cell i and the matching right cell.
-    left.forEach((clip, i) => expect(clip.assetId).toBe(`a${i}`));
-    right.forEach((clip, i) => expect(clip.assetId).toBe(`a${i}`));
-    // Frame sits on locked order-0 track above the cells.
-    const frameTrack = project.tracks.find((tr) => tr.name === "Frame")!;
-    expect(frameTrack.order).toBe(0);
-    expect(frameTrack.locked).toBe(true);
+describe("isStripGeneratedAsset", () => {
+  it("flags the booth paper, stickers, patterns and frames only", () => {
+    expect(isStripGeneratedAsset("__booth-paper__")).toBe(true);
+    expect(isStripGeneratedAsset("__booth-decor-note-a")).toBe(true);
+    expect(isStripGeneratedAsset("__booth-pattern-dots")).toBe(true);
+    expect(isStripGeneratedAsset("__booth-frame-gold")).toBe(true);
+    expect(isStripGeneratedAsset("a0")).toBe(false);
+    expect(isStripGeneratedAsset("imported-photo")).toBe(false);
   });
 });
 
 describe("photo booth", () => {
-  it("lays a tilted white card of four landscape cells on a chosen background", () => {
-    const t = getStripTemplate("booth-4")!;
-    expect(t.variant).toBe("booth");
-    const project = applyStripTemplate(
-      t,
+  it("lays a white card of four landscape cells on a chosen background", () => {
+    const project = applyBoothTemplate(
       [asset(0, 1920, 1080), asset(1, 1080, 1920), asset(2, 800, 800), asset(3, 640, 480)],
-      { backgroundColor: "#112233", durationTicks: 15_000_000, grayscale: true },
+      { themeId: "classic", backgroundColor: "#112233", durationTicks: 15_000_000, grayscale: true },
     );
     expect(project.canvas).toMatchObject({ width: 1080, height: 1350, backgroundColor: "#112233" });
     const cells = project.clips.filter((c) => c.slotId);
     expect(cells).toHaveLength(4);
-    const layout = boothLayout();
+    const layout = boothLayout({ upright: true });
     const cx = layout.canvas.width / 2;
     const cy = layout.canvas.height / 2;
     cells.forEach((clip, i) => {
@@ -216,21 +146,163 @@ describe("photo booth", () => {
     // Paper paints under the photos (higher track order).
     const cellTrack = project.tracks.find((tr) => tr.id === cells[0]!.trackId)!;
     expect(paperTrack.order).toBeGreaterThan(cellTrack.order);
+    expect(project.assets.some((a) => a.id.startsWith("__booth-decor-"))).toBe(false);
+  });
+
+  it("keeps the classic tilt only when upright is off", () => {
+    const tilted = applyBoothTemplate([asset(0, 1920, 1080)], {
+      themeId: "classic",
+      upright: false,
+    });
+    const tiltedLayout = boothLayout({ upright: false });
+    expect(tilted.clips.find((c) => c.slotId)!.transform.rotation).toBe(tiltedLayout.rotationDeg);
+
+    const flat = applyBoothTemplate([asset(0, 1920, 1080)], { themeId: "classic" });
+    expect(flat.clips.find((c) => c.slotId)!.transform.rotation).toBe(0);
+  });
+
+  it("shapes the card from the photo count and column count", () => {
+    const two = applyBoothTemplate([asset(0, 1920, 1080), asset(1, 1920, 1080)], {
+      themeId: "classic",
+      photoCount: 2,
+    });
+    expect(two.clips.filter((c) => c.slotId)).toHaveLength(2);
+    expect(two.tracks.filter((tr) => tr.name.startsWith("cell-"))).toHaveLength(2);
+
+    const grid = applyBoothTemplate(
+      Array.from({ length: 6 }, (_, i) => asset(i, 1920, 1080)),
+      { themeId: "classic", photoCount: 6, columns: 2 },
+    );
+    expect(grid.clips.filter((c) => c.slotId)).toHaveLength(6);
+    const layout = boothLayout({ upright: true, photos: 6, columns: 2 });
+    expect(layout.columns).toBe(2);
+    expect(layout.cells).toHaveLength(6);
+    // Extra files past the photo count are ignored.
+    const extra = applyBoothTemplate(
+      Array.from({ length: 4 }, (_, i) => asset(i, 1920, 1080)),
+      { themeId: "classic", photoCount: 2 },
+    );
+    expect(extra.clips.filter((c) => c.slotId)).toHaveLength(2);
+  });
+
+  it("draws a background pattern behind the card", () => {
+    const pattern = BOOTH_PATTERNS[0]!;
+    const project = applyBoothTemplate([asset(0, 1920, 1080)], {
+      themeId: "classic",
+      patternId: pattern.id,
+    });
+    const clip = project.clips.find((c) => c.assetId === pattern.id);
+    expect(clip).toBeTruthy();
+    const track = project.tracks.find((tr) => tr.id === clip!.trackId)!;
+    const paperTrack = project.tracks.find((tr) => tr.id === "strip-track-paper")!;
+    expect(track.order).toBeGreaterThan(paperTrack.order);
+    expect(project.assets.find((a) => a.id === pattern.id)?.width).toBe(project.canvas.width);
+  });
+
+  it("draws a frame over the card, aligned with the paper transform", () => {
+    const frame = BOOTH_FRAMES[0]!;
+    const project = applyBoothTemplate([asset(0, 1920, 1080)], {
+      themeId: "classic",
+      frameId: frame.id,
+    });
+    const clip = project.clips.find((c) => c.assetId === frame.id)!;
+    const paper = project.clips.find((c) => c.assetId === "__booth-paper__")!;
+    expect(clip.transform.x).toBeCloseTo(paper.transform.x, 6);
+    expect(clip.transform.y).toBeCloseTo(paper.transform.y, 6);
+    expect(clip.transform.scaleX).toBeCloseTo(paper.transform.scaleX, 6);
+    expect(clip.transform.rotation).toBe(paper.transform.rotation);
+    const frameTrack = project.tracks.find((tr) => tr.id === clip.trackId)!;
+    const cellTrack = project.tracks.find((tr) => tr.name === "cell-0")!;
+    expect(frameTrack.order).toBeLessThan(cellTrack.order);
+    expect(project.assets.find((a) => a.id === frame.id)?.height).toBe(
+      project.assets.find((a) => a.id === "__booth-paper__")!.height,
+    );
+  });
+
+  it("prints a caption on a reserved band at the bottom of the card", () => {
+    const project = applyBoothTemplate([asset(0, 1920, 1080)], {
+      themeId: "graduation",
+      title: "Class of 2026",
+      titleColor: "#F2C14E",
+    });
+    const text = project.clips.find((c) => c.kind === "text")!;
+    expect(text.text?.content).toBe("Class of 2026");
+    expect(text.text?.color).toBe("#F2C14E");
+    expect(text.transform.rotation).toBe(0);
+    const plain = boothLayout({ upright: true, stickerMargin: true });
+    const withBand = boothLayout({
+      upright: true,
+      stickerMargin: true,
+      titleBand: Math.round(project.canvas.height * 0.08),
+    });
+    expect(withBand.paper.h).toBeGreaterThan(plain.paper.h);
+    // Caption sits below the photo windows.
+    const cells = project.clips.filter((c) => c.slotId);
+    const lastCell = cells[cells.length - 1]!;
+    expect(text.transform.y).toBeGreaterThan(lastCell.transform.y);
+  });
+
+  it("draws theme stickers around the card", () => {
+    const love = boothThemeById("love");
+    const project = applyBoothTemplate([asset(0, 1920, 1080)], {
+      themeId: "love",
+      decorGroups: love.groups.map((group) => group.id),
+      durationTicks: 5_000_000,
+    });
+    expect(project.clips.filter((c) => c.slotId).every((c) => c.transform.rotation === 0)).toBe(true);
+    expect(project.assets.some((a) => a.id.includes("love-heart"))).toBe(true);
+    const decors = boothDecorsForGroups([]);
+    expect(decors).toHaveLength(0);
+    const layout = boothLayout({ upright: true, stickerMargin: true });
+    const stickers = love.decors.filter((decor) => decor.anchor !== "backdrop");
+    for (const decor of stickers) {
+      const clip = project.clips.find((c) => c.assetId === decor.id)!;
+      const center = boothDecorCenter(decor, layout.paper, layout.canvas);
+      expect(clip).toBeTruthy();
+      expect(clip.transform.x).toBeCloseTo(center.x, 3);
+      expect(clip.transform.y).toBeCloseTo(center.y, 3);
+      expect(clip.transform.rotation).toBe(decor.rotation);
+    }
+  });
+
+  it("draws a chosen theme around an upright card", () => {
+    const ids = BOOTH_THEMES.flatMap((theme) => theme.decors.map((decor) => decor.id));
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(BOOTH_THEMES.flatMap((theme) => theme.decors).every((decor) => decor.svg.includes("<svg"))).toBe(
+      true,
+    );
+    const classic = applyBoothTemplate([asset(0, 1920, 1080)], { themeId: "classic" });
+    expect(classic.clips.find((c) => c.slotId)!.transform.rotation).toBe(0);
+    expect(classic.assets.some((a) => a.id.startsWith("__booth-decor-"))).toBe(false);
+    for (const theme of BOOTH_THEMES) {
+      expect(/^#[0-9a-fA-F]{6}$/.test(theme.titleColor)).toBe(true);
+    }
+  });
+
+  it("ships at least one new expanded theme with flowers or leaves", () => {
+    const grad = boothThemeById("graduation");
+    const flowers = grad.decors.filter((decor) => decor.group === "flowers");
+    expect(flowers.length).toBeGreaterThanOrEqual(2);
+    const autumn = boothThemeById("autumn");
+    expect(autumn.decors.some((decor) => decor.group === "maple")).toBe(true);
+    expect(BOOTH_DECORS.every((decor) => decor.svg.includes("<svg"))).toBe(true);
   });
 
   it("holds a short video for the chosen length instead of playing it out", () => {
-    const t = getStripTemplate("booth-4")!;
-    const project = applyStripTemplate(t, [asset(0, 1920, 1080, 2_000_000)], {
+    const project = applyBoothTemplate([asset(0, 1920, 1080, 2_000_000)], {
+      themeId: "classic",
       durationTicks: 8_000_000,
     });
     const clip = project.clips.find((c) => c.slotId)!;
     expect(clip.sourceOutTicks).toBeLessThanOrEqual(100_000);
     expect(clipDurationTicks(clip)).toBe(8_000_000);
+    expect(clipVisibleWithTransition(clip, 4_000_000, project)).toBe(true);
+    expect(transitionAwareMediaTimeSec(clip, 4_000_000)).toBeLessThan(0.1);
   });
 
   it("keeps the booth length when a cell is replaced", () => {
-    const t = getStripTemplate("booth-4")!;
-    let project = applyStripTemplate(t, [asset(0, 1920, 1080)], {
+    let project = applyBoothTemplate([asset(0, 1920, 1080)], {
+      themeId: "classic",
       durationTicks: 12_000_000,
       grayscale: false,
     });
@@ -268,11 +340,9 @@ describe("photo booth", () => {
   });
 
   it("exports the still for the chosen length on the chosen background", () => {
-    const t = getStripTemplate("booth-4")!;
-    const project = applyStripTemplate(
-      t,
+    const project = applyBoothTemplate(
       [{ id: "img", kind: "image", width: 1200, height: 800, durationTicks: null }],
-      { backgroundColor: "#112233", durationTicks: 6_000_000 },
+      { themeId: "classic", backgroundColor: "#112233", durationTicks: 6_000_000 },
     );
     project.assets = project.assets.map((a) =>
       a.id === "img"
@@ -303,6 +373,12 @@ describe("photo booth", () => {
     const color = built.args.find((arg) => arg.startsWith("color="));
     expect(color).toContain("0x112233");
     expect(built.args.join(" ")).toContain("-t 6.000");
+  });
+
+  it("default duration is the 10 second booth hold", () => {
+    const project = applyBoothTemplate([asset(0, 1920, 1080)], { themeId: "classic" });
+    const clip = project.clips.find((c) => c.slotId)!;
+    expect(clipDurationTicks(clip)).toBe(BOOTH_DURATION_TICKS);
   });
 });
 

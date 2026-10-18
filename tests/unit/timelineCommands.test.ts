@@ -655,6 +655,14 @@ describe("detach video audio", () => {
     expect(audios[0]!.linkedClipId).toBe(left.id);
   });
 
+  it("keeps a separated soundtrack when the video is deleted", () => {
+    let project = addMediaClip(pairProject(), "asset-1");
+    const video = project.clips.find((c) => c.assetId === "asset-1")!;
+    project = unlinkClip(project, video.id);
+    project = deleteClips(project, [video.id]);
+    expect(project.clips.map((c) => c.assetId)).toEqual(["audio-1"]);
+  });
+
   it("deletes the soundtrack of an older unlocked pair", () => {
     let project = addMediaClip(pairProject(), "asset-1");
     const video = project.clips.find((c) => c.assetId === "asset-1")!;

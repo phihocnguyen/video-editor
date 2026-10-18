@@ -18,4 +18,7 @@ export * from "./renderPlan";
 export * from "./ffmpegArgs";
 export * from "./snap";
 export * from "./boothStrip";
+export * from "./boothDecor";
+export * from "./boothOverlays";
+export * from "./boothThemes";
 export * from "./stripTemplates";

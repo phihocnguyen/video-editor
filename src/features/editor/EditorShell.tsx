@@ -21,6 +21,7 @@ import {
 } from "../../lib/clipClipboard";
 import { getAppInfo, isTauriRuntime } from "../../lib/tauri";
 import { resolveMediaUrl } from "../../lib/mediaUrl";
+import { separateSelectedVideoAudio } from "../../lib/separateAudioCommand";
 import { warmMediaUrl } from "../../lib/mediaVideoPool";
 import { requestPlay, togglePlay } from "../../lib/playback";
 import {
@@ -388,6 +389,11 @@ export function EditorShell() {
       if (typing) return;
 
       const bare = event.key.toLowerCase();
+      if (mod && event.shiftKey && bare === "a") {
+        event.preventDefault();
+        void separateSelectedVideoAudio();
+        return;
+      }
       if (!mod && !event.altKey && bare === "c") {
         event.preventDefault();
         useEditorUiStore.getState().setTool("razor");
@@ -516,6 +522,11 @@ export function EditorShell() {
     { label: "Copy", shortcut: "Ctrl+C", onSelect: copySelectedClips },
     { label: "Paste", shortcut: "Ctrl+V", onSelect: pasteClipboardClips },
     { label: "Duplicate", shortcut: "Ctrl+D", onSelect: duplicateSelectedClips },
+    {
+      label: "Separate audio",
+      shortcut: "Ctrl+Shift+A",
+      onSelect: () => void separateSelectedVideoAudio(),
+    },
     {
       label: "Delete",
       shortcut: "Del",

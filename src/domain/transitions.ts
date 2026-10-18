@@ -11,7 +11,14 @@ function durationTicksOf(clip: Clip): number {
     return rampDurationTicks(clip.speedRamp, source);
   }
   const speed = Number.isFinite(clip.speed) && clip.speed > 0 ? clip.speed : 1;
-  return Math.max(0, Math.round(source / speed));
+  const natural = Math.max(0, Math.round(source / speed));
+  // Photo-booth cells hold one frame for spanTicks. Visibility has to follow
+  // that slot, or the picture drops out as soon as playback passes the sample.
+  const span = clip.spanTicks;
+  if (typeof span === "number" && Number.isFinite(span) && span > natural) {
+    return Math.round(span);
+  }
+  return natural;
 }
 
 /** Simple fade-family transitions between adjacent clips. */

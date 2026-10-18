@@ -9,12 +9,14 @@ import {
   createReadStream,
   existsSync,
   mkdirSync,
+  realpathSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { join, resolve } from "node:path";
+import { extname, join, resolve, sep } from "node:path";
 import type { ProjectDocument } from "../src/domain/project.ts";
 import type {
   RenderQualityPreset,
@@ -46,6 +48,94 @@ const AUDIO = join(ROOT, "audio");
 mkdirSync(MEDIA, { recursive: true });
 mkdirSync(EXPORTS, { recursive: true });
 mkdirSync(AUDIO, { recursive: true });
+
+/** Only files written into the local cache may be streamed back to the browser. */
+function cacheMediaFile(filePath: string): string | null {
+  if (!filePath || filePath.startsWith("blob:")) return null;
+  let real: string;
+  let root: string;
+  try {
+    real = realpathSync(filePath);
+    root = realpathSync(ROOT);
+  } catch {
+    return null;
+  }
+  if (real !== root && !real.startsWith(root + sep)) return null;
+  return real;
+}
+
+function mediaContentType(filePath: string): string {
+  switch (extname(filePath).toLowerCase()) {
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".bmp":
+      return "image/bmp";
+    case ".svg":
+      return "image/svg+xml";
+    case ".mp4":
+    case ".m4v":
+      return "video/mp4";
+    case ".webm":
+      return "video/webm";
+    case ".mov":
+      return "video/quicktime";
+    case ".m4a":
+    case ".aac":
+      return "audio/mp4";
+    case ".mp3":
+      return "audio/mpeg";
+    case ".wav":
+      return "audio/wav";
+    case ".ogg":
+      return "audio/ogg";
+    case ".flac":
+      return "audio/flac";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+/** Stream a cache file, including byte ranges so the browser can seek a poster. */
+function serveMediaFile(req: IncomingMessage, res: ServerResponse, filePath: string): void {
+  const size = statSync(filePath).size;
+  const type = mediaContentType(filePath);
+  const range = req.headers.range;
+  cors(res);
+  if (range) {
+    const match = /bytes=(\d*)-(\d*)/.exec(range);
+    const start = match?.[1] ? Number(match[1]) : 0;
+    let end = match?.[2] ? Number(match[2]) : size - 1;
+    if (!match || !Number.isFinite(start) || !Number.isFinite(end) || start >= size || start > end) {
+      res.writeHead(416, { "Content-Range": `bytes */${size}` });
+      res.end();
+      return;
+    }
+    end = Math.min(end, size - 1);
+    res.writeHead(206, {
+      "Content-Type": type,
+      "Content-Length": end - start + 1,
+      "Content-Range": `bytes ${start}-${end}/${size}`,
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "private, max-age=3600",
+    });
+    createReadStream(filePath, { start, end }).pipe(res);
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": type,
+    "Content-Length": size,
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "private, max-age=3600",
+  });
+  createReadStream(filePath).pipe(res);
+}
 
 type Job = {
   id: string;
@@ -290,6 +380,19 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "POST" && url.pathname === "/api/import") {
       await handleImport(req, res);
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/media-ready") {
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/media-file") {
+      const filePath = cacheMediaFile(url.searchParams.get("path") ?? "");
+      if (!filePath) {
+        sendJson(res, 404, { error: "Not found" });
+        return;
+      }
+      serveMediaFile(req, res, filePath);
       return;
     }
     if (req.method === "POST" && url.pathname === "/api/extract-audio") {

@@ -323,9 +323,12 @@ export function PreviewPanel() {
       const cur = ui.playheadTicks;
       const next = cur + delta;
       if (next >= duration) {
-        setPlayheadTicks(duration);
+        // Park on the last frame. Landing exactly on the end hides every clip
+        // (visibility is exclusive), so the preview went blank when play finished.
+        const parked = Math.max(0, duration - 1);
+        setPlayheadTicks(parked);
         setPlaying(false);
-        bumpListPlayhead(duration, true);
+        bumpListPlayhead(parked, true);
         return;
       }
       if (next <= 0) {

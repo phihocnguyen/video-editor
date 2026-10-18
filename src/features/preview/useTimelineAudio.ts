@@ -12,7 +12,7 @@ import {
   type MediaAsset,
   type Track,
 } from "../../domain";
-import { resolveMediaUrl } from "../../lib/mediaUrl";
+import { resolveAudioPreviewUrl } from "../../lib/mediaUrl";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 
 interface ActiveAudio {
@@ -43,7 +43,14 @@ function findActiveAudioClips(
     // Video preview element already plays video audio — only drive dedicated audio clips here.
     if (asset.kind !== "audio") continue;
 
-    const url = resolveMediaUrl(asset.path, asset.id);
+    const partner = clip.linkedClipId
+      ? clips.find((item) => item.id === clip.linkedClipId)
+      : null;
+    const partnerAsset = partner?.assetId ? assetById.get(partner.assetId) : null;
+    const sourceVideo = [...assetById.values()].find(
+      (item) => item.kind === "video" && item.extractedAudioAssetId === asset.id,
+    );
+    const url = resolveAudioPreviewUrl(asset, partnerAsset ?? sourceVideo);
     if (!url) continue;
     out.push({ clip, asset, url });
   }

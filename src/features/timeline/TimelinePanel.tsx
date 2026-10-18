@@ -8,7 +8,11 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { claimInAppAssetDrop, isInAppAssetDrag } from "../../lib/projectActions";
+import {
+  claimInAppAssetDrop,
+  isInAppAssetDrag,
+} from "../../lib/projectActions";
+import { separateSelectedVideoAudio } from "../../lib/separateAudioCommand";
 import { armClipLayoutEase, getRampLayoutHold, useEasedClipLayout } from "./clipLayoutMotion";
 import {
   addMediaClip,
@@ -58,7 +62,7 @@ import {
   duplicateSelectedClips,
   pasteClipboardClips,
 } from "../../lib/clipClipboard";
-import { resolveMediaUrl } from "../../lib/mediaUrl";
+import { resolveAudioPreviewUrl, resolveMediaUrl } from "../../lib/mediaUrl";
 import { commitProjectChange, useHistoryStore } from "../../stores/historyStore";
 import {
   DEFAULT_TRACK_HEIGHT_PX,
@@ -120,6 +124,7 @@ export function TimelinePanel() {
   const [clipMenu, setClipMenu] = useState<{
     x: number;
     y: number;
+    clipId: string;
   } | null>(null);
 
   const clipMenuRef = useRef<HTMLDivElement>(null);
@@ -366,13 +371,23 @@ export function TimelinePanel() {
       setClipMenu(null);
       setTrackMenu(null);
     };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        (clipMenuRef.current?.contains(target) || trackMenuRef.current?.contains(target))
+      ) {
+        return;
+      }
+      close();
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") close();
     };
-    window.addEventListener("pointerdown", close);
+    window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKey);
     };
   }, [clipMenu, trackMenu]);
@@ -1144,9 +1159,23 @@ export function TimelinePanel() {
                     clip.kind === "media" &&
                     asset?.kind !== "audio";
                   const clipWidthPx = Math.max(24, dur * pxPerSecond);
+                  const linkedVideo = clip.linkedClipId
+                    ? project.clips.find((item) => item.id === clip.linkedClipId)
+                    : null;
+                  const linkedVideoAsset = linkedVideo?.assetId
+                    ? assets.find((item) => item.id === linkedVideo.assetId)
+                    : null;
+                  const sourceVideoAsset =
+                    asset?.kind === "audio"
+                      ? assets.find(
+                          (item) => item.kind === "video" && item.extractedAudioAssetId === asset.id,
+                        )
+                      : null;
                   const mediaUrl =
                     asset && !asset.missing
-                      ? resolveMediaUrl(asset.path, asset.id)
+                      ? asset.kind === "audio"
+                        ? resolveAudioPreviewUrl(asset, linkedVideoAsset ?? sourceVideoAsset)
+                        : resolveMediaUrl(asset.path, asset.id)
                       : null;
                   const sourceInSec = ticksToSeconds(clip.sourceInTicks);
                   const sourceOutSec = ticksToSeconds(clip.sourceOutTicks);
@@ -1232,7 +1261,7 @@ export function TimelinePanel() {
                             : linkedClipIds(project, clip.id);
                         setSelectedClipIds(ids);
                         if (alt) setLinkBypassClipIds([clip.id]);
-                        setClipMenu(placeCtxMenu(e.clientX, e.clientY));
+                        setClipMenu({ ...placeCtxMenu(e.clientX, e.clientY), clipId: clip.id });
                       }}
                       title={labelTitle}
                     >
@@ -1826,6 +1855,30 @@ export function TimelinePanel() {
             Clip properties
           </button>
           <div className={styles.ctxSep} />
+          {(() => {
+            const menuClip = project.clips.find((c) => c.id === clipMenu.clipId);
+            const menuAsset = menuClip?.assetId
+              ? project.assets.find((a) => a.id === menuClip.assetId)
+              : null;
+            const alreadySplit = Boolean(
+              menuClip?.linkedClipId &&
+                project.clips.some((c) => c.id === menuClip.linkedClipId),
+            );
+            if (!menuClip || menuAsset?.kind !== "video" || alreadySplit) return null;
+            return (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setClipMenu(null);
+                  void separateSelectedVideoAudio();
+                }}
+              >
+                Separate audio
+                <kbd className={styles.ctxKbd}>Ctrl+Shift+A</kbd>
+              </button>
+            );
+          })()}
           {selectedClipIds.some((id) =>
             project.clips.some((c) => c.id === id && c.linkedClipId),
           ) ? (

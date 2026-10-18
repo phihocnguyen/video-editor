@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { addMediaClip, relinkAsset, type MediaKind } from "../../domain";
+import { addMediaClip, isStripGeneratedAsset, relinkAsset, type MediaKind } from "../../domain";
 import {
   actionImportDroppedFiles,
   actionImportMedia,
@@ -12,7 +12,7 @@ import {
 } from "../../lib/projectActions";
 import { VideoThumb } from "../../components/VideoThumb";
 import { AudioIcon, MediaIcon } from "../../components/icons";
-import { canShowThumbnail, resolveMediaUrl } from "../../lib/mediaUrl";
+import { canShowThumbnail, mediaFileFallbackUrl, resolveMediaUrl } from "../../lib/mediaUrl";
 import { warmMediaUrl } from "../../lib/mediaVideoPool";
 import { commitProjectChange } from "../../stores/historyStore";
 import { useEditorUiStore } from "../../stores/editorUiStore";
@@ -32,6 +32,7 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
   const setProject = useProjectStore((s) => s.setProject);
   const setStatusMessage = useEditorUiStore((s) => s.setStatusMessage);
   const [busy, setBusy] = useState(false);
+  const [, setMediaPortTick] = useState(0);
   const [fileDrag, setFileDrag] = useState(false);
   const dragDepth = useRef(0);
   const extractedAudioIds = new Set(
@@ -41,15 +42,22 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
   );
   const visible = assets.filter(
     (asset) =>
-      !extractedAudioIds.has(asset.id) && (!filter || asset.kind === filter),
+      !extractedAudioIds.has(asset.id) &&
+      !isStripGeneratedAsset(asset.id) &&
+      (!filter || asset.kind === filter),
   );
   const title =
     filter === "audio" ? "Audio" : filter === "image" ? "Photos" : "Media";
 
   useEffect(() => {
     const finish = () => endInAppAssetDrag();
+    const refreshPosters = () => setMediaPortTick((tick) => tick + 1);
     window.addEventListener("dragend", finish);
-    return () => window.removeEventListener("dragend", finish);
+    window.addEventListener("klipcut-media-port", refreshPosters);
+    return () => {
+      window.removeEventListener("dragend", finish);
+      window.removeEventListener("klipcut-media-port", refreshPosters);
+    };
   }, []);
 
   // Keep preview decoders warm for every video already in the bin.
@@ -237,7 +245,15 @@ export function MediaBinPanel({ filter, hideTitle = false }: MediaBinPanelProps)
                 >
                   <div className={styles.thumb} data-kind={asset.kind}>
                     {thumbUrl && asset.kind === "image" ? (
-                      <img src={thumbUrl} alt="" draggable={false} />
+                      <img
+                        src={thumbUrl}
+                        alt=""
+                        draggable={false}
+                        onError={(event) => {
+                          const next = mediaFileFallbackUrl(event.currentTarget.src);
+                          if (next) event.currentTarget.src = next;
+                        }}
+                      />
                     ) : thumbUrl && asset.kind === "video" ? (
                       <VideoThumb
                         src={thumbUrl}
