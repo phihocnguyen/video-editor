@@ -113,13 +113,13 @@ describe("media transform export", () => {
     const built = buildFfmpegArgs(plan, "C:/out/x.mp4", { fileExists: () => true });
     const filter = built.args[built.args.indexOf("-filter_complex") + 1];
     expect(built.args.join(" ")).toContain("color=c=0x112233");
-    // Fitted 1000x500 into 1080x1920 → 1080x540; x0.5 → 540x270 in output space.
+    // Fitted 1000x500 into 1920x1080 → 1920x960; x0.5 → 960x480 in output space.
     expect(filter).toContain(
-      "scale=540:270:force_original_aspect_ratio=decrease:flags=lanczos",
+      "scale=960:480:force_original_aspect_ratio=decrease:flags=lanczos",
     );
-    expect(filter).toContain("pad=1080:1920");
+    expect(filter).toContain("pad=1920:1080");
     // No redundant full-frame resample after pad (keeps export sharp).
-    expect(filter).not.toContain("scale=1080:1920");
+    expect(filter).not.toContain("scale=1920:1080");
     expect(filter).toContain("setsar=1");
   });
 

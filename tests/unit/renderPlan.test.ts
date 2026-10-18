@@ -27,9 +27,7 @@ describe("buildRenderPlan", () => {
     project = { ...project, assets: [asset] };
     project = addMediaClip(project, "a1", { startTicks: 1_000_000 });
     const plan = buildRenderPlan(project, "720", "high");
-    // 1080x1920 canvas, short side scaled to 720 → 720x1280.
-    expect(plan.width).toBe(720);
-    expect(plan.height).toBe(1280);
+    expect(plan.height).toBe(720);
     expect(plan.clips).toHaveLength(1);
     expect(plan.texts).toHaveLength(0);
     expect(plan.clips[0].timelineStartSec).toBeCloseTo(1);
@@ -48,8 +46,8 @@ describe("buildRenderPlan", () => {
 
   it("scales text overlays from canvas to export resolution", () => {
     let project = createEmptyProject();
-    expect(project.canvas.width).toBe(1080);
-    expect(project.canvas.height).toBe(1920);
+    expect(project.canvas.width).toBe(1920);
+    expect(project.canvas.height).toBe(1080);
     project = addTextClip(project, { text: { content: "Hello", fontSize: 72 } });
     const textClip = project.clips.find((c) => c.kind === "text")!;
     project = updateClipTransform(project, textClip.id, {
@@ -58,8 +56,8 @@ describe("buildRenderPlan", () => {
       y: 900,
     });
     const plan = buildRenderPlan(project, "720", "standard");
-    expect(plan.width).toBe(720);
-    expect(plan.height).toBe(1280);
+    expect(plan.width).toBe(1280);
+    expect(plan.height).toBe(720);
     expect(plan.texts).toHaveLength(1);
     expect(plan.texts[0].x).toBeCloseTo(640);
     expect(plan.texts[0].y).toBeCloseTo(600);

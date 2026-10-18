@@ -97,8 +97,8 @@ describe("timelineCommands", () => {
 
   it("centres a new media clip transform", () => {
     const media = addMediaClip(withAsset(), "asset-1");
-    expect(media.clips[0].transform.x).toBe(540);
-    expect(media.clips[0].transform.y).toBe(960);
+    expect(media.clips[0].transform.x).toBe(960);
+    expect(media.clips[0].transform.y).toBe(540);
 
     const withText = addTextClip(media, { text: { content: "Hi" } });
     const textClip = withText.clips.find((c) => c.kind === "text")!;

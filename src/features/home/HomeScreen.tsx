@@ -314,7 +314,7 @@ export function HomeScreen() {
     setBusy("Creating project…");
     setStatus(null);
     setStatusError(false);
-    newProject(name, { width: 1080, height: 1920, frameRate: 30 });
+    newProject(name, { width: 1920, height: 1080, frameRate: 30 });
     try {
       const project = useProjectStore.getState().project;
       const path = await actionEnsureLibraryProject(project);
