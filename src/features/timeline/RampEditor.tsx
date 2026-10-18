@@ -48,6 +48,8 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
   );
   const dragRef = useRef<RampGesture | null>(null);
   const clickTimerRef = useRef<number | null>(null);
+  /** Anchor currently pinned against the media end (duration lock) — amber. */
+  const [blockedPointId, setBlockedPointId] = useState<string | null>(null);
   /** Viewport coords — menu is portaled so clip `overflow:hidden` cannot crop it. */
   const [menu, setMenu] = useState<{
     pointId: string;
@@ -75,13 +77,20 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     if (!ramp || ramp.points.length < 2) return "";
     const profile = getRampProfile(ramp);
     if (!profile) return "";
-    const samples = 64;
+    // Resolution follows the drawn width (~3px/segment) so the polyline reads as
+    // a smooth curve even on wide clips, and always include the exact anchor
+    // positions so the line visibly passes through each point.
+    const samples = Math.min(240, Math.max(64, Math.round(plotW / 3)));
+    const stops = new Set<number>();
+    for (let i = 0; i <= samples; i += 1) stops.add(i / samples);
+    for (const p of ramp.points) stops.add(Math.min(1, Math.max(0, p.atProgress)));
     let d = "";
-    for (let i = 0; i <= samples; i += 1) {
-      const p = i / samples;
+    let first = true;
+    for (const p of [...stops].sort((a, b) => a - b)) {
       const x = PAD_X + p * plotW;
       const y = speedToY(profile.speedAtProgress(p));
-      d += `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)} `;
+      d += `${first ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)} `;
+      first = false;
     }
     return d.trim();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -145,7 +154,7 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
     project: ProjectDocument,
     g: RampGesture,
     patch: { progress: number; speed: number },
-  ) {
+  ): { project: ProjectDocument; constrained: boolean } {
     return updateRampPointLocked(
       project,
       clip.id,
@@ -155,7 +164,7 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
         speed: Number(snapSpeed(patch.speed).toFixed(3)),
       },
       g.lockedDuration,
-    ).project;
+    );
   }
 
   function isNoopPatch(cur: Clip, next: Clip, pointId: string): boolean {
@@ -168,17 +177,21 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
   }
 
   function setPointSpeed(pointId: string, speed: number) {
+    let constrained = false;
     commitProjectChange((p) => {
       const cur = p.clips.find((c) => c.id === clip.id);
       const locked = clipDurationTicks(cur ?? clip);
-      return updateRampPointLocked(
+      const result = updateRampPointLocked(
         p,
         clip.id,
         pointId,
         { speed: clampRampSpeed(speed) },
         locked,
-      ).project;
+      );
+      constrained = result.constrained;
+      return result.project;
     });
+    setBlockedPointId(constrained ? pointId : null);
   }
 
   function handleRemovePoint(pointId: string) {
@@ -227,6 +240,7 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
       raf: 0,
     };
     dragRef.current = gesture;
+    setBlockedPointId(null);
     document.body.style.cursor = "grabbing";
 
     const flush = () => {
@@ -240,8 +254,10 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
       }
       const st = useProjectStore.getState();
       const cur = st.project.clips.find((c) => c.id === clip.id);
-      const next = applyGesturePatch(st.project, gesture, patch);
+      const { project: next, constrained } = applyGesturePatch(st.project, gesture, patch);
       const nextClip = next.clips.find((c) => c.id === clip.id);
+      const pinnedId = constrained && nextClip ? gesture.pointId : null;
+      setBlockedPointId((prev) => (prev === pinnedId ? prev : pinnedId));
       if (cur && nextClip && isNoopPatch(cur, nextClip, gesture.pointId)) return;
       st.setProject(next, { dirty: true });
     };
@@ -281,8 +297,9 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
         }
         const st = useProjectStore.getState();
         const cur = st.project.clips.find((c) => c.id === clip.id);
-        const next = applyGesturePatch(st.project, gesture, patch);
+        const { project: next, constrained } = applyGesturePatch(st.project, gesture, patch);
         const nextClip = next.clips.find((c) => c.id === clip.id);
+        if (constrained && nextClip) setBlockedPointId(gesture.pointId);
         if (!cur || !nextClip || !isNoopPatch(cur, nextClip, gesture.pointId)) {
           st.setProject(next, { dirty: true });
         }
@@ -300,7 +317,7 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
         clickTimerRef.current = window.setTimeout(() => {
           clickTimerRef.current = null;
           openPointMenu(livePoint, anchor);
-        }, 220);
+        }, 160);
       }
       if (dragRef.current === gesture) dragRef.current = null;
       document.body.style.cursor = "";
@@ -347,6 +364,7 @@ export function RampEditor({ clip, widthPx, heightPx, interactive = true }: Ramp
             styles.anchor,
             interactive ? "" : styles.anchorReadOnly,
             menu?.pointId === point.id ? styles.anchorActive : "",
+            blockedPointId === point.id ? styles.anchorBlocked : "",
           ]
             .filter(Boolean)
             .join(" ")}

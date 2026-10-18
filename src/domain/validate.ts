@@ -324,18 +324,23 @@ export function normalizeProjectDocument(project: ProjectDocument): ProjectDocum
         w?: unknown;
         h?: unknown;
       } | null | undefined;
-      const num01 = (v: unknown) =>
-        typeof v === "number" && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : null;
-      const cx = cropRaw ? num01(cropRaw.x) : null;
-      const cy = cropRaw ? num01(cropRaw.y) : null;
-      const cw = cropRaw ? num01(cropRaw.w) : null;
-      const chh = cropRaw ? num01(cropRaw.h) : null;
+      const numRange = (v: unknown, min: number, max: number) =>
+        typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : null;
+      const cx = cropRaw ? numRange(cropRaw.x, -1, 2) : null;
+      const cy = cropRaw ? numRange(cropRaw.y, -1, 2) : null;
+      const cw = cropRaw ? numRange(cropRaw.w, 0, 2) : null;
+      const chh = cropRaw ? numRange(cropRaw.h, 0, 2) : null;
       const crop =
         cx != null && cy != null && cw != null && chh != null && cw > 0.001 && chh > 0.001
           ? { x: cx, y: cy, w: cw, h: chh }
           : null;
       const slotRaw = (raw as { slotId?: unknown }).slotId;
       const slotId = typeof slotRaw === "string" && slotRaw.length > 0 ? slotRaw : null;
+      const spanRaw = (raw as { spanTicks?: unknown }).spanTicks;
+      const spanTicks =
+        typeof spanRaw === "number" && Number.isFinite(spanRaw) && spanRaw > 0
+          ? Math.round(spanRaw)
+          : null;
       const text =
         raw.text == null
           ? raw.text
@@ -351,6 +356,7 @@ export function normalizeProjectDocument(project: ProjectDocument): ProjectDocum
         ...rest,
         crop,
         slotId,
+        spanTicks,
         text: text as Clip["text"],
         transform: {
           ...DEFAULT_TRANSFORM,

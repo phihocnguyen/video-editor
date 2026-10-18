@@ -388,7 +388,8 @@ fn default_bg_color() -> String {
 
 // ---------------- speed ramp (mirrors src/domain/speedRamp.ts) ----------------
 // A ramp maps source progress s ∈ [0,1] to playback speed v(s) via a monotone
-// cubic Hermite spline. Timeline duration = span · ∫₀¹ ds/v(s). Export
+// cubic Hermite spline. Timeline duration = span · ∫₀¹ ds/v(s). Outside the
+// user anchors the nearest anchor's speed is held to the clip edge. Export
 // discretises u → T(u) = ∫₀ᵘ dτ/v(τ) into piecewise quadratics (32 for
 // video setpts, 24 for audio slices), exactly like the TS builder.
 
@@ -559,9 +560,18 @@ fn ramp_profile(ramp: &SpeedRamp) -> Option<RampProfile> {
     let lead_speed = spaced[0].1;
     let trail_speed = spaced[spaced.len() - 1].1;
     let mut segments: Vec<HermiteSegment> = Vec::new();
-    // Ease from default 1× into the first anchor (not a hard step at `lo`).
+    // Hold the first anchor's speed from the clip start to that anchor (mirrors
+    // the TS model: an all-slow curve stays slow over the whole clip).
     if lo > 0.0 {
-        segments.push(ease_segment(0.0, 1.0, lo, lead_speed));
+        segments.push(HermiteSegment {
+            x0: 0.0,
+            x1: lo,
+            width: lo.max(1e-9),
+            a: 0.0,
+            b: 0.0,
+            c: 0.0,
+            d: lead_speed,
+        });
     }
     segments.extend(build_hermite(&spaced));
     if hi < 1.0 {
@@ -1094,6 +1104,89 @@ fn animated_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) ->
     parts.join(",")
 }
 
+fn even_px(value: f64) -> f64 {
+    ((value.round().max(2.0) as i64) & !1i64).max(2) as f64
+}
+
+/// Rotated layer: local crop, then rotate, then pad. Mirrors the TS booth path
+/// so a tilted strip matches preview (clip, then CSS rotate).
+fn rotated_placement_filters(
+    clip: &RenderClipPlan,
+    width: u32,
+    height: u32,
+    box_w: f64,
+    box_h: f64,
+    center_x: f64,
+    center_y: f64,
+    tr: &RenderClipTransform,
+) -> String {
+    let mut parts = vec![format!(
+        "scale={box_w:.0}:{box_h:.0}:force_original_aspect_ratio=decrease:flags=lanczos"
+    )];
+    if tr.scale_x < 0.0 {
+        parts.push("hflip".into());
+    }
+    if tr.scale_y < 0.0 {
+        parts.push("vflip".into());
+    }
+    let mut src_w = box_w;
+    let mut src_h = box_h;
+    if let Some(crop) = clip.crop {
+        if crop.w > 0.001 && crop.h > 0.001 {
+            let cell_w = even_px(crop.w * width as f64);
+            let cell_h = even_px(crop.h * height as f64);
+            let cell_x = crop.x * width as f64;
+            let cell_y = crop.y * height as f64;
+            let mut local_x = (cell_x - (center_x - box_w / 2.0)).round();
+            let mut local_y = (cell_y - (center_y - box_h / 2.0)).round();
+            local_x = local_x.clamp(0.0, box_w - 2.0);
+            local_y = local_y.clamp(0.0, box_h - 2.0);
+            let cw = even_px(cell_w.min(box_w - local_x));
+            let ch = even_px(cell_h.min(box_h - local_y));
+            parts.push(format!("crop={cw:.0}:{ch:.0}:{local_x:.0}:{local_y:.0}"));
+            src_w = cw;
+            src_h = ch;
+        }
+    }
+    let rad = tr.rotation.abs() * std::f64::consts::PI / 180.0;
+    let rot_w = even_px((src_w * rad.cos()).abs() + (src_h * rad.sin()).abs());
+    let rot_h = even_px((src_w * rad.sin()).abs() + (src_h * rad.cos()).abs());
+    let angle = (tr.rotation % 360.0) * std::f64::consts::PI / 180.0;
+    parts.push(format!(
+        "rotate={angle:.6}:ow={rot_w:.0}:oh={rot_h:.0}:c=black@0"
+    ));
+    let off_x = center_x - rot_w / 2.0;
+    let off_y = center_y - rot_h / 2.0;
+    let src_x = (-off_x).round().max(0.0);
+    let src_y = (-off_y).round().max(0.0);
+    let dst_x = off_x.round().max(0.0);
+    let dst_y = off_y.round().max(0.0);
+    let mut vis_w = even_px((rot_w - src_x).min(width as f64 - dst_x).floor());
+    let mut vis_h = even_px((rot_h - src_y).min(height as f64 - dst_y).floor());
+    if dst_x + vis_w > width as f64 {
+        vis_w = even_px(width as f64 - dst_x);
+    }
+    if dst_y + vis_h > height as f64 {
+        vis_h = even_px(height as f64 - dst_y);
+    }
+    if src_x + vis_w > rot_w {
+        vis_w = even_px(rot_w - src_x);
+    }
+    if src_y + vis_h > rot_h {
+        vis_h = even_px(rot_h - src_y);
+    }
+    if src_x != 0.0 || src_y != 0.0 || vis_w < rot_w || vis_h < rot_h {
+        parts.push(format!(
+            "crop={vis_w:.0}:{vis_h:.0}:{src_x:.0}:{src_y:.0}"
+        ));
+    }
+    parts.push(format!(
+        "pad={width}:{height}:{dst_x:.0}:{dst_y:.0}:black@0"
+    ));
+    parts.push("setsar=1".into());
+    parts.join(",")
+}
+
 /// Scale/rotate/pad a media clip into the output frame honouring its transform.
 ///
 /// Mirrors preview (`mediaGeometry` + CSS): contain-fit, then scale/flip/
@@ -1124,6 +1217,12 @@ fn media_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) -> St
     let center_x = if legacy { width as f64 / 2.0 } else { tr.x * out_scale_x };
     let center_y = if legacy { height as f64 / 2.0 } else { tr.y * out_scale_y };
 
+    if tr.rotation.abs() > 0.01 {
+        return rotated_placement_filters(
+            clip, width, height, box_w, box_h, center_x, center_y, tr,
+        );
+    }
+
     let mut parts: Vec<String> = vec![format!(
         "scale={box_w:.0}:{box_h:.0}:force_original_aspect_ratio=decrease:flags=lanczos"
     )];
@@ -1133,15 +1232,6 @@ fn media_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) -> St
     }
     if tr.scale_y < 0.0 {
         parts.push("vflip".into());
-    }
-    if tr.rotation.abs() > 0.01 {
-        let rad = tr.rotation.abs() * std::f64::consts::PI / 180.0;
-        let rw = (box_w * rad.cos() + box_h * rad.sin()).abs().round().max(box_w);
-        let rh = (box_w * rad.sin() + box_h * rad.cos()).abs().round().max(box_h);
-        let angle = (tr.rotation % 360.0) * std::f64::consts::PI / 180.0;
-        parts.push(format!(
-            "rotate={angle:.6}:ow={rw:.0}:oh={rh:.0}:c=black@0"
-        ));
     }
     let off_x = (center_x - box_w / 2.0).round().max(0.0);
     let off_y = (center_y - box_h / 2.0).round().max(0.0);

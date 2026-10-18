@@ -450,25 +450,26 @@ export function mediaPlacementFilters(
   const centerX = geom.centerX * outScaleX;
   const centerY = geom.centerY * outScaleY;
 
+  if (Math.abs(geom.rotation) > 0.01) {
+    // Crop the cell in local space, then rotate, so a tilted booth strip
+    // matches the preview (CSS clips, then rotates).
+    return rotatedPlacementFilters(clip, width, height, {
+      boxW,
+      boxH,
+      centerX,
+      centerY,
+      rotation: geom.rotation,
+      scaleX: geom.scaleX,
+      scaleY: geom.scaleY,
+    });
+  }
   const parts: string[] = [];
-  // Fit source into the (scaled) box, then flip / rotate if needed.
-  // lanczos keeps downscaled sources (e.g. 4K → 1080p) sharp like preview.
+  // Fit source into the (scaled) box. lanczos keeps downscales sharp.
   parts.push(
     `scale=${boxW}:${boxH}:force_original_aspect_ratio=decrease:flags=lanczos`,
   );
   if (geom.scaleX < 0) parts.push("hflip");
   if (geom.scaleY < 0) parts.push("vflip");
-  if (Math.abs(geom.rotation) > 0.01) {
-    // Rotate onto a transparent canvas big enough to avoid clipping, then the
-    // final pad below recentres it on the frame.
-    const rad = (Math.abs(geom.rotation) * Math.PI) / 180;
-    const rw = Math.round((Math.abs(boxW * Math.cos(rad)) + Math.abs(boxH * Math.sin(rad))) & ~1);
-    const rh = Math.round((Math.abs(boxW * Math.sin(rad)) + Math.abs(boxH * Math.cos(rad))) & ~1);
-    const angle = ((geom.rotation % 360) * Math.PI) / 180;
-    parts.push(
-      `rotate=${angle.toFixed(6)}:ow=${Math.max(boxW, rw)}:oh=${Math.max(boxH, rh)}:c=black@0`,
-    );
-  }
   const offX = Math.max(0, Math.round(centerX - boxW / 2));
   const offY = Math.max(0, Math.round(centerY - boxH / 2));
   parts.push(`pad=${width}:${height}:${offX}:${offY}:black@0`);
@@ -486,6 +487,82 @@ export function mediaPlacementFilters(
     parts.push(`pad=${width}:${height}:${cx}:${cy}:black@0`);
     parts.push("setsar=1");
   }
+  return parts.join(",");
+}
+
+function evenPx(value: number): number {
+  return Math.max(2, Math.round(value) & ~1);
+}
+
+/**
+ * Rotated layer: scale, optional local crop (strip cell), rotate around the
+ * layer centre, then pad onto the full frame. Overflow is cropped so the
+ * rotated card can hang past the canvas the same way preview overflow does.
+ */
+function rotatedPlacementFilters(
+  clip: RenderClipPlan,
+  width: number,
+  height: number,
+  geom: {
+    boxW: number;
+    boxH: number;
+    centerX: number;
+    centerY: number;
+    rotation: number;
+    scaleX: number;
+    scaleY: number;
+  },
+): string {
+  const parts: string[] = [
+    `scale=${geom.boxW}:${geom.boxH}:force_original_aspect_ratio=decrease:flags=lanczos`,
+  ];
+  if (geom.scaleX < 0) parts.push("hflip");
+  if (geom.scaleY < 0) parts.push("vflip");
+
+  let srcW = geom.boxW;
+  let srcH = geom.boxH;
+  const crop = clip.crop;
+  if (crop && crop.w > 0.001 && crop.h > 0.001) {
+    const cellW = evenPx(crop.w * width);
+    const cellH = evenPx(crop.h * height);
+    const cellX = crop.x * width;
+    const cellY = crop.y * height;
+    let localX = Math.round(cellX - (geom.centerX - geom.boxW / 2));
+    let localY = Math.round(cellY - (geom.centerY - geom.boxH / 2));
+    localX = Math.max(0, Math.min(geom.boxW - 2, localX));
+    localY = Math.max(0, Math.min(geom.boxH - 2, localY));
+    const cw = Math.max(2, Math.min(cellW, geom.boxW - localX) & ~1);
+    const ch = Math.max(2, Math.min(cellH, geom.boxH - localY) & ~1);
+    parts.push(`crop=${cw}:${ch}:${localX}:${localY}`);
+    srcW = cw;
+    srcH = ch;
+  }
+
+  const rad = (Math.abs(geom.rotation) * Math.PI) / 180;
+  const rotW = evenPx(Math.abs(srcW * Math.cos(rad)) + Math.abs(srcH * Math.sin(rad)));
+  const rotH = evenPx(Math.abs(srcW * Math.sin(rad)) + Math.abs(srcH * Math.cos(rad)));
+  const angle = ((geom.rotation % 360) * Math.PI) / 180;
+  parts.push(`rotate=${angle.toFixed(6)}:ow=${rotW}:oh=${rotH}:c=black@0`);
+
+  const offX = geom.centerX - rotW / 2;
+  const offY = geom.centerY - rotH / 2;
+  const srcX = Math.max(0, Math.round(-offX));
+  const srcY = Math.max(0, Math.round(-offY));
+  const dstX = Math.max(0, Math.round(offX));
+  const dstY = Math.max(0, Math.round(offY));
+  let visW = Math.min(rotW - srcX, width - dstX);
+  let visH = Math.min(rotH - srcY, height - dstY);
+  visW = Math.max(2, Math.floor(visW) & ~1);
+  visH = Math.max(2, Math.floor(visH) & ~1);
+  if (dstX + visW > width) visW = Math.max(2, (width - dstX) & ~1);
+  if (dstY + visH > height) visH = Math.max(2, (height - dstY) & ~1);
+  if (srcX + visW > rotW) visW = Math.max(2, (rotW - srcX) & ~1);
+  if (srcY + visH > rotH) visH = Math.max(2, (rotH - srcY) & ~1);
+  if (srcX !== 0 || srcY !== 0 || visW < rotW || visH < rotH) {
+    parts.push(`crop=${visW}:${visH}:${srcX}:${srcY}`);
+  }
+  parts.push(`pad=${width}:${height}:${dstX}:${dstY}:black@0`);
+  parts.push("setsar=1");
   return parts.join(",");
 }
 

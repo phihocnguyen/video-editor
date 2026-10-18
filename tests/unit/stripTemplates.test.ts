@@ -5,14 +5,17 @@ import {
   cropClipPath,
   slotToPixels,
 } from "../../src/domain/mediaTransform";
+import { boothLayout, rotatePoint } from "../../src/domain/boothStrip";
 import {
   STRIP_CANVAS,
   STRIP_DURATION_TICKS,
   applyStripTemplate,
   getStripTemplate,
+  swapStripCellByClip,
 } from "../../src/domain/stripTemplates";
 import { clipDurationTicks } from "../../src/domain/timelineCommands";
 import { buildFfmpegArgs, mediaPlacementFilters } from "../../src/domain/ffmpegArgs";
+import { buildRenderPlan } from "../../src/domain/renderPlan";
 import { DEFAULT_CLIP_EFFECTS } from "../../src/domain/effects";
 import type { RenderClipPlan } from "../../src/domain/renderPlan";
 
@@ -174,6 +177,135 @@ describe("applyStripTemplate", () => {
   });
 });
 
+describe("photo booth", () => {
+  it("lays a tilted white card of four landscape cells on a chosen background", () => {
+    const t = getStripTemplate("booth-4")!;
+    expect(t.variant).toBe("booth");
+    const project = applyStripTemplate(
+      t,
+      [asset(0, 1920, 1080), asset(1, 1080, 1920), asset(2, 800, 800), asset(3, 640, 480)],
+      { backgroundColor: "#112233", durationTicks: 15_000_000, grayscale: true },
+    );
+    expect(project.canvas).toMatchObject({ width: 1080, height: 1350, backgroundColor: "#112233" });
+    const cells = project.clips.filter((c) => c.slotId);
+    expect(cells).toHaveLength(4);
+    const layout = boothLayout();
+    const cx = layout.canvas.width / 2;
+    const cy = layout.canvas.height / 2;
+    cells.forEach((clip, i) => {
+      const upright = layout.cells[i]!;
+      const mid = rotatePoint(
+        upright.x + upright.w / 2,
+        upright.y + upright.h / 2,
+        cx,
+        cy,
+        layout.rotationDeg,
+      );
+      expect(clip.transform.rotation).toBe(layout.rotationDeg);
+      expect(clip.transform.x).toBeCloseTo(mid.x, 3);
+      expect(clip.transform.y).toBeCloseTo(mid.y, 3);
+      expect(clip.effects.grayscale).toBe(true);
+      expect(clipDurationTicks(clip)).toBe(15_000_000);
+      expect(clip.suppressEmbeddedAudio).toBe(true);
+    });
+    const paper = project.clips.find((c) => c.assetId === "__booth-paper__")!;
+    expect(paper.transform.rotation).toBe(layout.rotationDeg);
+    expect(paper.crop).toBeNull();
+    const paperTrack = project.tracks.find((tr) => tr.id === paper.trackId)!;
+    expect(paperTrack.locked).toBe(true);
+    // Paper paints under the photos (higher track order).
+    const cellTrack = project.tracks.find((tr) => tr.id === cells[0]!.trackId)!;
+    expect(paperTrack.order).toBeGreaterThan(cellTrack.order);
+  });
+
+  it("holds a short video for the chosen length instead of playing it out", () => {
+    const t = getStripTemplate("booth-4")!;
+    const project = applyStripTemplate(t, [asset(0, 1920, 1080, 2_000_000)], {
+      durationTicks: 8_000_000,
+    });
+    const clip = project.clips.find((c) => c.slotId)!;
+    expect(clip.sourceOutTicks).toBeLessThanOrEqual(100_000);
+    expect(clipDurationTicks(clip)).toBe(8_000_000);
+  });
+
+  it("keeps the booth length when a cell is replaced", () => {
+    const t = getStripTemplate("booth-4")!;
+    let project = applyStripTemplate(t, [asset(0, 1920, 1080)], {
+      durationTicks: 12_000_000,
+      grayscale: false,
+    });
+    project = {
+      ...project,
+      assets: [
+        ...project.assets,
+        {
+          id: "swap",
+          kind: "image",
+          path: "C:/swap.jpg",
+          name: "swap",
+          durationTicks: null,
+          width: 400,
+          height: 800,
+          frameRate: null,
+          hasAudio: false,
+          missing: false,
+        },
+      ],
+    };
+    const cell = project.clips.find((c) => c.slotId)!;
+    const next = swapStripCellByClip(project, cell.id, {
+      id: "swap",
+      kind: "image",
+      width: 400,
+      height: 800,
+      durationTicks: null,
+    });
+    const replaced = next.clips.find((c) => c.id === cell.id)!;
+    expect(replaced.assetId).toBe("swap");
+    expect(clipDurationTicks(replaced)).toBe(12_000_000);
+    expect(replaced.transform.rotation).toBe(cell.transform.rotation);
+    expect(replaced.effects.grayscale).toBe(false);
+  });
+
+  it("exports the still for the chosen length on the chosen background", () => {
+    const t = getStripTemplate("booth-4")!;
+    const project = applyStripTemplate(
+      t,
+      [{ id: "img", kind: "image", width: 1200, height: 800, durationTicks: null }],
+      { backgroundColor: "#112233", durationTicks: 6_000_000 },
+    );
+    project.assets = project.assets.map((a) =>
+      a.id === "img"
+        ? { ...a, path: "C:/a.jpg" }
+        : a.id === "__booth-paper__"
+          ? { ...a, path: "C:/paper.png" }
+          : a,
+    );
+    // The applier does not attach the dropped file; the panel does.
+    if (!project.assets.some((a) => a.id === "img")) {
+      project.assets.unshift({
+        id: "img",
+        kind: "image",
+        path: "C:/a.jpg",
+        name: "a",
+        durationTicks: null,
+        width: 1200,
+        height: 800,
+        frameRate: null,
+        hasAudio: false,
+        missing: false,
+      });
+    }
+    const plan = buildRenderPlan(project, "source", "draft");
+    expect(plan.backgroundColor).toBe("#112233");
+    expect(plan.durationSec).toBeCloseTo(6, 2);
+    const built = buildFfmpegArgs(plan, "C:/out/booth.mp4", { fileExists: () => true });
+    const color = built.args.find((arg) => arg.startsWith("color="));
+    expect(color).toContain("0x112233");
+    expect(built.args.join(" ")).toContain("-t 6.000");
+  });
+});
+
 describe("strip export", () => {
   function stripClip(): RenderClipPlan {
     return {
@@ -216,6 +348,27 @@ describe("strip export", () => {
     const filters = mediaPlacementFilters(stripClip(), 540, 960);
     expect(filters).toContain("crop=");
     expect(filters).toContain("pad=540:960");
+  });
+
+  it("rotated booth cell crops locally before it rotates, then fills the frame", () => {
+    const clip = stripClip();
+    clip.transform.rotation = 34;
+    clip.canvasWidth = 1080;
+    clip.canvasHeight = 1350;
+    const filters = mediaPlacementFilters(clip, 1080, 1350);
+    const cropAt = filters.indexOf("crop=");
+    const rotAt = filters.indexOf("rotate=");
+    expect(cropAt).toBeGreaterThan(0);
+    expect(rotAt).toBeGreaterThan(cropAt);
+    expect(filters).toContain("pad=1080:1350:");
+    const pad = filters.match(/pad=1080:1350:(\d+):(\d+)/);
+    expect(pad).not.toBeNull();
+    const x = Number(pad![1]);
+    const y = Number(pad![2]);
+    expect(x).toBeGreaterThanOrEqual(0);
+    expect(y).toBeGreaterThanOrEqual(0);
+    expect(x).toBeLessThan(1080);
+    expect(y).toBeLessThan(1350);
   });
 
   it("short video in a 10s slot holds its last frame", () => {

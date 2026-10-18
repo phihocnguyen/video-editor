@@ -322,13 +322,21 @@ export interface Clip {
   transitionIn: ClipTransition;
   text: TextStyle | null;
   /**
-   * Hard crop to a normalized canvas rect (0…1, top-left origin). Used by
-   * strip templates: the transform covers the cell, then this crops spill.
-   * Missing/null = no crop. Survives save/open.
+   * Hard crop to a normalized canvas rect (top-left origin). Used by strip
+   * templates: the transform covers the cell, then this crops spill, before
+   * rotation. Booth cells may sit slightly outside 0…1 because the window is
+   * the pre-rotation rect around an already-rotated centre. Missing/null = no
+   * crop. Survives save/open.
    */
   crop?: { x: number; y: number; w: number; h: number } | null;
   /** Strip cell index for swap UX (`cell-0`, …). Missing = not a strip cell. */
   slotId?: string | null;
+  /**
+   * Timeline length when the slot should outlast the source (photo-booth
+   * still: a short video frame held for the export duration). Missing →
+   * duration is the source span. Cleared when the user trims the clip.
+   */
+  spanTicks?: number | null;
   /**
    * Optional speed ramp (variable speed over the source range). Missing on older
    * projects → constant `speed`. When present and non-flat it supersedes `speed`

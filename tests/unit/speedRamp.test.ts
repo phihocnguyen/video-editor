@@ -6,6 +6,7 @@ import {
   isFlatRamp,
   MAX_RAMP_SPEED,
   normalizeSpeedRamp,
+  phaseLockedRate,
   rampDurationTicks,
   sliceRamp,
   sourceOffsetForTimelineOffset,
@@ -67,6 +68,29 @@ describe("normalizeSpeedRamp", () => {
   });
 });
 
+describe("getRampProfile cache", () => {
+  it("returns the same profile for the same stored ramp object", () => {
+    const r = ramp([
+      { atProgress: 0, speed: 1 },
+      { atProgress: 0.5, speed: 2 },
+      { atProgress: 1, speed: 1 },
+    ]);
+    expect(getRampProfile(r)).toBe(getRampProfile(r));
+  });
+
+  it("rebuilds after an immutable ramp edit", () => {
+    const r = ramp([
+      { atProgress: 0, speed: 1 },
+      { atProgress: 1, speed: 2 },
+    ]);
+    const next: SpeedRamp = {
+      points: r.points.map((p) => (p.atProgress === 1 ? { ...p, speed: 0.5 } : p)),
+    };
+    expect(getRampProfile(next)).not.toBe(getRampProfile(r));
+    expect(getRampProfile(next)!.speedAtProgress(1)).toBeCloseTo(0.5, 5);
+  });
+});
+
 describe("isFlatRamp / hasActiveRamp", () => {
   it("treats all-1.0 ramps as flat", () => {
     expect(
@@ -91,20 +115,47 @@ describe("isFlatRamp / hasActiveRamp", () => {
     ).toBe(true);
   });
 
-  it("eases from 1× into the first anchor and holds the last speed", () => {
+  it("holds the boundary anchor speed outside the anchors", () => {
     const profile = getRampProfile(
       ramp([
         { atProgress: 0.3, speed: 0.5 },
         { atProgress: 0.7, speed: 2 },
       ]),
     )!;
-    expect(profile.speedAtProgress(0)).toBeCloseTo(1, 5);
-    const lead = profile.speedAtProgress(0.15);
-    expect(lead).toBeLessThan(1);
-    expect(lead).toBeGreaterThan(0.5);
+    // First anchor's speed is held from the clip start to that anchor…
+    expect(profile.speedAtProgress(0)).toBeCloseTo(0.5, 5);
+    expect(profile.speedAtProgress(0.15)).toBeCloseTo(0.5, 5);
     expect(profile.speedAtProgress(0.3)).toBeCloseTo(0.5, 5);
     expect(profile.speedAtProgress(0.7)).toBeCloseTo(2, 5);
+    // …and the last anchor's speed to the clip end.
     expect(profile.speedAtProgress(0.95)).toBeCloseTo(2, 5);
+    expect(profile.speedAtProgress(1)).toBeCloseTo(2, 5);
+  });
+});
+
+describe("full slow motion", () => {
+  it("an all-slow ramp is slow across the whole clip", () => {
+    // Two slow anchors anywhere → the whole clip plays at ~0.5× (2× longer).
+    const profile = getRampProfile(
+      ramp([
+        { atProgress: 0.3, speed: 0.5 },
+        { atProgress: 0.7, speed: 0.5 },
+      ]),
+    )!;
+    expect(profile.durationFactor).toBeCloseTo(2, 5);
+    for (let p = 0; p <= 1.0001; p += 0.05) {
+      expect(profile.speedAtProgress(p)).toBeCloseTo(0.5, 5);
+    }
+  });
+
+  it("holds a slow tail past the last anchor", () => {
+    const r = ramp([
+      { atProgress: 0, speed: 1 },
+      { atProgress: 0.4, speed: 0.5 },
+    ]);
+    const profile = getRampProfile(r)!;
+    expect(profile.speedAtProgress(0.7)).toBeCloseTo(0.5, 5);
+    expect(profile.speedAtProgress(1)).toBeCloseTo(0.5, 5);
   });
 });
 
@@ -229,6 +280,30 @@ describe("speedAtSourceOffset", () => {
     expect(speedAtSourceOffset(r, 4_000_000, 0)).toBeCloseTo(1, 5);
     expect(speedAtSourceOffset(r, 4_000_000, 4_000_000)).toBeCloseTo(2, 5);
     expect(speedAtSourceOffset(r, 4_000_000, 2_000_000)).toBeCloseTo(1.5, 5);
+  });
+});
+
+describe("phaseLockedRate", () => {
+  it("returns the nominal rate inside the drift deadband", () => {
+    expect(phaseLockedRate(1, 0)).toBe(1);
+    expect(phaseLockedRate(0.5, 0.02)).toBe(0.5);
+    expect(phaseLockedRate(2, -0.03)).toBe(2);
+  });
+
+  it("speeds up when the element is behind, slows down when ahead", () => {
+    expect(phaseLockedRate(1, 0.3)).toBeGreaterThan(1);
+    expect(phaseLockedRate(1, -0.3)).toBeLessThan(1);
+  });
+
+  it("caps the trim so speed never deviates too far", () => {
+    // Huge drift is capped at +35% of nominal.
+    expect(phaseLockedRate(1, 100)).toBeCloseTo(1.35, 5);
+    expect(phaseLockedRate(1, -100)).toBeCloseTo(0.65, 5);
+  });
+
+  it("scales the trim with the nominal speed", () => {
+    // Slow motion: a large drift only trims relative to the small rate.
+    expect(phaseLockedRate(0.2, 100)).toBeCloseTo(0.27, 5);
   });
 });
 

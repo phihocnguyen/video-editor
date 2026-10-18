@@ -1,8 +1,17 @@
+import {
+  BOOTH_CANVAS,
+  BOOTH_DEFAULT_BACKGROUND,
+  BOOTH_PAPER_ID,
+  BOOTH_STILL_TICKS,
+  boothLayout,
+  rotatePoint,
+} from "./boothStrip";
 import { DEFAULT_CLIP_EFFECTS } from "./effects";
-import { coverTransform, slotToPixels, type SlotRectNorm } from "./mediaTransform";
+import { coverTransform, containFitBox, slotToPixels, type SlotRectNorm } from "./mediaTransform";
 import { DEFAULT_CLIP_TRANSITION } from "./transitions";
 import type { Clip, MediaAsset, ProjectDocument, Track } from "./project";
 import { PROJECT_SCHEMA_VERSION } from "./project";
+import { clipDurationTicks } from "./timelineCommands";
 
 export const STRIP_CANVAS = { width: 1080, height: 1920, frameRate: 30 } as const;
 export const STRIP_DURATION_TICKS = 10_000_000;
@@ -20,6 +29,8 @@ export interface LayoutTemplate {
   /** Right side is the color copy of the left (grayscale left). */
   twin: boolean;
   frame: boolean;
+  /** Photo-booth card: white strip, shared rotation, flat background. */
+  variant?: "grid" | "booth";
   slots: SlotRectNorm[];
 }
 
@@ -87,7 +98,30 @@ function makeTemplate(opts: {
   };
 }
 
+function boothTemplate(): LayoutTemplate {
+  const layout = boothLayout();
+  const { width, height } = layout.canvas;
+  return {
+    id: "booth-4",
+    label: "Photo booth · 4 photos",
+    slotCount: 4,
+    cellCount: 4,
+    cols: 1,
+    rows: 4,
+    twin: false,
+    frame: false,
+    variant: "booth",
+    slots: layout.cells.map((cell) => ({
+      x: cell.x / width,
+      y: cell.y / height,
+      w: cell.w / width,
+      h: cell.h / height,
+    })),
+  };
+}
+
 export const STRIP_TEMPLATES: LayoutTemplate[] = [
+  boothTemplate(),
   makeTemplate({ id: "strip-4", label: "Strip · 4 videos", cols: 2, rows: 2 }),
   makeTemplate({ id: "strip-8", label: "Strip · 8 videos", cols: 2, rows: 4 }),
   makeTemplate({ id: "film-4", label: "Film · 4 videos", cols: 2, rows: 2, frame: true }),
@@ -125,15 +159,40 @@ function clipSourceSpan(asset: StripAssetInput): number {
   return Math.max(1_000_000, Math.round(d));
 }
 
+export interface StripApplyOptions {
+  /** Booth background. Other templates stay black. */
+  backgroundColor?: string;
+  /** How long the booth still holds, in ticks. Ignored by grid templates. */
+  durationTicks?: number;
+  /** Booth photos. Default on — a classic booth print is black and white. */
+  grayscale?: boolean;
+}
+
+function hexColor(value: string | undefined, fallback: string): string {
+  const v = (value ?? "").trim();
+  return /^#[0-9a-fA-F]{6}$/.test(v) ? v : fallback;
+}
+
+function slotDurationTicks(requested: number | undefined): number {
+  const raw = requested ?? STRIP_DURATION_TICKS;
+  const sec = raw / 1_000_000;
+  const clamped = Math.min(120, Math.max(1, sec));
+  return Math.round(clamped * 1_000_000);
+}
+
 /**
- * Pure applier: builds a normal 9:16 project with every cell filled.
- * Row-major drop order. Fewer files → trailing cells stay empty (black).
+ * Pure applier: builds a normal project with every cell filled.
+ * Row-major drop order. Fewer files → trailing cells stay empty.
  * Extra files are ignored by the caller (already in the media bin).
+ * Booth builds a rotated white card on a flat background and holds it
+ * for `durationTicks`.
  */
 export function applyStripTemplate(
   template: LayoutTemplate,
   assets: StripAssetInput[],
+  options?: StripApplyOptions,
 ): ProjectDocument {
+  if (template.variant === "booth") return applyBooth(template, assets, options);
   const now = new Date().toISOString();
   const tracks: Track[] = [];
   const clips: Clip[] = [];
@@ -282,6 +341,178 @@ export function applyStripTemplate(
   };
 }
 
+function applyBooth(
+  template: LayoutTemplate,
+  assets: StripAssetInput[],
+  options?: StripApplyOptions,
+): ProjectDocument {
+  const now = new Date().toISOString();
+  const layout = boothLayout();
+  const canvas = layout.canvas;
+  const duration = slotDurationTicks(options?.durationTicks);
+  const gray = options?.grayscale !== false;
+  const placed = assets.slice(0, template.slotCount);
+  const tracks: Track[] = [];
+  const clips: Clip[] = [];
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+
+  for (let i = 0; i < template.cellCount; i += 1) {
+    tracks.push({
+      id: `strip-track-${i}`,
+      kind: "video",
+      name: `cell-${i}`,
+      order: 1 + i,
+      muted: false,
+      visible: true,
+      locked: false,
+      volume: 1,
+    });
+  }
+
+  for (let i = 0; i < template.cellCount; i += 1) {
+    const upright = layout.cells[i];
+    const asset = placed[i] ?? null;
+    if (!upright || !asset) continue;
+    const mid = rotatePoint(
+      upright.x + upright.w / 2,
+      upright.y + upright.h / 2,
+      cx,
+      cy,
+      layout.rotationDeg,
+    );
+    const placedRect = {
+      x: mid.x - upright.w / 2,
+      y: mid.y - upright.h / 2,
+      w: upright.w,
+      h: upright.h,
+    };
+    const cov = coverTransform(placedRect, asset, canvas);
+    const video = asset.kind === "video" && (asset.durationTicks ?? 0) > 0;
+    const sourceOut = video
+      ? Math.max(1, Math.min(BOOTH_STILL_TICKS, Math.round(asset.durationTicks ?? BOOTH_STILL_TICKS)))
+      : duration;
+    clips.push({
+      id: `strip-clip-${i}`,
+      trackId: `strip-track-${i}`,
+      assetId: asset.id,
+      kind: "media",
+      startTicks: 0,
+      sourceInTicks: 0,
+      sourceOutTicks: sourceOut,
+      speed: 1,
+      transform: {
+        x: cov.x,
+        y: cov.y,
+        scaleX: cov.scale,
+        scaleY: cov.scale,
+        rotation: layout.rotationDeg,
+        opacity: 1,
+        blendMode: "normal",
+      },
+      volume: 0,
+      effects: { ...DEFAULT_CLIP_EFFECTS, grayscale: gray },
+      effectKeyframes: null,
+      transformKeyframes: null,
+      transitionIn: { ...DEFAULT_CLIP_TRANSITION },
+      text: null,
+      speedRamp: null,
+      crop: {
+        x: placedRect.x / canvas.width,
+        y: placedRect.y / canvas.height,
+        w: placedRect.w / canvas.width,
+        h: placedRect.h / canvas.height,
+      },
+      slotId: `cell-${i}`,
+      spanTicks: duration,
+      suppressEmbeddedAudio: true,
+    });
+  }
+
+  const fit = containFitBox(canvas.width, canvas.height, layout.paper.w, layout.paper.h);
+  const paperScale = layout.paper.w / Math.max(1, fit.width);
+  tracks.push({
+    id: "strip-track-paper",
+    kind: "video",
+    name: "Paper",
+    order: 40,
+    muted: true,
+    visible: true,
+    locked: true,
+    volume: 0,
+  });
+  clips.push({
+    id: "strip-clip-paper",
+    trackId: "strip-track-paper",
+    assetId: BOOTH_PAPER_ID,
+    kind: "media",
+    startTicks: 0,
+    sourceInTicks: 0,
+    sourceOutTicks: duration,
+    speed: 1,
+    transform: {
+      x: cx,
+      y: cy,
+      scaleX: paperScale,
+      scaleY: paperScale,
+      rotation: layout.rotationDeg,
+      opacity: 1,
+      blendMode: "normal",
+    },
+    volume: 0,
+    effects: { ...DEFAULT_CLIP_EFFECTS },
+    effectKeyframes: null,
+    transformKeyframes: null,
+    transitionIn: { ...DEFAULT_CLIP_TRANSITION },
+    text: null,
+    speedRamp: null,
+    crop: null,
+    slotId: null,
+    spanTicks: duration,
+    suppressEmbeddedAudio: true,
+  });
+
+  tracks.push({
+    id: "strip-track-audio",
+    kind: "audio",
+    name: "A1",
+    order: 100,
+    muted: false,
+    visible: true,
+    locked: false,
+    volume: 1,
+  });
+
+  return {
+    schemaVersion: PROJECT_SCHEMA_VERSION,
+    id: crypto.randomUUID(),
+    name: template.label,
+    canvas: {
+      width: canvas.width,
+      height: canvas.height,
+      frameRate: BOOTH_CANVAS.frameRate,
+      backgroundColor: hexColor(options?.backgroundColor, BOOTH_DEFAULT_BACKGROUND),
+    },
+    tracks,
+    assets: [
+      {
+        id: BOOTH_PAPER_ID,
+        kind: "image",
+        path: "booth-paper.png",
+        name: "Booth paper",
+        durationTicks: duration,
+        width: layout.paper.w,
+        height: layout.paper.h,
+        frameRate: null,
+        hasAudio: false,
+        missing: false,
+      },
+    ],
+    clips,
+    updatedAt: now,
+  };
+}
+
 /** Replace one cell's media, recompute cover for the new dimensions. */
 export function swapStripCell(
   project: ProjectDocument,
@@ -325,8 +556,15 @@ export function swapStripCellByClip(
   if (!target || !target.crop) return project;
   const px = slotToPixels(target.crop, project.canvas.width, project.canvas.height);
   const cov = coverTransform(px, asset, project.canvas);
-  const span =
-    asset.kind === "image"
+  const booth = Math.abs(target.transform.rotation) > 0.01;
+  const slotTicks =
+    target.spanTicks && target.spanTicks > 0 ? target.spanTicks : clipDurationTicks(target);
+  const video = asset.kind === "video" && (asset.durationTicks ?? 0) > 0;
+  const span = booth
+    ? video
+      ? Math.max(1, Math.min(BOOTH_STILL_TICKS, Math.round(asset.durationTicks ?? BOOTH_STILL_TICKS)))
+      : slotTicks
+    : asset.kind === "image"
       ? STRIP_DURATION_TICKS
       : Math.max(1_000_000, Math.round(asset.durationTicks ?? STRIP_DURATION_TICKS));
   const clips = project.clips.map((c) =>
@@ -336,6 +574,7 @@ export function swapStripCellByClip(
           assetId: asset.id,
           sourceInTicks: 0,
           sourceOutTicks: span,
+          spanTicks: booth ? slotTicks : c.spanTicks,
           transform: { ...c.transform, x: cov.x, y: cov.y, scaleX: cov.scale, scaleY: cov.scale },
         }
       : c,

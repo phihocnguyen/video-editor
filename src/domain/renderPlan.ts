@@ -335,12 +335,12 @@ function normalizeCrop(
   crop: { x: number; y: number; w: number; h: number } | null | undefined,
 ): { x: number; y: number; w: number; h: number } | null {
   if (!crop) return null;
-  const n = (v: unknown) =>
-    typeof v === "number" && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : NaN;
-  const x = n(crop.x);
-  const y = n(crop.y);
-  const w = n(crop.w);
-  const h = n(crop.h);
+  const n = (v: unknown, min: number, max: number) =>
+    typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : NaN;
+  const x = n(crop.x, -1, 2);
+  const y = n(crop.y, -1, 2);
+  const w = n(crop.w, 0, 2);
+  const h = n(crop.h, 0, 2);
   if (![x, y, w, h].every((v) => Number.isFinite(v)) || w < 0.001 || h < 0.001) return null;
   return { x, y, w, h };
 }

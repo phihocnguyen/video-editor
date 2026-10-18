@@ -11,8 +11,6 @@ import {
   vignetteOverlayOpacity,
   findNextClipOnTrack,
   findPreviousClipOnTrack,
-  getRampProfile,
-  hasActiveRamp,
   incomingTransitionProgress,
   clipMediaGeometry,
   hasTransformKeyframes,
@@ -24,8 +22,8 @@ import {
   layerStackZ,
   cropClipPath,
   mediaSpeedAtTimelineTicks,
+  phaseLockedRate,
   ticksToSeconds,
-  timelineOffsetForSourceOffset,
   transitionAwareMediaTimeSec,
   transitionHalfTicks,
   transitionVisualPair,
@@ -36,7 +34,6 @@ import {
 } from "../../domain";
 import { resolveMediaUrl } from "../../lib/mediaUrl";
 import { acquireMediaVideo, releaseMediaVideo } from "../../lib/mediaVideoPool";
-import { setRampClockActive } from "../../lib/rampClock";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import styles from "./PreviewPanel.module.css";
@@ -513,6 +510,10 @@ const REVERSE_SEEK_MIN_GAP_MS = 150;
 /** Scrub cadence for long files: each seek on a long-GOP source can take
  * 100ms+ to resolve — firing faster piles seeks that abort each other. */
 const SCRUB_SEEK_MIN_GAP_MS = 120;
+const DRIFT_HARD_SEC = 0.7;
+const DRIFT_HARD_MIN_GAP_MS = 500;
+
+
 
 function safeSeek(video: HTMLVideoElement, timeSec: number) {
   if (!Number.isFinite(timeSec) || timeSec < 0) return;
@@ -555,10 +556,6 @@ export function CompositeLayers({
   /** Was live-visual last frame — force one clean style pass after transition ends. */
   const liveVisualByClipRef = useRef(new Map<string, boolean>());
   const wakePendingRef = useRef(new WeakSet<HTMLVideoElement>());
-  /** One-shot seek when a ramped clip first becomes the clock master. */
-  const rampArmedRef = useRef(new Set<string>());
-  /** Last ramp-driven playhead written (write every frame like wall-clock). */
-  const lastRampTicksRef = useRef(0);
   /**
    * When the current seek was issued per clip — a seek stuck longer than
    * SEEK_STUCK_MS never resolves (UHD), so a new one may be issued.
@@ -812,8 +809,6 @@ export function CompositeLayers({
   //    while isPlaying is still true caused the "tiny jerk, need 2–3 clicks" bug.
   useEffect(() => {
     if (!isPlaying || isScrubbing) {
-      setRampClockActive(false);
-      rampArmedRef.current.clear();
       // Pause here too — covers mount/stop paths that never installed a cleanup.
       for (const video of videoRefs.current.values()) {
         video.pause();
@@ -851,7 +846,6 @@ export function CompositeLayers({
       if (!video) return;
       applyMediaStyle(video, proj, layer.clip, layer.asset, cw, ch, ticks, z);
       wakePendingRef.current.delete(video);
-      rampArmedRef.current.delete(layer.clip.id);
 
       const target = transitionAwareMediaTimeSec(layer.clip, ticks);
       const transitioning = inTransitionWindow(proj, layer.clip, ticks);
@@ -893,8 +887,6 @@ export function CompositeLayers({
       if (useEditorUiStore.getState().isPlaying && !useEditorUiStore.getState().isScrubbing) {
         return;
       }
-      setRampClockActive(false);
-      rampArmedRef.current.clear();
       for (const video of videoRefs.current.values()) {
         video.pause();
         wakePendingRef.current.delete(video);
@@ -934,130 +926,6 @@ export function CompositeLayers({
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [isPlaying, isScrubbing]);
-
-  /**
-   * Speed-ramp clock: the video element is master. We set playbackRate from the
-   * ramp at the video's current source position and push the timeline playhead
-   * from currentTime — so 4× actually looks 4×, without seek-thrashing UHD.
-   */
-  useEffect(() => {
-    if (!isPlaying || isScrubbing) {
-      setRampClockActive(false);
-      return;
-    }
-    let raf = 0;
-    const tick = () => {
-      const shuttle = Number.isFinite(playbackRateRef.current)
-        ? playbackRateRef.current
-        : 1;
-      if (shuttle < 0) {
-        setRampClockActive(false);
-        raf = requestAnimationFrame(tick);
-        return;
-      }
-
-      const playhead = useEditorUiStore.getState().playheadTicks;
-      let driven = false;
-
-      for (const layer of layersRef.current) {
-        if (layer.asset.kind !== "video") continue;
-        if (!hasActiveRamp(layer.clip.speedRamp)) continue;
-        const profile = getRampProfile(layer.clip.speedRamp);
-        if (!profile) continue;
-
-        const dur = clipDurationTicks(layer.clip);
-        const inClip =
-          playhead >= layer.clip.startTicks - 50_000 &&
-          playhead < layer.clip.startTicks + dur + 50_000;
-        // Also keep driving if we already armed this clip (playhead follows video).
-        const armed = rampArmedRef.current.has(layer.clip.id);
-        if (!inClip && !armed) continue;
-
-        const video = videoRefs.current.get(layer.clip.id);
-        if (!video) continue;
-
-        const sourceIn = layer.clip.sourceInTicks / 1_000_000;
-        const sourceOut = layer.clip.sourceOutTicks / 1_000_000;
-        const spanTicks = Math.max(1, layer.clip.sourceOutTicks - layer.clip.sourceInTicks);
-        const spanSec = Math.max(1e-6, sourceOut - sourceIn);
-
-        if (!armed) {
-          rampArmedRef.current.add(layer.clip.id);
-          // Validate the arm position: a pooled element can sit anywhere
-          // (e.g. near EOF from earlier use). Arming from a stale position
-          // would teleport the playhead to the clip end — seek once to the
-          // playhead-mapped source time and skip this frame's write instead.
-          const expected = transitionAwareMediaTimeSec(layer.clip, playhead);
-          if (Math.abs(video.currentTime - expected) > 0.5) {
-            safeSeek(video, expected);
-            ensurePlaying(video, layer.clip.id);
-            setRampClockActive(true);
-            driven = true;
-            break;
-          }
-        }
-
-        const progress = Math.min(
-          1,
-          Math.max(0, (video.currentTime - sourceIn) / spanSec),
-        );
-        const speed = profile.speedAtProgress(progress);
-        const rate = Math.min(16, Math.max(0.0625, speed * Math.abs(shuttle)));
-        // Points clustered close together make the curve near-vertical there:
-        // currentTime quantization swings the lookup between extremes every
-        // frame, and slamming playbackRate between them thrashes the decoder
-        // (visible lag). Ease toward big jumps over a few frames instead.
-        const prev = lastRateByClipRef.current.get(layer.clip.id) ?? rate;
-        let applied = rate;
-        const jump = Math.abs(rate - prev) / Math.max(0.25, Math.abs(prev));
-        if (jump > 0.3) {
-          applied = prev + (rate - prev) * 0.35;
-        }
-        if (Math.abs(video.playbackRate - applied) > 0.004) {
-          video.playbackRate = applied;
-          lastRateByClipRef.current.set(layer.clip.id, applied);
-        }
-
-        ensurePlaying(video, layer.clip.id);
-
-        const sourceOffsetTicks = (video.currentTime - sourceIn) * 1_000_000;
-        const local = timelineOffsetForSourceOffset(
-          layer.clip.speedRamp!,
-          spanTicks,
-          sourceOffsetTicks,
-        );
-        const nextTicks = Math.round(layer.clip.startTicks + local);
-        // Write every frame like the wall-clock path: throttling to ~30Hz
-        // quantizes the playhead and judders everything downstream of it
-        // (layer opacity, audio, timeline UI). Skip only redundant writes.
-        if (nextTicks !== lastRampTicksRef.current) {
-          lastRampTicksRef.current = nextTicks;
-          useEditorUiStore.getState().setPlayheadTicks(nextTicks);
-        }
-
-        // Past the clip / source — hand clock back to wall-time.
-        if (
-          video.currentTime >= sourceOut - 0.02 ||
-          local >= dur - 1_000
-        ) {
-          rampArmedRef.current.delete(layer.clip.id);
-          setRampClockActive(false);
-        } else {
-          setRampClockActive(true);
-          driven = true;
-        }
-        break;
-      }
-
-      if (!driven) setRampClockActive(false);
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => {
-      cancelAnimationFrame(raf);
-      setRampClockActive(false);
-    };
-  }, [isPlaying, isScrubbing, layers]);
 
   useEffect(() => {
     const sync = (playheadTicks: number) => {
@@ -1111,7 +979,6 @@ export function CompositeLayers({
         const video = videoRefs.current.get(layer.clip.id);
         if (!video) return;
 
-        const ramped = hasActiveRamp(layer.clip.speedRamp);
         const overlapping = (layersOnTrack.get(layer.track.id) ?? 0) > 1;
         const transitioning = inTransitionWindow(proj, layer.clip, playheadTicks);
         // Keep opacity live for the whole overlap — otherwise the incoming clip
@@ -1178,24 +1045,21 @@ export function CompositeLayers({
           }
         }
 
-        // Ramped clips are driven by their own video clock (see effect below) —
-        // don't seek/rate-fight them from the wall-clock playhead.
-        if (playing && !scrubbing && !reverse && ramped) {
-          ensurePlaying(video, layer.clip.id);
-          return;
-        }
-
         const speed = mediaSpeedAtTimelineTicks(layer.clip, playheadTicks);
-        const desiredRate = Math.min(
-          16,
-          Math.max(0.0625, speed * Math.abs(shuttle || 1)),
-        );
+        const nominalRate = speed * Math.abs(shuttle || 1);
+        // Phase-lock the element to the timeline wall clock: trim playbackRate
+        // by the drift instead of hard-seeking. A ramped clip then stays glued
+        // to the playhead (and its audio) without decoder thrash.
+        const driftSec = target - video.currentTime;
+        const desiredRate = video.seeking
+          ? video.playbackRate
+          : phaseLockedRate(nominalRate, driftSec);
         const prevRate = lastRateByClipRef.current.get(layer.clip.id);
         const rateDelta =
           prevRate == null || prevRate <= 0
             ? Infinity
             : Math.abs(desiredRate - prevRate) / prevRate;
-        if (prevRate == null || rateDelta > 0.04) {
+        if (prevRate == null || rateDelta > 0.02) {
           video.playbackRate = desiredRate;
           lastRateByClipRef.current.set(layer.clip.id, desiredRate);
         }
@@ -1262,12 +1126,25 @@ export function CompositeLayers({
               return;
             }
           }
+          // Genuinely lost (decoder stalled / seek missed): hard resync. The
+          // phase-lock trim only handles small drift, so a big gap needs the
+          // element put back on the right frame — throttled so seeks settle.
+          const hardDrift = Math.abs(video.currentTime - target);
+          if (hardDrift > DRIFT_HARD_SEC) {
+            const now = performance.now();
+            const lastClipSeek = lastSeekAtByClipRef.current.get(layer.clip.id) ?? 0;
+            if (!video.seeking && now - lastClipSeek >= DRIFT_HARD_MIN_GAP_MS) {
+              lastSeekAtByClipRef.current.set(layer.clip.id, now);
+              seekStartRef.current.set(layer.clip.id, now);
+              lastCatchupRef.current.set(layer.clip.id, now);
+              safeSeek(video, target);
+            }
+          }
           ensurePlaying(video, layer.clip.id);
           return;
         }
 
         video.pause();
-        rampArmedRef.current.delete(layer.clip.id);
         // Plain pause: never seek. Pause-time seeks on UHD often never finish,
         // so the next Play leaves a stuck frame while the timeline runs.
         // Only scrub / reverse shuttle need to re-anchor the decoder.

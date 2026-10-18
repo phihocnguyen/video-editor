@@ -8,8 +8,11 @@
  *     t' = t² (3 − 2t)
  *     v(t) = v₀ + (v₁ − v₀) t'
  *
- * so each ramp starts and ends flat (no corner jerk). Before the first anchor
- * we ease from default 1×; after the last we hold its speed.
+ * so each ramp segment starts and ends flat (no corner jerk). Outside the user
+ * anchors we *hold* the nearest anchor's speed: the first anchor's speed runs
+ * from the clip start to that anchor, and the last anchor's speed runs to the
+ * clip end. This keeps an all-slow curve genuinely slow across the whole clip
+ * (easing from 1× at the edges used to make "full slow motion" impossible).
  *
  * Timeline duration of a ramped clip is
  *
@@ -57,10 +60,10 @@ const MIN_POINT_GAP = 0.005;
 
 /**
  * Sort, clamp, and de-duplicate anchors. Does **not** invent clip-edge
- * endpoints — user anchors live between the first and last point. Playback
- * eases from 1× at progress 0 into the first anchor (Premiere-style), then
- * holds the last anchor’s speed after the final point (see RampProfile).
- * Returns null with fewer than 2 anchors (need a segment to form a curve).
+ * endpoints — user anchors live between the first and last point. Outside that
+ * range the boundary anchor's speed is held all the way to the clip edge (see
+ * RampProfile), so a ramp whose anchors are all slow is slow over the whole
+ * clip. Returns null with fewer than 2 anchors (need a segment to form a curve).
  */
 export function normalizeSpeedRamp(
   input: SpeedRamp | SpeedPoint[] | null | undefined,
@@ -91,7 +94,7 @@ export function normalizeSpeedRamp(
   return { points: spaced };
 }
 
-/** Constant-speed Hermite segment (flat hold after the last user anchor). */
+/** Constant-speed Hermite segment (flat hold outside the user curve). */
 function constantSegment(x0: number, x1: number, speed: number): HermiteSegment {
   const width = Math.max(1e-9, x1 - x0);
   return { x0, x1, width, a: 0, b: 0, c: 0, d: clampRampSpeed(speed) };
@@ -199,7 +202,7 @@ function integrateSegment(seg: HermiteSegment, t: number): number {
 
 export class RampProfile {
   readonly ramp: SpeedRamp;
-  /** Full [0,1] coverage: ease-in from 1× + user Hermite + trail hold. */
+  /** Full [0,1] coverage: lead hold + user Hermite + trail hold. */
   private readonly segments: HermiteSegment[];
   /** Cumulative ∫₀^x ds/v(s) at each segment boundary (covers full [0,1]). */
   private readonly cumulative: number[];
@@ -211,8 +214,9 @@ export class RampProfile {
     const leadSpeed = clampRampSpeed(ramp.points[0].speed);
     const trailSpeed = clampRampSpeed(ramp.points[ramp.points.length - 1].speed);
     const segments: HermiteSegment[] = [];
-    // Premiere: before the first keyframe, ease from default 1× — not a hard step.
-    if (lo > 0) segments.push(easeSegment(0, 1, lo, leadSpeed));
+    // Hold the first anchor's speed from the clip start to that anchor, so an
+    // all-slow curve stays slow instead of easing up to 1× at the head.
+    if (lo > 0) segments.push(constantSegment(0, lo, leadSpeed));
     segments.push(...buildSegments(ramp));
     if (hi < 1) segments.push(constantSegment(hi, 1, trailSpeed));
     this.segments = segments;
@@ -315,11 +319,17 @@ const profileCache = new WeakMap<SpeedRamp, RampProfile>();
 
 export function getRampProfile(ramp: SpeedRamp | null | undefined): RampProfile | null {
   if (!ramp) return null;
+  // Key on the *stored* ramp: ramps are replaced immutably on every edit, so an
+  // identity hit means the normalized points and profile are unchanged. Keying
+  // on the freshly-normalized copy instead missed on every call and rebuilt the
+  // whole Gauss–Legendre profile per frame (the source of ramp drag/preview jank).
+  const cached = profileCache.get(ramp);
+  if (cached) return cached;
   const normalized = normalizeSpeedRamp(ramp);
   if (!normalized) return null;
-  const cached = profileCache.get(normalized);
-  if (cached) return cached;
   const profile = new RampProfile(normalized);
+  profileCache.set(ramp, profile);
+  // Alias the normalized view too, for callers that already hold it.
   profileCache.set(normalized, profile);
   return profile;
 }
@@ -404,7 +414,7 @@ export function sliceRamp(
   const from = Math.min(fromProgress, toProgress);
   const to = Math.max(fromProgress, toProgress);
   const span = Math.max(1e-6, to - from);
-  const profile = getRampProfile(normalized)!;
+  const profile = getRampProfile(ramp) ?? new RampProfile(normalized);
 
   // Candidate sample positions: slice edges + every original anchor inside.
   const positions = new Set<number>([from, to]);
@@ -509,4 +519,35 @@ export function rampOutputDurationSec(
   const profile = getRampProfile(ramp);
   if (!profile) return sourceSpanSec;
   return sourceSpanSec * profile.durationFactor;
+}
+
+/* ------------------------------------------------------- playback phase lock */
+
+/**
+ * Phase-lock constants for slaving an HTML media element to the timeline wall
+ * clock. A deadband keeps steady-state playback at exactly the nominal speed;
+ * outside it the rate is trimmed proportionally so the element catches up
+ * smoothly instead of hard-seeking.
+ */
+export const DRIFT_DEADBAND_SEC = 0.04;
+/** Rate trim per second of drift (dimensionless, applied to the nominal rate). */
+export const RATE_TRIM_GAIN = 1.6;
+/** Cap the trim so playback speed never visibly deviates from the ramp. */
+export const MAX_RATE_TRIM = 0.35;
+
+/**
+ * Playback rate that both honors a clip's (ramp) speed and nudges the element
+ * back toward the playhead. `driftSec = targetSourceSec − element.currentTime`
+ * (positive = element is behind). Pure — unit tested.
+ */
+export function phaseLockedRate(nominalRate: number, driftSec: number): number {
+  let rate = nominalRate;
+  if (Math.abs(driftSec) > DRIFT_DEADBAND_SEC) {
+    const trim = Math.max(
+      -MAX_RATE_TRIM,
+      Math.min(MAX_RATE_TRIM, driftSec * RATE_TRIM_GAIN),
+    );
+    rate = nominalRate * (1 + trim);
+  }
+  return Math.min(16, Math.max(0.0625, rate));
 }

@@ -84,7 +84,12 @@ export function clipDurationTicks(clip: Clip): Tick {
     return rampDurationTicks(clip.speedRamp!, source);
   }
   const speed = Number.isFinite(clip.speed) && clip.speed > 0 ? clip.speed : 1;
-  return Math.max(0, Math.round(source / speed));
+  const natural = Math.max(0, Math.round(source / speed));
+  const span = clip.spanTicks;
+  if (typeof span === "number" && Number.isFinite(span) && span > natural) {
+    return Math.round(span);
+  }
+  return natural;
 }
 
 /** Effective constant-equivalent speed used for export/fallback paths. */
@@ -788,6 +793,7 @@ export function trimClip(
     ...current,
     sourceInTicks,
     sourceOutTicks,
+    spanTicks: current.spanTicks ? null : current.spanTicks,
   }));
   const partner =
     options?.followLink === false ? null : mutualLockedPartner(project, clip);

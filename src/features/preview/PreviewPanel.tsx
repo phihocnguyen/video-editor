@@ -18,7 +18,6 @@ import {
   setPlaybackHoldStartHook,
 } from "../../lib/mediaDecodeGate";
 import { releaseMediaBinThumbs } from "../../lib/mediaFilmstrip";
-import { isRampClockActive } from "../../lib/rampClock";
 import { useEditorUiStore } from "../../stores/editorUiStore";
 import { useProjectStore } from "../../stores/projectStore";
 import { commitProjectChange } from "../../stores/historyStore";
@@ -314,19 +313,6 @@ export function PreviewPanel() {
 
       // During transitions, force layer remounts so clip 2 appears / clip 1 leaves.
       const forceLayers = playheadInTransitionWindow(projectRef.current, ui.playheadTicks);
-
-      if (isRampClockActive()) {
-        const cur = ui.playheadTicks;
-        if (cur >= duration) {
-          setPlayheadTicks(duration);
-          setPlaying(false);
-          bumpListPlayhead(duration, true);
-          return;
-        }
-        bumpListPlayhead(cur, forceLayers);
-        frame = requestAnimationFrame(tick);
-        return;
-      }
 
       const rate = ui.playbackRate;
       const delta = Math.round(dt * 1_000_000 * rate);
