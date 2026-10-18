@@ -116,7 +116,7 @@ describe("photo booth", () => {
       [asset(0, 1920, 1080), asset(1, 1080, 1920), asset(2, 800, 800), asset(3, 640, 480)],
       { themeId: "classic", backgroundColor: "#112233", durationTicks: 15_000_000, grayscale: true },
     );
-    expect(project.canvas).toMatchObject({ width: 1080, height: 1350, backgroundColor: "#112233" });
+    expect(project.canvas).toMatchObject({ width: 1080, height: 1920, backgroundColor: "#112233" });
     const cells = project.clips.filter((c) => c.slotId);
     expect(cells).toHaveLength(4);
     const layout = boothLayout({ upright: true });
@@ -142,7 +142,8 @@ describe("photo booth", () => {
     expect(paper.transform.rotation).toBe(layout.rotationDeg);
     expect(paper.crop).toBeNull();
     const paperTrack = project.tracks.find((tr) => tr.id === paper.trackId)!;
-    expect(paperTrack.locked).toBe(true);
+    // Paper must stay selectable in the timeline (not locked).
+    expect(paperTrack.locked).toBe(false);
     // Paper paints under the photos (higher track order).
     const cellTrack = project.tracks.find((tr) => tr.id === cells[0]!.trackId)!;
     expect(paperTrack.order).toBeGreaterThan(cellTrack.order);

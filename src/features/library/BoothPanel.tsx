@@ -98,7 +98,7 @@ function ThemeThumb({ theme }: { theme: BoothTheme }) {
   const paper = layout.paper;
   return (
     <div
-      className="relative aspect-[4/5] w-full overflow-hidden rounded-md"
+      className="relative aspect-[9/16] w-full overflow-hidden rounded-md"
       style={{ background: theme.background }}
       aria-hidden
     >

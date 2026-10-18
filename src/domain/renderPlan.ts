@@ -317,17 +317,20 @@ function resolveSize(
   if (preset === "source") {
     return { width: project.canvas.width, height: project.canvas.height };
   }
-  if (preset === "720") {
-    return scaleToHeight(project.canvas.width, project.canvas.height, 720);
-  }
-  return scaleToHeight(project.canvas.width, project.canvas.height, 1080);
+  const target = preset === "720" ? 720 : 1080;
+  return scaleToShortSide(project.canvas.width, project.canvas.height, target);
 }
 
-function scaleToHeight(width: number, height: number, targetHeight: number) {
-  const ratio = width / Math.max(1, height);
+/**
+ * Scale so the *shorter* side hits `target`. Keeps landscape 1080p at
+ * 1920×1080 and portrait 1080p at 1080×1920, which is what Instagram wants.
+ */
+function scaleToShortSide(width: number, height: number, target: number) {
+  const short = Math.min(width, height);
+  const scale = target / Math.max(1, short);
   return {
-    width: Math.round((targetHeight * ratio) / 2) * 2,
-    height: targetHeight,
+    width: Math.round((width * scale) / 2) * 2,
+    height: Math.round((height * scale) / 2) * 2,
   };
 }
 

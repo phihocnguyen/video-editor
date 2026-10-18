@@ -11,7 +11,7 @@ import {
   tornNoteSvg,
   type BoothDecor,
 } from "./boothDecor";
-import { BOOTH_DEFAULT_BACKGROUND } from "./boothStrip";
+import { BOOTH_CANVAS, BOOTH_DEFAULT_BACKGROUND } from "./boothStrip";
 
 export interface BoothTheme {
   id: string;
@@ -62,8 +62,8 @@ function piece(
 
 function patternSvg(id: string, shape: string): string {
   return svgDoc(
-    1080,
-    1350,
+    BOOTH_CANVAS.width,
+    BOOTH_CANVAS.height,
     `<defs><pattern id="${id}" width="34" height="34" patternUnits="userSpaceOnUse">${shape}</pattern></defs><rect width="100%" height="100%" fill="url(#${id})"/>`,
   );
 }
@@ -292,7 +292,7 @@ function buntingSvg(w: number, h: number): string {
 }
 
 const loveDecors: BoothDecor[] = [
-  piece("love", "hearts", "Hearts", "pattern", patternSvg("love-hearts", `<path d="${HEART}" fill="#ffffff" opacity="0.28" transform="scale(0.16)"/>`), 1080, 1350, "backdrop", 0),
+  piece("love", "hearts", "Hearts", "pattern", patternSvg("love-hearts", `<path d="${HEART}" fill="#ffffff" opacity="0.28" transform="scale(0.16)"/>`), BOOTH_CANVAS.width, BOOTH_CANVAS.height, "backdrop", 0),
   piece("love", "note", "Love note", "note", tornNoteSvg(500, 340, 2.4, `<path d="${HEART}" fill="#C45B74" transform="translate(340,36) scale(1.15)"/>`), 500, 340, "top-left", -8),
   piece("love", "heart", "Hearts", "hearts", heartSvg(320), 320, 320, "top-right", 8),
   piece("love", "bow", "Bow", "bow", bowSvg(260, 200), 260, 200, "mid-right", 12),
@@ -300,7 +300,7 @@ const loveDecors: BoothDecor[] = [
 ];
 
 const graduationDecors: BoothDecor[] = [
-  piece("graduation", "stars", "Stars", "pattern", patternSvg("grad-stars", `<path d="M8,2 L9.2,6 H13 L10,8.2 L11,12 L8,9.8 L5,12 L6,8.2 L3,6 H6.8 Z" fill="#C6A15B" opacity="0.45"/>`), 1080, 1350, "backdrop", 0),
+  piece("graduation", "stars", "Stars", "pattern", patternSvg("grad-stars", `<path d="M8,2 L9.2,6 H13 L10,8.2 L11,12 L8,9.8 L5,12 L6,8.2 L3,6 H6.8 Z" fill="#C6A15B" opacity="0.45"/>`), BOOTH_CANVAS.width, BOOTH_CANVAS.height, "backdrop", 0),
   piece("graduation", "laurel", "Laurel", "laurel", laurelSvg(260, 240), 260, 240, "top-left", -8),
   piece("graduation", "cap", "Cap", "cap", capSvg(320), 320, 320, "top-right", 6),
   piece("graduation", "diploma", "Diploma", "diploma", diplomaSvg(420, 260), 420, 260, "bottom-left", -6),
@@ -310,7 +310,7 @@ const graduationDecors: BoothDecor[] = [
 ];
 
 const schoolDecors: BoothDecor[] = [
-  piece("school", "grid", "Grid", "pattern", patternSvg("school-grid", `<path d="M4 16 H28 M16 4 V28" stroke="#ffffff" stroke-width="1.2" opacity="0.22"/>`), 1080, 1350, "backdrop", 0),
+  piece("school", "grid", "Grid", "pattern", patternSvg("school-grid", `<path d="M4 16 H28 M16 4 V28" stroke="#ffffff" stroke-width="1.2" opacity="0.22"/>`), BOOTH_CANVAS.width, BOOTH_CANVAS.height, "backdrop", 0),
   piece("school", "notebook", "Notebook", "notebook", notebookSvg(420, 280), 420, 280, "top-left", -6),
   piece("school", "pencil", "Pencil", "pencil", pencilSvg(320, 280), 320, 280, "top-right", 8),
   piece("school", "apple", "Apple", "apple", appleSvg(300), 300, 300, "bottom-left", -4),
@@ -329,8 +329,8 @@ const birthdayDecors: BoothDecor[] = [
        <circle cx="22" cy="18" r="1.6" fill="#ffffff" opacity="0.4"/>
        <rect x="16" y="4" width="6" height="2.4" rx="1" fill="#E07A6A" opacity="0.5" transform="rotate(-20 19 5)"/>`,
     ),
-    1080,
-    1350,
+    BOOTH_CANVAS.width,
+    BOOTH_CANVAS.height,
     "backdrop",
     0,
   ),
@@ -511,7 +511,7 @@ function pumpkinSvg(w: number, h: number): string {
 }
 
 const christmasDecors: BoothDecor[] = [
-  piece("christmas", "snow", "Snow dots", "pattern", patternSvg("xmas-snow", `<circle cx="4" cy="4" r="1.5" fill="#ffffff" opacity="0.3"/>`), 1080, 1350, "backdrop", 0),
+  piece("christmas", "snow", "Snow dots", "pattern", patternSvg("xmas-snow", `<circle cx="4" cy="4" r="1.5" fill="#ffffff" opacity="0.3"/>`), BOOTH_CANVAS.width, BOOTH_CANVAS.height, "backdrop", 0),
   piece("christmas", "flake", "Snowflake", "flake", snowflakeSvg(280), 280, 280, "top-left", -10),
   piece("christmas", "tree", "Tree", "tree", treeSvg(300, 360), 300, 360, "bottom-right", -6),
   piece("christmas", "gift", "Gift", "gift", giftSvg(280, 260), 280, 260, "mid-right", 10),
@@ -519,14 +519,14 @@ const christmasDecors: BoothDecor[] = [
 ];
 
 const newYearDecors: BoothDecor[] = [
-  piece("newyear", "gold", "Gold confetti", "pattern", patternSvg("tet-gold", `<circle cx="4" cy="4" r="1.3" fill="#F2C14E" opacity="0.42"/>`), 1080, 1350, "backdrop", 0),
+  piece("newyear", "gold", "Gold confetti", "pattern", patternSvg("tet-gold", `<circle cx="4" cy="4" r="1.3" fill="#F2C14E" opacity="0.42"/>`), BOOTH_CANVAS.width, BOOTH_CANVAS.height, "backdrop", 0),
   piece("newyear", "lantern", "Lantern", "lantern", lanternSvg(260, 340), 260, 340, "top-left", -8),
   piece("newyear", "blossom", "Blossom", "blossom", blossomSvg(340, 320), 340, 320, "bottom-right", -10),
   piece("newyear", "envelope", "Lucky envelope", "envelope", envelopeSvg(280, 220), 280, 220, "mid-right", 12),
 ];
 
 const babyDecors: BoothDecor[] = [
-  piece("baby", "dots", "Soft dots", "pattern", patternSvg("baby-dots", `<circle cx="4" cy="4" r="1.5" fill="#ffffff" opacity="0.28"/>`), 1080, 1350, "backdrop", 0),
+  piece("baby", "dots", "Soft dots", "pattern", patternSvg("baby-dots", `<circle cx="4" cy="4" r="1.5" fill="#ffffff" opacity="0.28"/>`), BOOTH_CANVAS.width, BOOTH_CANVAS.height, "backdrop", 0),
   piece("baby", "cloud", "Cloud", "cloud", cloudSvg(320, 200), 320, 200, "top-left", -6),
   piece("baby", "star", "Stars", "star", starStickersSvg(220, 220), 220, 220, "top-right", 12),
   piece("baby", "onesie", "Onesie", "onesie", onesieSvg(280, 320), 280, 320, "mid-right", 8),
@@ -534,14 +534,14 @@ const babyDecors: BoothDecor[] = [
 ];
 
 const travelDecors: BoothDecor[] = [
-  piece("travel", "dots", "Map dots", "pattern", patternSvg("travel-dots", `<circle cx="4" cy="4" r="1.3" fill="#ffffff" opacity="0.24"/>`), 1080, 1350, "backdrop", 0),
+  piece("travel", "dots", "Map dots", "pattern", patternSvg("travel-dots", `<circle cx="4" cy="4" r="1.3" fill="#ffffff" opacity="0.24"/>`), BOOTH_CANVAS.width, BOOTH_CANVAS.height, "backdrop", 0),
   piece("travel", "plane", "Paper plane", "plane", planeSvg(320, 240), 320, 240, "top-right", 10),
   piece("travel", "sun", "Sun", "sun", sunSvg(260), 260, 260, "top-left", -6),
   piece("travel", "camera", "Camera", "camera", cameraSvg(320, 260), 320, 260, "bottom-left", -8),
 ];
 
 const autumnDecors: BoothDecor[] = [
-  piece("autumn", "leaves", "Fallen leaves", "pattern", patternSvg("autumn-leaves", `<ellipse cx="8" cy="10" rx="6" ry="2.6" fill="#C9622F" opacity="0.5" transform="rotate(-24 8 10)"/>`), 1080, 1350, "backdrop", 0),
+  piece("autumn", "leaves", "Fallen leaves", "pattern", patternSvg("autumn-leaves", `<ellipse cx="8" cy="10" rx="6" ry="2.6" fill="#C9622F" opacity="0.5" transform="rotate(-24 8 10)"/>`), BOOTH_CANVAS.width, BOOTH_CANVAS.height, "backdrop", 0),
   piece("autumn", "maple", "Maple leaf", "maple", mapleLeafSvg(280, 280), 280, 280, "top-right", -10),
   piece("autumn", "spray", "Leaf spray", "spray", leafSprigSvg(220, 300), 220, 300, "mid-right", 8),
   piece("autumn", "pumpkin", "Pumpkin", "pumpkin", pumpkinSvg(280, 260), 280, 260, "bottom-left", -6),

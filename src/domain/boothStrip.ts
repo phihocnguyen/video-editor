@@ -4,7 +4,7 @@
  * chosen duration is how long the export holds it.
  */
 
-export const BOOTH_CANVAS = { width: 1080, height: 1350, frameRate: 30 } as const;
+export const BOOTH_CANVAS = { width: 1080, height: 1920, frameRate: 30 } as const;
 export const BOOTH_ROTATION_DEG = 34;
 export const BOOTH_DEFAULT_BACKGROUND = "#9AA3AB";
 export const BOOTH_PAPER_ID = "__booth-paper__";

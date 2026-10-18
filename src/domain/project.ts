@@ -423,8 +423,8 @@ export function createEmptyProject(name = "Untitled project"): ProjectDocument {
     id: crypto.randomUUID(),
     name,
     canvas: {
-      width: 1920,
-      height: 1080,
+      width: 1080,
+      height: 1920,
       frameRate: 30,
       backgroundColor: "#000000",
     },

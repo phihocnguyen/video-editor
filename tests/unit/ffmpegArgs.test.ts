@@ -176,9 +176,9 @@ describe("buildFfmpegArgs", () => {
       fileExists: () => true,
     });
     const filter = built.args[built.args.indexOf("-filter_complex") + 1];
-    // 1080p canvas: top = 15% , bottom = 18%.
-    expect(filter).toContain("drawbox=x=0:y=0:w=iw:h=162");
-    expect(filter).toContain("drawbox=x=0:y=ih-194:w=iw:h=194");
+    // 1080x1920 canvas: top = 15% (288px), bottom = 18% (346px).
+    expect(filter).toContain("drawbox=x=0:y=0:w=iw:h=288");
+    expect(filter).toContain("drawbox=x=0:y=ih-346:w=iw:h=346");
     // No full-height side bars.
     expect(filter).not.toContain("h=ih:c=");
   });
@@ -193,9 +193,9 @@ describe("buildFfmpegArgs", () => {
       fileExists: () => true,
     });
     const filter = built.args[built.args.indexOf("-filter_complex") + 1];
-    // 1080p canvas: top/bottom = 130px, sides sit between them (y=130, h=820).
-    expect(filter).toContain("drawbox=x=0:y=130:w=96:h=820");
-    expect(filter).toContain("drawbox=x=iw-96:y=130:w=96:h=820");
+    // 1080x1920 canvas: top/bottom = 230px, sides 54px wide (y=230, h=1460).
+    expect(filter).toContain("drawbox=x=0:y=230:w=54:h=1460");
+    expect(filter).toContain("drawbox=x=iw-54:y=230:w=54:h=1460");
   });
 
   it("paints lower-order tracks above higher-order ones (preview parity)", () => {

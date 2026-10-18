@@ -5,6 +5,8 @@
  * is created.
  */
 
+import { BOOTH_CANVAS } from "./boothStrip";
+
 export const BOOTH_DECOR_PREFIX = "__booth-decor-";
 export const BOOTH_SCRAP_BACKGROUND = "#6B1E2A";
 
@@ -141,9 +143,9 @@ export const BOOTH_DECORS: BoothDecor[] = [
     id: `${BOOTH_DECOR_PREFIX}dots`,
     name: "Dot paper",
     group: "dots",
-    svg: dotsSvg(1080, 1350),
-    width: 1080,
-    height: 1350,
+    svg: dotsSvg(BOOTH_CANVAS.width, BOOTH_CANVAS.height),
+    width: BOOTH_CANVAS.width,
+    height: BOOTH_CANVAS.height,
     anchor: "backdrop",
     rotation: 0,
   },

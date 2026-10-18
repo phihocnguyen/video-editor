@@ -247,7 +247,7 @@ export function applyBoothTemplate(
     order: 40,
     muted: true,
     visible: true,
-    locked: true,
+    locked: false,
     volume: 0,
   });
   clips.push({
