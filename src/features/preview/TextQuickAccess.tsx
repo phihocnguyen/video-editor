@@ -12,6 +12,8 @@ import {
   applyTransformPatch,
   updateClipText,
   withListStyle,
+  BLEND_MODE_OPTIONS,
+  normalizeBlendMode,
   type TextStyle,
 } from "../../domain";
 import {
@@ -37,6 +39,15 @@ function applyText(clipId: string, next: TextStyle) {
 
 const PAD = 10;
 
+function BlendModeIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="6" cy="8" r="4.2" stroke="currentColor" strokeWidth="1.6" />
+      <circle cx="10" cy="8" r="4.2" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
+  );
+}
+
 export function TextQuickAccess({ stageRef, wrapRef }: TextQuickAccessProps) {
   const selectedClipIds = useEditorUiStore((s) => s.selectedClipIds);
   const textQuickUi = useEditorUiStore((s) => s.textQuickUi);
@@ -49,6 +60,7 @@ export function TextQuickAccess({ stageRef, wrapRef }: TextQuickAccessProps) {
   const project = useProjectStore((s) => s.project);
   const [pos, setPos] = useState<BarPos | null>(null);
   const [colorOpen, setColorOpen] = useState(false);
+  const [blendOpen, setBlendOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
   const clipId = selectedClipIds.length === 1 ? selectedClipIds[0]! : null;
@@ -123,20 +135,24 @@ export function TextQuickAccess({ stageRef, wrapRef }: TextQuickAccessProps) {
   }, [clipId, clip, stageRef, wrapRef]);
 
   useEffect(() => {
-    if (!textQuickUi?.moreOpen && !colorOpen) return;
+    if (!textQuickUi?.moreOpen && !colorOpen && !blendOpen) return;
     const onDown = (e: PointerEvent) => {
       const root = rootRef.current;
       if (root && !root.contains(e.target as Node)) {
         patchTextQuickUi({ moreOpen: false });
         setColorOpen(false);
+        setBlendOpen(false);
       }
     };
     window.addEventListener("pointerdown", onDown, true);
     return () => window.removeEventListener("pointerdown", onDown, true);
-  }, [textQuickUi?.moreOpen, colorOpen, patchTextQuickUi]);
+  }, [textQuickUi?.moreOpen, colorOpen, blendOpen, patchTextQuickUi]);
 
   useEffect(() => {
-    if (textQuickUi?.mode !== "edit") setColorOpen(false);
+    if (textQuickUi?.mode !== "edit") {
+      setColorOpen(false);
+      setBlendOpen(false);
+    }
   }, [textQuickUi?.mode]);
 
   if (!clipId || !clip || !text || !textQuickUi || !pos) return null;
@@ -163,19 +179,82 @@ export function TextQuickAccess({ stageRef, wrapRef }: TextQuickAccessProps) {
             <ToolButton
               label="Edit"
               icon={<PencilIcon />}
-              onClick={() =>
-                patchTextQuickUi({ mode: "edit", moreOpen: false })
-              }
+              onClick={() => {
+                setBlendOpen(false);
+                patchTextQuickUi({ mode: "edit", moreOpen: false });
+              }}
             />
             <ToolButton
               label="Styles"
               icon={<StylesIcon />}
               active={activePanel === "text"}
               onClick={() => {
+                setBlendOpen(false);
                 patchTextQuickUi({ moreOpen: false, stylesOpen: false });
                 setActivePanel("text");
               }}
             />
+            <div className="relative">
+              <ToolButton
+                label={
+                  clip.transform.blendMode && clip.transform.blendMode !== "normal"
+                    ? (BLEND_MODE_OPTIONS.find((b) => b.id === clip.transform.blendMode)?.label ?? "Blend")
+                    : "Blend"
+                }
+                icon={<BlendModeIcon />}
+                active={blendOpen || (clip.transform.blendMode !== "normal" && Boolean(clip.transform.blendMode))}
+                onClick={() => {
+                  setBlendOpen((v) => !v);
+                  setColorOpen(false);
+                  patchTextQuickUi({ moreOpen: false });
+                }}
+              />
+              {blendOpen ? (
+                <div
+                  className={cn(
+                    "absolute left-0 z-50 w-48 max-h-60 overflow-y-auto rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-xl",
+                    pos.below ? "bottom-[calc(100%+8px)]" : "top-[calc(100%+8px)]",
+                  )}
+                  onMouseDown={(e) => e.preventDefault()}
+                >
+                  <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    Blend with Video
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    {BLEND_MODE_OPTIONS.map((opt) => {
+                      const active = normalizeBlendMode(clip.transform.blendMode) === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          className={cn(
+                            "flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[12px] font-medium transition-colors",
+                            active
+                              ? "bg-primary text-primary-foreground font-semibold"
+                              : "text-popover-foreground hover:bg-accent",
+                          )}
+                          onClick={() => {
+                            commitProjectChange((p) =>
+                              applyTransformPatch(
+                                p,
+                                clipId,
+                                { blendMode: opt.id },
+                                useEditorUiStore.getState().playheadTicks,
+                              ),
+                            );
+                            setBlendOpen(false);
+                            setStatusMessage(`Blend · ${opt.label}`);
+                          }}
+                        >
+                          <span>{opt.label}</span>
+                          {active ? <span className="text-[11px]">✓</span> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+            </div>
             <ToolbarDivider />
             <ToolIconButton
               title="Bring forward"

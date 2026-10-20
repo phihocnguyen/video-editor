@@ -188,9 +188,23 @@ pub struct RenderClipEffects {
     #[serde(default = "default_strobe_color")]
     pub strobe_color: String,
     #[serde(default)]
+    pub zoom: f64,
+    #[serde(default)]
+    pub zoom_frames: f64,
+    #[serde(default)]
+    pub shake: f64,
+    #[serde(default = "default_shake_speed")]
+    pub shake_speed: f64,
+    #[serde(default)]
+    pub shake_rotation: f64,
+    #[serde(default)]
     pub fade_in_sec: f64,
     #[serde(default)]
     pub fade_out_sec: f64,
+}
+
+fn default_shake_speed() -> f64 {
+    10.0
 }
 
 fn default_strobe_color() -> String {
@@ -261,6 +275,8 @@ pub struct EffectKeyframePoint {
 pub struct EffectParamTrack {
     #[serde(default)]
     pub param: String,
+    #[serde(default)]
+    pub easing: String,
     #[serde(default)]
     pub tracks: Vec<EffectKeyframePoint>,
     #[serde(default)]
@@ -964,6 +980,92 @@ fn has_geometry_keyframes(kf: &Option<EffectKeyframes>) -> bool {
         .any(|param| !track_points(kf, param).is_empty())
 }
 
+fn has_zoom_effect(effects: &RenderClipEffects, kf: &Option<EffectKeyframes>) -> bool {
+    effects.zoom > 1e-4 || !track_points(kf, "zoom").is_empty()
+}
+
+/// Scale expression for the frame-driven zoom (1 = neutral), mirroring TS.
+fn zoom_scale_expr(
+    effects: &RenderClipEffects,
+    kf: &Option<EffectKeyframes>,
+    dur: f64,
+    fps: f64,
+) -> Option<String> {
+    let amplitude = match eased_track_expr(kf, "zoom", dur, effects.zoom, 0.0, "t") {
+        Some(expr) => expr,
+        None if effects.zoom > 1e-4 => format!("{:.4}", effects.zoom),
+        None => return None,
+    };
+    let period = effects.zoom_frames.round() as i64;
+    if period <= 0 {
+        return Some(format!("(1+({amplitude}))"));
+    }
+    let safe_fps = if fps.is_finite() && fps > 0.0 { fps } else { 30.0 };
+    Some(format!(
+        "(1+({amplitude})*(0.5-0.5*cos(2*PI*mod(t*{safe_fps:.4}\\,{period})/{period})))"
+    ))
+}
+
+fn has_shake_effect(effects: &RenderClipEffects, kf: &Option<EffectKeyframes>) -> bool {
+    effects.shake > 1e-4 || !track_points(kf, "shake").is_empty()
+}
+
+struct ShakeExpr {
+    x: String,
+    y: String,
+    rotation: String,
+    scale: String,
+}
+
+/// Mirrors `shakeAt` / `ffmpegShakeExpr` in the TS domain.
+fn shake_expr(
+    effects: &RenderClipEffects,
+    kf: &Option<EffectKeyframes>,
+    dur: f64,
+    cover_factor: f64,
+) -> Option<ShakeExpr> {
+    let amount = match eased_track_expr(kf, "shake", dur, effects.shake, 0.0, "t") {
+        Some(expr) => expr,
+        None if effects.shake > 1e-4 => format!("{:.4}", effects.shake),
+        None => return None,
+    };
+    let speed = effects.shake_speed.clamp(1.0, 30.0);
+    let t = format!("(t*{speed:.4})");
+    let x = format!("({amount})*(0.62*sin(2*PI*{t})+0.38*sin(2*PI*1.7*{t}+1.1))");
+    let y = format!("({amount})*(0.62*sin(2*PI*1.3*{t}+2.2)+0.38*sin(2*PI*2.1*{t}+0.4))");
+    let rot_amp = effects.shake_rotation.clamp(0.0, 15.0);
+    let rotation =
+        format!("({rot_amp:.4})*(0.6*sin(2*PI*0.9*{t}+0.7)+0.4*sin(2*PI*1.9*{t}+2.0))");
+    let factor = cover_factor.max(1.0);
+    let scale = format!("(1+2.2*{factor:.6}*({amount}))");
+    Some(ShakeExpr {
+        x,
+        y,
+        rotation,
+        scale,
+    })
+}
+
+/// Drawbox passes for a strobe with the same two-frame soft tail as preview.
+fn strobe_boxes(color: &str, period_frames: i64, enable: Option<&str>) -> Vec<String> {
+    let period = period_frames.max(1);
+    let color = color.trim_start_matches('#');
+    let decay = [1.0_f64, 0.35];
+    let mut out = Vec::new();
+    for (offset, alpha) in decay.iter().enumerate().take(period as usize) {
+        let frame = (period - 1 + offset as i64) % period;
+        let when = format!("eq(mod(n\\,{period})\\,{frame})");
+        let expr = match enable {
+            Some(extra) => format!("{extra}*{when}"),
+            None => when,
+        };
+        out.push(format!(
+            "drawbox=x=0:y=0:w=iw:h=ih:color={color}@{alpha}:t=fill:enable='{expr}'"
+        ));
+    }
+    out
+}
+
 fn linear_track_expr(
     kf: &Option<EffectKeyframes>,
     param: &str,
@@ -977,6 +1079,74 @@ fn linear_track_expr(
         return None;
     }
     Some(linear_expr(&points, dur.max(0.01), before, origin, time_var))
+}
+
+fn track_easing(kf: &Option<EffectKeyframes>, param: &str) -> String {
+    let Some(kf) = kf else {
+        return "linear".into();
+    };
+    let Some(track) = kf.tracks.iter().find(|t| t.param == param) else {
+        return "linear".into();
+    };
+    match track.easing.as_str() {
+        "hold" | "linear" | "easeIn" | "easeOut" | "easeInOut" => track.easing.clone(),
+        _ => "linear".into(),
+    }
+}
+
+fn ease_expr(local: &str, easing: &str) -> String {
+    match easing {
+        "hold" => "0".into(),
+        "easeIn" => format!("pow({local}\\,3)"),
+        "easeOut" => format!("(1-pow(1-({local})\\,3))"),
+        "easeInOut" => format!(
+            "if(lt({local}\\,0.5)\\,4*pow({local}\\,3)\\,1-pow(-2*({local})+2\\,3)/2)"
+        ),
+        _ => local.into(),
+    }
+}
+
+fn eased_track_expr(
+    kf: &Option<EffectKeyframes>,
+    param: &str,
+    dur: f64,
+    before: f64,
+    origin: f64,
+    time_var: &str,
+) -> Option<String> {
+    let points = track_points(kf, param);
+    if points.is_empty() {
+        return None;
+    }
+    let dur = dur.max(0.01);
+    let easing = track_easing(kf, param);
+    let mut mapped: Vec<(f64, f64)> = points
+        .iter()
+        .map(|(progress, value)| (origin + progress.clamp(0.0, 1.0) * dur, *value))
+        .collect();
+    mapped.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    if mapped.len() == 1 {
+        let (t, v) = mapped[0];
+        if (before - v).abs() < 1e-6 {
+            return Some(format!("{v:.4}"));
+        }
+        return Some(format!(
+            "if(lt({time_var}\\,{t:.4})\\,{before:.4}\\,{v:.4})"
+        ));
+    }
+    let mut expr = format!("{:.4}", mapped.last().unwrap().1);
+    for i in (0..mapped.len() - 1).rev() {
+        let (ta, va) = mapped[i];
+        let (tb, vb) = mapped[i + 1];
+        let span = (tb - ta).max(0.0001);
+        let local = format!("(({time_var}-{ta:.4})/{span:.4})");
+        let blend = format!("{va:.4}+({vb:.4}-{va:.4})*{}", ease_expr(&local, &easing));
+        expr = format!("if(lt({time_var}\\,{tb:.4})\\,{blend}\\,{expr})");
+    }
+    let (t0, _) = mapped[0];
+    Some(format!(
+        "if(lt({time_var}\\,{t0:.4})\\,{before:.4}\\,{expr})"
+    ))
 }
 
 fn linear_expr(points: &[(f64, f64)], dur: f64, before: f64, origin: f64, time_var: &str) -> String {
@@ -1009,7 +1179,7 @@ fn even_expr(inner: &str) -> String {
 }
 
 /// Time-varying scale / rotate / pad. Full frame so later overlay stays aligned.
-fn animated_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) -> String {
+fn animated_placement_filters(clip: &RenderClipPlan, width: u32, height: u32, fps: f64) -> String {
     let tr = &clip.transform;
     let cw = clip.canvas_width.max(1.0);
     let chh = clip.canvas_height.max(1.0);
@@ -1026,21 +1196,51 @@ fn animated_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) ->
     let x_before = if legacy { cw / 2.0 } else { tr.x };
     let y_before = if legacy { chh / 2.0 } else { tr.y };
 
+    let zoom = zoom_scale_expr(&clip.effects, &clip.effect_keyframes, dur, fps);
+    let shake = shake_expr(
+        &clip.effects,
+        &clip.effect_keyframes,
+        dur,
+        if fit_w > 0.0 && fit_h > 0.0 {
+            (width as f64 / fit_w).max(height as f64 / fit_h)
+        } else {
+            1.0
+        },
+    );
+    let mut scale_parts: Vec<String> = Vec::new();
+    if let Some(expr) = &zoom {
+        scale_parts.push(expr.clone());
+    }
+    if let Some(s) = &shake {
+        scale_parts.push(s.scale.clone());
+    }
+    let zoom_mul = if scale_parts.is_empty() {
+        String::new()
+    } else {
+        format!("*({})", scale_parts.join(")*("))
+    };
+    let animated_scale = zoom.is_some() || shake.is_some();
     let box_w = match linear_track_expr(&clip.transform_keyframes, "scaleX", dur, tr.scale_x, 0.0, "t") {
-        Some(expr) => even_expr(&format!("{fit_w:.4}*abs({expr})")),
+        Some(expr) => even_expr(&format!("{fit_w:.4}*abs({expr}){zoom_mul}")),
+        None if animated_scale => {
+            even_expr(&format!("{fit_w:.4}*abs({:.4}){zoom_mul}", clamp_scale(tr.scale_x)))
+        }
         None => {
             let even = ((fit_w * clamp_scale(tr.scale_x)).round().max(2.0) as i64 & !1).max(2);
             even.to_string()
         }
     };
     let box_h = match linear_track_expr(&clip.transform_keyframes, "scaleY", dur, tr.scale_y, 0.0, "t") {
-        Some(expr) => even_expr(&format!("{fit_h:.4}*abs({expr})")),
+        Some(expr) => even_expr(&format!("{fit_h:.4}*abs({expr}){zoom_mul}")),
+        None if animated_scale => {
+            even_expr(&format!("{fit_h:.4}*abs({:.4}){zoom_mul}", clamp_scale(tr.scale_y)))
+        }
         None => {
             let even = ((fit_h * clamp_scale(tr.scale_y)).round().max(2.0) as i64 & !1).max(2);
             even.to_string()
         }
     };
-    let center_x = match linear_track_expr(&clip.transform_keyframes, "x", dur, x_before, 0.0, "t") {
+    let base_center_x = match linear_track_expr(&clip.transform_keyframes, "x", dur, x_before, 0.0, "t") {
         Some(expr) => format!("({expr})*{out_sx:.6}"),
         None => {
             let x = if track_points(&clip.transform_keyframes, "x").is_empty() && legacy {
@@ -1051,7 +1251,7 @@ fn animated_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) ->
             format!("{x:.3}")
         }
     };
-    let center_y = match linear_track_expr(&clip.transform_keyframes, "y", dur, y_before, 0.0, "t") {
+    let base_center_y = match linear_track_expr(&clip.transform_keyframes, "y", dur, y_before, 0.0, "t") {
         Some(expr) => format!("({expr})*{out_sy:.6}"),
         None => {
             let y = if track_points(&clip.transform_keyframes, "y").is_empty() && legacy {
@@ -1061,6 +1261,14 @@ fn animated_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) ->
             };
             format!("{y:.3}")
         }
+    };
+    let center_x = match &shake {
+        Some(s) => format!("({base_center_x})+({})*{:.3}", s.x, width as f64),
+        None => base_center_x,
+    };
+    let center_y = match &shake {
+        Some(s) => format!("({base_center_y})+({})*{:.3}", s.y, height as f64),
+        None => base_center_y,
     };
     let mut parts = vec![format!(
         "scale=w='{box_w}':h='{box_h}':eval=frame:flags=lanczos"
@@ -1074,9 +1282,13 @@ fn animated_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) ->
     let rot_pts = track_points(&clip.transform_keyframes, "rotation");
     let mut pad_w = box_w.clone();
     let mut pad_h = box_h.clone();
-    if !rot_pts.is_empty() || tr.rotation.abs() > 0.01 {
-        let rot = linear_track_expr(&clip.transform_keyframes, "rotation", dur, tr.rotation, 0.0, "t")
+    if !rot_pts.is_empty() || tr.rotation.abs() > 0.01 || shake.is_some() {
+        let base_rot = linear_track_expr(&clip.transform_keyframes, "rotation", dur, tr.rotation, 0.0, "t")
             .unwrap_or_else(|| format!("{:.4}", tr.rotation));
+        let rot = match &shake {
+            Some(s) => format!("({base_rot})+({})", s.rotation),
+            None => base_rot,
+        };
         let rad = format!("({rot})*0.0174533");
         let ow = format!("abs(({box_w})*cos(abs({rad})))+abs(({box_h})*sin(abs({rad})))");
         let oh = format!("abs(({box_w})*sin(abs({rad})))+abs(({box_h})*cos(abs({rad})))");
@@ -1193,9 +1405,12 @@ fn rotated_placement_filters(
 /// rotate, centred at transform.x/y. Always lands on an exact `width x height`
 /// canvas (pad), so no trailing resample softens the frame — `setsar=1` keeps
 /// geometry exact like the preview stage.
-fn media_placement_filters(clip: &RenderClipPlan, width: u32, height: u32) -> String {
-    if has_geometry_keyframes(&clip.transform_keyframes) {
-        return animated_placement_filters(clip, width, height);
+fn media_placement_filters(clip: &RenderClipPlan, width: u32, height: u32, fps: f64) -> String {
+    if has_geometry_keyframes(&clip.transform_keyframes)
+        || has_zoom_effect(&clip.effects, &clip.effect_keyframes)
+        || has_shake_effect(&clip.effects, &clip.effect_keyframes)
+    {
+        return animated_placement_filters(clip, width, height, fps);
     }
     let tr = &clip.transform;
     let cw = clip.canvas_width.max(1.0);
@@ -1374,8 +1589,10 @@ fn build_filter_complex(
         } else {
             format!(",{}", extras.join(","))
         };
-        let placement = media_placement_filters(clip, width, height);
-        let animated = has_geometry_keyframes(&clip.transform_keyframes);
+        let placement = media_placement_filters(clip, width, height, fps);
+        let animated = has_geometry_keyframes(&clip.transform_keyframes)
+            || has_zoom_effect(&clip.effects, &clip.effect_keyframes)
+            || has_shake_effect(&clip.effects, &clip.effect_keyframes);
         // Shift PTS so stream local 0 lands at timeline `overlay_start`.
         // Without this, `overlay` syncs by PTS: clip 2 (start 5s) would be
         // sampled at PTS 5s (near EOF) during the transition -> black/frozen.
@@ -2079,21 +2296,15 @@ fn ffmpeg_video_effects_chain_animated(
         let angle = std::f64::consts::PI / 5.0 + (1.0 - effects.vignette) * (std::f64::consts::PI / 4.0);
         parts.push(format!("vignette=angle={angle:.4}:mode=backward"));
     }
-    let strobe_color = effects.strobe_color.trim_start_matches('#');
     if let Some(p) = kf_track(keyframes, "strobeFrames") {
         for (t0, t1, sigma) in kf_windows(&p, delay, dur, 0.5, effects.strobe_frames) {
             let period = (sigma.round() as i64).max(1);
-            parts.push(format!(
-                "drawbox=x=0:y=0:w=iw:h=ih:color={strobe_color}@1:t=fill:enable='between(t\\,{t0:.3}\\,{t1:.3})*eq(mod(n\\,{period})\\,{})'",
-                period - 1
-            ));
+            let window = format!("between(t\\,{t0:.3}\\,{t1:.3})");
+            parts.extend(strobe_boxes(&effects.strobe_color, period, Some(&window)));
         }
     } else if effects.strobe_frames.round() > 0.0 {
         let period = (effects.strobe_frames.round() as i64).max(1);
-        parts.push(format!(
-            "drawbox=x=0:y=0:w=iw:h=ih:color={strobe_color}@1:t=fill:enable='eq(mod(n\\,{period})\\,{})'",
-            period - 1
-        ));
+        parts.extend(strobe_boxes(&effects.strobe_color, period, None));
     }
     let fade_in = effects.fade_in_sec.min(dur);
     if fade_in > 0.001 {
@@ -2326,6 +2537,13 @@ fn drawtext_y_expr(y_base: &str, start: f64, dur: f64, slide_dist: f64, anim: &R
     }
 }
 
+fn text_anim_fade_like(anim: &str) -> bool {
+    anim == "fade"
+        || anim == "fadeWhite"
+        || anim == "scalePop"
+        || anim.starts_with("wipe")
+}
+
 fn drawtext_alpha_expr(
     base_alpha: &str,
     start: f64,
@@ -2346,7 +2564,7 @@ fn drawtext_alpha_expr(
     }
     let in_dur = anim.in_duration_sec.min(dur);
     if anim.r#in != "none" && in_dur > 0.001 {
-        if anim.r#in == "fade" || anim.r#in == "scalePop" {
+        if text_anim_fade_like(&anim.r#in) {
             terms.push(format!("min(1\\,max(0\\,(t-{start:.3})/{in_dur:.3}))"));
         } else {
             terms.push(format!(
@@ -2356,7 +2574,7 @@ fn drawtext_alpha_expr(
     }
     let out_dur = anim.out_duration_sec.min(dur);
     if anim.out != "none" && out_dur > 0.001 {
-        if anim.out == "fade" || anim.out == "scalePop" {
+        if text_anim_fade_like(&anim.out) {
             terms.push(format!("min(1\\,max(0\\,({end:.3}-t)/{out_dur:.3}))"));
         } else {
             terms.push(format!(

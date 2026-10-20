@@ -10,11 +10,19 @@
 import {
   DEFAULT_CLIP_EFFECTS,
   ffmpegColorGradeChain,
+  ffmpegStrobeBoxes,
   ffmpegVideoEffectsChain,
   normalizeClipEffects,
   type ClipEffects,
 } from "./effects";
 import type { Tick } from "./time";
+
+import {
+  easeProgress,
+  ffmpegEaseExpr,
+  normalizeEasing,
+  type EasingType,
+} from "./easing";
 
 export type EffectParamKey =
   | "brightness"
@@ -24,7 +32,9 @@ export type EffectParamKey =
   | "vignette"
   | "sharpen"
   | "grayscale"
-  | "strobeFrames";
+  | "strobeFrames"
+  | "zoom"
+  | "shake";
 
 export const EFFECT_PARAM_KEYS: EffectParamKey[] = [
   "brightness",
@@ -35,6 +45,8 @@ export const EFFECT_PARAM_KEYS: EffectParamKey[] = [
   "sharpen",
   "grayscale",
   "strobeFrames",
+  "zoom",
+  "shake",
 ];
 
 /** Numeric params shown with ◇ in Adjustment (not fade in/out). */
@@ -46,6 +58,8 @@ export const KEYFRAMEABLE_STEPPER_PARAMS: EffectParamKey[] = [
   "vignette",
   "sharpen",
   "strobeFrames",
+  "zoom",
+  "shake",
 ];
 
 export interface EffectKeyframe {
@@ -58,6 +72,8 @@ export interface EffectKeyframe {
 export interface EffectParamTrack {
   param: EffectParamKey;
   points: EffectKeyframe[];
+  /** Blend curve between points (absent = legacy hold behavior). */
+  easing?: EasingType;
 }
 
 export interface EffectKeyframes {
@@ -96,6 +112,10 @@ export function clampEffectParamValue(param: EffectParamKey, value: number): num
       return value >= 0.5 ? 1 : 0;
     case "strobeFrames":
       return Math.round(clamp(value, 0, 60));
+    case "zoom":
+      return clamp(value, 0, 0.5);
+    case "shake":
+      return clamp(value, 0, 0.2);
   }
 }
 
@@ -113,7 +133,10 @@ export function normalizeEffectKeyframes(
   for (const raw of input.tracks) {
     if (!raw || !EFFECT_PARAM_KEYS.includes(raw.param)) continue;
     const points = normalizePoints(raw.param, raw.points);
-    if (points.length > 0) tracks.push({ param: raw.param, points });
+    if (points.length > 0) {
+      const easing = normalizeEasing(raw.easing);
+      tracks.push(easing ? { param: raw.param, points, easing } : { param: raw.param, points });
+    }
   }
   return tracks.length > 0 ? { tracks } : null;
 }
@@ -194,6 +217,59 @@ export function interpolateParam(
   return fallback;
 }
 
+/**
+ * Linear blend used by frame-driven params (zoom). Other effect params keep
+ * the CapCut hold/step behavior.
+ */
+export function interpolateParamLinear(
+  points: EffectKeyframe[],
+  progress: number,
+  fallback: number,
+): number {
+  if (!points.length) return fallback;
+  const p = clamp01(progress);
+  const first = points[0]!;
+  if (p <= first.atProgress) {
+    if (p === first.atProgress) return first.value;
+    return fallback;
+  }
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    if (p >= a.atProgress && p <= b.atProgress) {
+      const span = b.atProgress - a.atProgress;
+      if (span <= 1e-9) return b.value;
+      return a.value + (b.value - a.value) * ((p - a.atProgress) / span);
+    }
+  }
+  return points[points.length - 1]!.value;
+}
+
+/** Blend neighbour points with a CapCut-style curve. */
+export function interpolateParamEased(
+  points: EffectKeyframe[],
+  progress: number,
+  fallback: number,
+  easing: EasingType,
+): number {
+  if (!points.length) return fallback;
+  if (easing === "hold") return interpolateParam(points, progress, fallback);
+  const p = clamp01(progress);
+  const first = points[0]!;
+  if (p < first.atProgress) return fallback;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    if (p >= a.atProgress && p <= b.atProgress) {
+      const span = b.atProgress - a.atProgress;
+      if (span <= 1e-9) return b.value;
+      const eased = easeProgress((p - a.atProgress) / span, easing);
+      return a.value + (b.value - a.value) * eased;
+    }
+  }
+  return points[points.length - 1]!.value;
+}
+
 export function readBaseParam(effects: ClipEffects, param: EffectParamKey): number {
   const e = normalizeClipEffects(effects);
   if (param === "grayscale") return e.grayscale ? 1 : 0;
@@ -223,7 +299,11 @@ export function effectsAtProgress(
   const next = { ...effects };
   for (const track of kf.tracks) {
     const fallback = readBaseParam(effects, track.param);
-    const value = interpolateParam(track.points, progress, fallback);
+    const value = track.easing
+      ? interpolateParamEased(track.points, progress, fallback, track.easing)
+      : track.param === "zoom"
+        ? interpolateParamLinear(track.points, progress, fallback)
+        : interpolateParam(track.points, progress, fallback);
     if (track.param === "grayscale") {
       next.grayscale = value >= 0.5;
     } else if (track.param === "brightness") {
@@ -240,6 +320,10 @@ export function effectsAtProgress(
       next.sharpen = clampEffectParamValue(track.param, value);
     } else if (track.param === "strobeFrames") {
       next.strobeFrames = clampEffectParamValue(track.param, value);
+    } else if (track.param === "zoom") {
+      next.zoom = clampEffectParamValue(track.param, value);
+    } else if (track.param === "shake") {
+      next.shake = clampEffectParamValue(track.param, value);
     }
   }
   return next;
@@ -284,7 +368,10 @@ export function upsertParamKeyframe(
     ? existing.map((p) => (p.id === near.id ? nextPoint : p))
     : normalizePoints(param, [...existing, nextPoint]);
 
-  const track: EffectParamTrack = { param, points };
+  const prior = idx >= 0 ? tracks[idx] : undefined;
+  const track: EffectParamTrack = prior?.easing
+    ? { param, points, easing: prior.easing }
+    : { param, points };
   if (idx >= 0) tracks[idx] = track;
   else tracks.push(track);
   return normalizeEffectKeyframes({ tracks }) ?? { tracks: [track] };
@@ -345,8 +432,12 @@ export function sliceEffectKeyframes(
       );
     }
     // Ensure edge samples so the slice keeps the look at cut.
-    const startVal = interpolateParam(track.points, lo, track.points[0]!.value);
-    const endVal = interpolateParam(track.points, hi, track.points[0]!.value);
+    const startVal = track.easing
+      ? interpolateParamEased(track.points, lo, track.points[0]!.value, track.easing)
+      : interpolateParam(track.points, lo, track.points[0]!.value);
+    const endVal = track.easing
+      ? interpolateParamEased(track.points, hi, track.points[0]!.value, track.easing)
+      : interpolateParam(track.points, hi, track.points[0]!.value);
     if (!points.some((p) => p.atProgress < 0.02)) {
       points.unshift(createEffectKeyframe(0, startVal));
     }
@@ -354,7 +445,13 @@ export function sliceEffectKeyframes(
       points.push(createEffectKeyframe(1, endVal));
     }
     const cleaned = normalizePoints(track.param, points);
-    if (cleaned.length > 0) tracks.push({ param: track.param, points: cleaned });
+    if (cleaned.length > 0) {
+      tracks.push(
+        track.easing
+          ? { param: track.param, points: cleaned, easing: track.easing }
+          : { param: track.param, points: cleaned },
+      );
+    }
   }
   return tracks.length > 0 ? { tracks } : null;
 }
@@ -368,6 +465,7 @@ export function cloneEffectKeyframes(
     tracks: normalized.tracks.map((t) => ({
       param: t.param,
       points: t.points.map((p) => ({ ...p })),
+      ...(t.easing ? { easing: t.easing } : {}),
     })),
   };
 }
@@ -463,6 +561,179 @@ export function steppedOnWindows(
     windows.push({ t0: a.t, t1: b.t, sigma: a.v });
   }
   return windows;
+}
+
+/** Update the blend curve for one effect parameter track. */
+export function setParamTrackEasing(
+  kf: EffectKeyframes | null | undefined,
+  param: EffectParamKey,
+  easing: EasingType,
+): EffectKeyframes | null {
+  const normalized = normalizeEffectKeyframes(kf ?? null);
+  if (!normalized) return null;
+  return normalizeEffectKeyframes({
+    tracks: normalized.tracks.map((track) =>
+      track.param === param ? { ...track, easing } : track,
+    ),
+  });
+}
+
+/** Replace one parameter's points while keeping other tracks intact. */
+export function setParamTrackPoints(
+  kf: EffectKeyframes | null | undefined,
+  param: EffectParamKey,
+  points: EffectKeyframe[],
+  easing?: EasingType,
+): EffectKeyframes | null {
+  const normalized = normalizeEffectKeyframes(kf ?? null);
+  const tracks = normalized
+    ? normalized.tracks.filter((track) => track.param !== param)
+    : [];
+  const cleaned = normalizePoints(param, points);
+  if (cleaned.length > 0) {
+    tracks.push(
+      easing ? { param, points: cleaned, easing } : { param, points: cleaned },
+    );
+  }
+  return tracks.length > 0 ? normalizeEffectKeyframes({ tracks }) : null;
+}
+
+/**
+ * FFmpeg expression for an effect track. Curves mirror `easeProgress`;
+ * commas are escaped for `filter_complex`.
+ */
+export function ffmpegEffectExpr(
+  points: EffectKeyframe[],
+  clipDurationSec: number,
+  beforeValue: number,
+  tOrigin = 0,
+  timeVar = "t",
+  easing: EasingType = "linear",
+): string | null {
+  const dur = Math.max(0.01, clipDurationSec);
+  const n = (v: number) => v.toFixed(4);
+  const mapped = [...points]
+    .filter((p) => p && Number.isFinite(p.atProgress) && Number.isFinite(p.value))
+    .map((p) => ({
+      t: tOrigin + clamp01(p.atProgress) * dur,
+      v: p.value,
+    }))
+    .sort((a, b) => a.t - b.t);
+  if (!mapped.length) return null;
+  if (mapped.length === 1) {
+    const only = mapped[0]!;
+    if (Math.abs(beforeValue - only.v) < 1e-6) return n(only.v);
+    return `if(lt(${timeVar}\\,${n(only.t)})\\,${n(beforeValue)}\\,${n(only.v)})`;
+  }
+  let expr = n(mapped[mapped.length - 1]!.v);
+  for (let i = mapped.length - 2; i >= 0; i -= 1) {
+    const a = mapped[i]!;
+    const b = mapped[i + 1]!;
+    const span = Math.max(0.0001, b.t - a.t);
+    const local = `((${timeVar}-${n(a.t)})/${n(span)})`;
+    const eased = easing === "hold" ? "0" : ffmpegEaseExpr(local, easing);
+    const blend = `${n(a.v)}+(${n(b.v)}-${n(a.v)})*(${eased})`;
+    expr = `if(lt(${timeVar}\\,${n(b.t)})\\,${blend}\\,${expr})`;
+  }
+  const first = mapped[0]!;
+  return `if(lt(${timeVar}\\,${n(first.t)})\\,${n(beforeValue)}\\,${expr})`;
+}
+
+/** True when a shake amount or shake keyframe track is active. */
+export function hasShakeEffect(
+  effects: ClipEffects,
+  keyframes?: EffectKeyframes | null,
+): boolean {
+  const e = normalizeClipEffects(effects);
+  if (e.shake > 1e-4) return true;
+  return Boolean(getParamTrack(keyframes ?? null, "shake")?.points.length);
+}
+
+/** True when a zoom amount or zoom keyframe track is active. */
+export function hasZoomEffect(
+  effects: ClipEffects,
+  keyframes?: EffectKeyframes | null,
+): boolean {
+  const e = normalizeClipEffects(effects);
+  if (e.zoom > 1e-4) return true;
+  return Boolean(getParamTrack(keyframes ?? null, "zoom")?.points.length);
+}
+
+/**
+ * FFmpeg scale expression for the frame-driven zoom (1 = neutral).
+ * Zoom amplitude keyframes blend linearly; the pulse is sampled from frame
+ * time so preview and export agree.
+ */
+export function ffmpegZoomScaleExpr(
+  effects: ClipEffects,
+  keyframes: EffectKeyframes | null | undefined,
+  clipDurationSec: number,
+  frameRate: number,
+  tOrigin = 0,
+): string | null {
+  const e = normalizeClipEffects(effects);
+  const track = getParamTrack(keyframes ?? null, "zoom");
+  const amplitude = track?.points.length
+    ? ffmpegEffectExpr(
+        track.points,
+        clipDurationSec,
+        e.zoom,
+        tOrigin,
+        "t",
+        track.easing ?? "linear",
+      ) ?? e.zoom.toFixed(4)
+    : e.zoom > 1e-4
+      ? e.zoom.toFixed(4)
+      : null;
+  if (!amplitude) return null;
+  const period = Math.round(e.zoomFrames);
+  if (period <= 0) return `(1+(${amplitude}))`;
+  const fps = Number.isFinite(frameRate) && frameRate > 0 ? frameRate : 30;
+  return `(1+(${amplitude})*(0.5-0.5*cos(2*PI*mod(t*${fps.toFixed(4)}\\,${period})/${period})))`;
+}
+
+export interface FfmpegShakeExpr {
+  x: string;
+  y: string;
+  rotation: string;
+  scale: string;
+}
+
+/**
+ * FFmpeg expressions for the handheld shake. Offsets are fractions of the
+ * canvas; callers multiply by output width/height. Mirrors `shakeAt`.
+ */
+export function ffmpegShakeExpr(
+  effects: ClipEffects,
+  keyframes: EffectKeyframes | null | undefined,
+  clipDurationSec: number,
+  tOrigin = 0,
+  coverFactor = 1,
+): FfmpegShakeExpr | null {
+  const e = normalizeClipEffects(effects);
+  const track = getParamTrack(keyframes ?? null, "shake");
+  const amount = track?.points.length
+    ? ffmpegEffectExpr(
+        track.points,
+        clipDurationSec,
+        e.shake,
+        tOrigin,
+        "t",
+        track.easing ?? "linear",
+      ) ?? e.shake.toFixed(4)
+    : e.shake > 1e-4
+      ? e.shake.toFixed(4)
+      : null;
+  if (!amount) return null;
+  const speed = Math.max(1, Math.min(30, e.shakeSpeed)).toFixed(4);
+  const t = `(t*${speed})`;
+  const x = `(${amount})*(0.62*sin(2*PI*${t})+0.38*sin(2*PI*1.7*${t}+1.1))`;
+  const y = `(${amount})*(0.62*sin(2*PI*1.3*${t}+2.2)+0.38*sin(2*PI*2.1*${t}+0.4))`;
+  const rotAmp = Math.max(0, Math.min(15, e.shakeRotation)).toFixed(4);
+  const rotation = `(${rotAmp})*(0.6*sin(2*PI*0.9*${t}+0.7)+0.4*sin(2*PI*1.9*${t}+2.0))`;
+  const factor = Math.max(1, coverFactor).toFixed(6);
+  const scale = `(1+2.2*${factor}*(${amount}))`;
+  return { x, y, rotation, scale };
 }
 
 /**
@@ -577,20 +848,20 @@ export function ffmpegVideoEffectsChainAnimated(
     parts.push(`vignette=angle=${angle.toFixed(4)}:mode=backward`);
   }
 
-  const color = e.strobeColor.replace("#", "");
   const strobeTrack = getParamTrack(kf, "strobeFrames");
   if (strobeTrack && strobeTrack.points.some((p) => p.value >= 0.5)) {
     for (const w of steppedOnWindows(strobeTrack.points, dur, delay, 0.5, e.strobeFrames)) {
       const period = Math.max(1, Math.round(w.sigma));
       parts.push(
-        `drawbox=x=0:y=0:w=iw:h=ih:color=${color}@1:t=fill:enable='between(t\\,${w.t0.toFixed(3)}\\,${w.t1.toFixed(3)})*eq(mod(n\\,${period})\\,${period - 1})'`,
+        ...ffmpegStrobeBoxes(
+          e.strobeColor,
+          period,
+          `between(t\\,${w.t0.toFixed(3)}\\,${w.t1.toFixed(3)})`,
+        ),
       );
     }
   } else if (Math.round(e.strobeFrames) > 0) {
-    const strobe = Math.round(e.strobeFrames);
-    parts.push(
-      `drawbox=x=0:y=0:w=iw:h=ih:color=${color}@1:t=fill:enable='eq(mod(n\\,${strobe})\\,${strobe - 1})'`,
-    );
+    parts.push(...ffmpegStrobeBoxes(e.strobeColor, e.strobeFrames));
   }
 
   const fadeIn = Math.min(e.fadeInSec, dur);

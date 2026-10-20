@@ -1,5 +1,11 @@
 import { blendModeToFfmpeg, normalizeBlendMode } from "./blendModes";
-import { ffmpegVideoEffectsChainAnimated } from "./effectKeyframes";
+import {
+  ffmpegShakeExpr,
+  ffmpegVideoEffectsChainAnimated,
+  ffmpegZoomScaleExpr,
+  hasShakeEffect,
+  hasZoomEffect,
+} from "./effectKeyframes";
 import { ffmpegWashPlate } from "./effects";
 import { bundledFontFileForFamily } from "../lib/fonts";
 import { containFitBox, mediaCenter, mediaGeometry } from "./mediaTransform";
@@ -246,6 +252,7 @@ function buildFilterComplex(
         width,
         height,
         step.trackIndex,
+        fps,
       );
       const next = `[mix${mixCount}]`;
       mixCount += 1;
@@ -434,9 +441,14 @@ export function mediaPlacementFilters(
   clip: RenderClipPlan,
   width: number,
   height: number,
+  fps = 30,
 ): string {
-  if (hasGeometryKeyframes(clip.transformKeyframes)) {
-    return animatedPlacementFilters(clip, width, height);
+  if (
+    hasGeometryKeyframes(clip.transformKeyframes) ||
+    hasZoomEffect(clip.effects, clip.effectKeyframes) ||
+    hasShakeEffect(clip.effects, clip.effectKeyframes)
+  ) {
+    return animatedPlacementFilters(clip, width, height, fps);
   }
   const geom = mediaGeometry(clip.transform, clip.canvasWidth, clip.canvasHeight, {
     width: clip.mediaWidth,
@@ -576,6 +588,7 @@ function animatedPlacementFilters(
   clip: RenderClipPlan,
   width: number,
   height: number,
+  fps = 30,
 ): string {
   const cw = Math.max(1, clip.canvasWidth);
   const ch = Math.max(1, clip.canvasHeight);
@@ -591,19 +604,44 @@ function animatedPlacementFilters(
 
   const scaleXExpr = paramExpr(clip, "scaleX", clip.transform.scaleX, dur);
   const scaleYExpr = paramExpr(clip, "scaleY", clip.transform.scaleY, dur);
-  const boxW = getTransformTrack(clip.transformKeyframes, "scaleX")
-    ? evenExpr(`${fitW.toFixed(4)}*abs(${scaleXExpr})`)
-    : evenNum(fitW * Math.abs(clip.transform.scaleX || 1));
-  const boxH = getTransformTrack(clip.transformKeyframes, "scaleY")
-    ? evenExpr(`${fitH.toFixed(4)}*abs(${scaleYExpr})`)
-    : evenNum(fitH * Math.abs(clip.transform.scaleY || 1));
+  const zoomExpr = ffmpegZoomScaleExpr(
+    clip.effects,
+    clip.effectKeyframes,
+    dur,
+    fps,
+  );
+  const shake = ffmpegShakeExpr(
+    clip.effects,
+    clip.effectKeyframes,
+    dur,
+    0,
+    fitW > 0 && fitH > 0 ? Math.max(width / fitW, height / fitH) : 1,
+  );
+  const scaleParts = [zoomExpr, shake?.scale].filter(Boolean);
+  const zoomMul = scaleParts.length
+    ? `*(${scaleParts.join(")*(")})`
+    : "";
+  const boxW =
+    getTransformTrack(clip.transformKeyframes, "scaleX") || zoomMul
+      ? evenExpr(`${fitW.toFixed(4)}*abs(${scaleXExpr})${zoomMul}`)
+      : evenNum(fitW * Math.abs(clip.transform.scaleX || 1));
+  const boxH =
+    getTransformTrack(clip.transformKeyframes, "scaleY") || zoomMul
+      ? evenExpr(`${fitH.toFixed(4)}*abs(${scaleYExpr})${zoomMul}`)
+      : evenNum(fitH * Math.abs(clip.transform.scaleY || 1));
 
-  const centerX = xTracked
+  const baseCenterX = xTracked
     ? `(${paramExpr(clip, "x", clip.transform.x, dur)})*${outScaleX.toFixed(6)}`
     : (center.x * outScaleX).toFixed(3);
-  const centerY = yTracked
+  const baseCenterY = yTracked
     ? `(${paramExpr(clip, "y", clip.transform.y, dur)})*${outScaleY.toFixed(6)}`
     : (center.y * outScaleY).toFixed(3);
+  const centerX = shake
+    ? `(${baseCenterX})+(${shake.x})*${width.toFixed(3)}`
+    : baseCenterX;
+  const centerY = shake
+    ? `(${baseCenterY})+(${shake.y})*${height.toFixed(3)}`
+    : baseCenterY;
 
   const parts: string[] = [
     `scale=w='${boxW}':h='${boxH}':eval=frame:flags=lanczos`,
@@ -615,8 +653,9 @@ function animatedPlacementFilters(
   const rot = clip.transform.rotation;
   let padW = boxW;
   let padH = boxH;
-  if (rotTracked || Math.abs(rot) > 0.01) {
-    const rotExpr = paramExpr(clip, "rotation", rot, dur);
+  if (rotTracked || Math.abs(rot) > 0.01 || shake) {
+    const baseRot = paramExpr(clip, "rotation", rot, dur);
+    const rotExpr = shake ? `(${baseRot})+(${shake.rotation})` : baseRot;
     const rad = `(${rotExpr})*0.0174533`;
     const ow = `abs((${boxW})*cos(abs(${rad})))+abs((${boxH})*sin(abs(${rad})))`;
     const oh = `abs((${boxW})*sin(abs(${rad})))+abs((${boxH})*cos(abs(${rad})))`;
@@ -678,6 +717,7 @@ function buildTrackChain(
   width: number,
   height: number,
   trackIndex: number,
+  fps: number,
 ): string {
   const origin = group[0]!.clip.timelineStartSec;
 
@@ -693,7 +733,10 @@ function buildTrackChain(
         ? Math.max(0, next.transitionOverlapSec)
         : 0;
     const setpts = clipSetpts(clip);
-    const animatedGeo = hasGeometryKeyframes(clip.transformKeyframes);
+    const animatedGeo =
+      hasGeometryKeyframes(clip.transformKeyframes) ||
+      hasZoomEffect(clip.effects, clip.effectKeyframes) ||
+      hasShakeEffect(clip.effects, clip.effectKeyframes);
 
     const fx = ffmpegVideoEffectsChainAnimated(clip.effects, clipDur, {
       delaySec: early,
@@ -702,11 +745,11 @@ function buildTrackChain(
     const bits: string[] = animatedGeo
       ? [
           `[${inputIndex}:v]${setpts}`,
-          mediaPlacementFilters(clip, width, height),
+          mediaPlacementFilters(clip, width, height, fps),
           "format=rgba",
         ]
       : [
-          `[${inputIndex}:v]${mediaPlacementFilters(clip, width, height)}`,
+          `[${inputIndex}:v]${mediaPlacementFilters(clip, width, height, fps)}`,
           setpts,
           "format=rgba",
         ];
@@ -1084,10 +1127,15 @@ export function drawtextAlphaExpr(
   }
   const anim = text.textAnimation;
   if (anim) {
+    const fadeLike = (type: string) =>
+      type === "fade" ||
+      type === "fadeWhite" ||
+      type === "scalePop" ||
+      type.startsWith("wipe");
     const inDur = Math.min(anim.inDurationSec, dur);
     if (anim.in !== "none" && inDur > 0.001) {
       terms.push(
-        anim.in === "fade" || anim.in === "scalePop"
+        fadeLike(anim.in)
           ? `min(1\\,max(0\\,(t-${start.toFixed(3)})/${inDur.toFixed(3)}))`
           : `(0.15+0.85*min(1\\,max(0\\,(t-${start.toFixed(3)})/${inDur.toFixed(3)})))`,
       );
@@ -1097,7 +1145,7 @@ export function drawtextAlphaExpr(
       const outStart = start + Math.max(0, dur - outDur);
       void outStart;
       terms.push(
-        anim.out === "fade" || anim.out === "scalePop"
+        fadeLike(anim.out)
           ? `min(1\\,max(0\\,(${end.toFixed(3)}-t)/${outDur.toFixed(3)}))`
           : `(0.15+0.85*min(1\\,max(0\\,(${end.toFixed(3)}-t)/${outDur.toFixed(3)})))`,
       );

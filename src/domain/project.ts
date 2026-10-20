@@ -55,6 +55,11 @@ export interface ClipTransform {
 export type TextAnimType =
   | "none"
   | "fade"
+  | "fadeWhite"
+  | "wipeLeft"
+  | "wipeRight"
+  | "wipeUp"
+  | "wipeDown"
   | "slideUp"
   | "slideDown"
   | "slideLeft"
@@ -78,6 +83,11 @@ export const DEFAULT_TEXT_ANIMATION: TextAnimation = {
 export const TEXT_ANIM_OPTIONS: { type: TextAnimType; label: string }[] = [
   { type: "none", label: "None" },
   { type: "fade", label: "Fade" },
+  { type: "fadeWhite", label: "Fade White" },
+  { type: "wipeLeft", label: "Wipe Left" },
+  { type: "wipeRight", label: "Wipe Right" },
+  { type: "wipeUp", label: "Wipe Up" },
+  { type: "wipeDown", label: "Wipe Down" },
   { type: "slideUp", label: "Slide Up" },
   { type: "slideDown", label: "Slide Down" },
   { type: "slideLeft", label: "Slide Left" },
@@ -201,19 +211,29 @@ export function normalizeTextStyle(input?: Partial<TextStyle> | null): TextStyle
  * Preview style for a text clip at local time `localSec` within duration `durSec`.
  * Combines clip fadeInSec/fadeOutSec (B0) with textAnimation in/out (B1).
  * Slide distance is in canvas px; scalePop is 0.8→1 with fade.
+ * Wipes use a CSS clip-path reveal; fadeWhite adds a white flash filter value.
  */
 export function textAnimVisual(
   textAnimation: TextAnimation | null | undefined,
   effects: { fadeInSec: number; fadeOutSec: number },
   localSec: number,
   durationSec: number,
-): { opacity: number; offsetX: number; offsetY: number; scale: number } {
+): {
+  opacity: number;
+  offsetX: number;
+  offsetY: number;
+  scale: number;
+  clipPath: string | null;
+  whiteFlash: number;
+} {
   const dur = Math.max(0.01, durationSec);
   const t = Math.max(0, Math.min(dur, localSec));
   let opacity = 1;
   let offsetX = 0;
   let offsetY = 0;
   let scale = 1;
+  let clipPath: string | null = null;
+  let whiteFlash = 0;
 
   // B0: legacy fade effects.
   const fadeIn = Math.min(effects.fadeInSec, dur);
@@ -225,6 +245,21 @@ export function textAnimVisual(
 
   const anim = normalizeTextAnimation(textAnimation);
   const DIST = 48;
+  const wipeClip = (type: TextAnimType, eased: number) => {
+    const hidden = (1 - eased) * 100;
+    switch (type) {
+      case "wipeLeft":
+        return `inset(0 0 0 ${hidden.toFixed(2)}%)`;
+      case "wipeRight":
+        return `inset(0 ${hidden.toFixed(2)}% 0 0)`;
+      case "wipeUp":
+        return `inset(${hidden.toFixed(2)}% 0 0 0)`;
+      case "wipeDown":
+        return `inset(0 0 ${hidden.toFixed(2)}% 0)`;
+      default:
+        return null;
+    }
+  };
   const applySide = (
     type: TextAnimType,
     progress: number, // 0 = hidden, 1 = fully in
@@ -235,6 +270,16 @@ export function textAnimVisual(
         break;
       case "fade":
         opacity = Math.min(opacity, e);
+        break;
+      case "fadeWhite":
+        opacity = Math.min(opacity, e);
+        whiteFlash = Math.max(whiteFlash, Math.sin(Math.PI * e));
+        break;
+      case "wipeLeft":
+      case "wipeRight":
+      case "wipeUp":
+      case "wipeDown":
+        clipPath = wipeClip(type, e);
         break;
       case "slideUp":
         offsetY = (1 - e) * DIST;
@@ -272,6 +317,8 @@ export function textAnimVisual(
     offsetX,
     offsetY,
     scale,
+    clipPath,
+    whiteFlash,
   };
 }
 

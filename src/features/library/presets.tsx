@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { TextStyle } from "../../domain";
+import type { BlendMode, TextStyle } from "../../domain";
 import { DEFAULT_TEXT_ANIMATION } from "../../domain";
 
 export const SHAPE_PRESETS: {
@@ -132,10 +132,106 @@ export interface TextEffectPreset {
   label: string;
   /** CSS accent for the thumb card. */
   swatch: string;
+  blendMode?: BlendMode;
   text: Partial<TextStyle> & { content: string };
 }
 
 export const TEXT_EFFECT_PRESETS: TextEffectPreset[] = [
+  {
+    id: "montage-glow",
+    label: "Montage",
+    swatch: "linear-gradient(145deg, #0284c7 0%, #1e293b 55%, #38bdf8 100%)",
+    blendMode: "screen",
+    text: {
+      content: "GOODBYE",
+      color: "#C5EBFF",
+      fontSize: 52,
+      fontWeight: 800,
+      align: "center",
+      textAnimation: {
+        in: "scalePop",
+        out: "fade",
+        inDurationSec: 0.45,
+        outDurationSec: 0.4,
+      },
+    },
+  },
+  {
+    id: "cinema-overlay",
+    label: "Overlay",
+    swatch: "linear-gradient(145deg, #475569 0%, #1e293b 50%, #94a3b8 100%)",
+    blendMode: "overlay",
+    text: {
+      content: "CINEMATIC",
+      color: "#FFFFFF",
+      fontSize: 48,
+      fontWeight: 800,
+      align: "center",
+      textAnimation: {
+        in: "fade",
+        out: "fade",
+        inDurationSec: 0.6,
+        outDurationSec: 0.5,
+      },
+    },
+  },
+  {
+    id: "cyber-glow",
+    label: "Cyber Glow",
+    swatch: "linear-gradient(145deg, #00b4d8 0%, #03045e 50%, #90e0ef 100%)",
+    blendMode: "colorDodge",
+    text: {
+      content: "CYBER",
+      color: "#00E5FF",
+      fontSize: 54,
+      fontWeight: 900,
+      align: "center",
+      textAnimation: {
+        in: "scalePop",
+        out: "fade",
+        inDurationSec: 0.4,
+        outDurationSec: 0.35,
+      },
+    },
+  },
+  {
+    id: "soft-light",
+    label: "Soft Light",
+    swatch: "linear-gradient(145deg, #b45309 0%, #451a03 50%, #fef3c7 100%)",
+    blendMode: "softLight",
+    text: {
+      content: "MEMORIES",
+      color: "#FEF3C7",
+      fontSize: 48,
+      fontWeight: 700,
+      align: "center",
+      textAnimation: {
+        in: "slideUp",
+        out: "slideDown",
+        inDurationSec: 0.5,
+        outDurationSec: 0.4,
+      },
+    },
+  },
+  {
+    id: "difference",
+    label: "Difference",
+    swatch: "linear-gradient(145deg, #000000 0%, #334155 50%, #ffffff 100%)",
+    blendMode: "difference",
+    text: {
+      content: "INVERT",
+      color: "#FFFFFF",
+      fontSize: 50,
+      fontWeight: 800,
+      align: "center",
+      textAnimation: {
+        in: "slideLeft",
+        out: "slideRight",
+        inDurationSec: 0.5,
+        outDurationSec: 0.5,
+      },
+    },
+  },
   {
     id: "basic",
     label: "Basic",

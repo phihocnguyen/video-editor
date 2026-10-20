@@ -1,5 +1,6 @@
 import {
   addTextClip,
+  applyTransformPatch,
   createDefaultTextStyle,
   normalizeTextAnimation,
   normalizeTextStyle,
@@ -46,8 +47,8 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
       const content = current.content.trim()
         ? current.content
         : preset.text.content;
-      commitProjectChange((p) =>
-        updateClipText(
+      commitProjectChange((p) => {
+        let next = updateClipText(
           p,
           selectedTextId,
           normalizeTextStyle({
@@ -55,11 +56,20 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
             ...preset.text,
             content,
             textAnimation: normalizeTextAnimation(
-              preset.text.textAnimation ?? null,
+              current.textAnimation ?? null,
             ),
           }),
-        ),
-      );
+        );
+        if (preset.blendMode) {
+          next = applyTransformPatch(
+            next,
+            selectedTextId,
+            { blendMode: preset.blendMode },
+            useEditorUiStore.getState().playheadTicks,
+          );
+        }
+        return next;
+      });
       setStatusMessage(`Applied · ${preset.label}`);
       return;
     }
@@ -71,10 +81,9 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
         text: {
           ...createDefaultTextStyle(preset.text.content),
           ...preset.text,
-          textAnimation: normalizeTextAnimation(
-            preset.text.textAnimation ?? null,
-          ),
+          textAnimation: normalizeTextAnimation(null),
         },
+        transform: preset.blendMode ? { blendMode: preset.blendMode } : undefined,
       });
       createdId = next.clips[next.clips.length - 1]?.id ?? "";
       return next;
@@ -94,26 +103,23 @@ export function InspectorPanel({ mode }: InspectorPanelProps) {
           : "Click a look to add title text at the playhead."}
       </p>
       <div className={styles.filterGrid}>
-        {TEXT_EFFECT_PRESETS.map((preset) => {
-          const anim = normalizeTextAnimation(preset.text.textAnimation ?? null);
-          return (
-            <button
-              key={preset.id}
-              type="button"
-              title={preset.label}
-              className={styles.filterBtn}
-              onClick={() => handlePreset(preset)}
-            >
-              <TextEffectThumb
-                label={preset.text.content}
-                color={preset.text.color ?? "#FFE566"}
-                swatch={preset.swatch}
-                animIn={anim.in}
-              />
-              <span className={styles.filterLabel}>{preset.label}</span>
-            </button>
-          );
-        })}
+        {TEXT_EFFECT_PRESETS.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            title={preset.label}
+            className={styles.filterBtn}
+            onClick={() => handlePreset(preset)}
+          >
+            <TextEffectThumb
+              label={preset.text.content}
+              color={preset.text.color ?? "#FFE566"}
+              swatch={preset.swatch}
+              blendMode={preset.blendMode}
+            />
+            <span className={styles.filterLabel}>{preset.label}</span>
+          </button>
+        ))}
       </div>
     </div>
   );

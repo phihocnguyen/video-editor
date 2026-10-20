@@ -9,6 +9,7 @@ import {
   findKeyframeNear,
   getParamTrack,
   normalizeEffectKeyframes,
+  setParamTrackEasing,
   paramHasKeyframes,
   progressFromTicks,
   readBaseParam,
@@ -19,6 +20,7 @@ import {
   type EffectKeyframes,
   type EffectParamKey,
 } from "./effectKeyframes";
+import type { EasingType } from "./easing";
 import {
   cloneTransformKeyframes,
   findTransformKeyframeNear,
@@ -1060,6 +1062,7 @@ export function addTextClip(
     startTicks?: Tick;
     durationTicks?: Tick;
     text?: Partial<TextStyle>;
+    transform?: Partial<Clip["transform"]>;
   },
 ): ProjectDocument {
   let working = project;
@@ -1100,6 +1103,7 @@ export function addTextClip(
       ...DEFAULT_TRANSFORM,
       x: working.canvas.width / 2,
       y: working.canvas.height / 2,
+      ...options?.transform,
     },
     volume: 1,
     effects: { ...DEFAULT_CLIP_EFFECTS },
@@ -1220,6 +1224,18 @@ export function toggleEffectKeyframeAtPlayhead(
       ),
     };
   });
+}
+
+export function setEffectKeyframeEasing(
+  project: ProjectDocument,
+  clipId: string,
+  param: EffectParamKey,
+  easing: EasingType,
+): ProjectDocument {
+  return mapClip(project, clipId, (clip) => ({
+    ...clip,
+    effectKeyframes: setParamTrackEasing(clip.effectKeyframes, param, easing),
+  }));
 }
 
 export function setClipEffectKeyframes(

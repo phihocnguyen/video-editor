@@ -1,6 +1,7 @@
 export * from "./time";
 export * from "./blendModes";
 export * from "./effects";
+export * from "./easing";
 export * from "./effectKeyframes";
 export * from "./transformKeyframes";
 export * from "./effectPresets";

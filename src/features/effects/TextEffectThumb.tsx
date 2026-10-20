@@ -6,6 +6,7 @@ interface TextEffectThumbProps {
   color: string;
   swatch: string;
   animIn?: TextAnimType;
+  blendMode?: string;
 }
 
 function animClass(type: TextAnimType | undefined): string {
@@ -30,12 +31,17 @@ export function TextEffectThumb({
   color,
   swatch,
   animIn,
+  blendMode,
 }: TextEffectThumbProps) {
+  const showBadge = blendMode && blendMode !== "normal";
   return (
     <div className={styles.thumb} style={{ background: swatch }}>
       <span className={animClass(animIn)} style={{ color }}>
         {label.slice(0, 8)}
       </span>
+      {showBadge ? (
+        <span className={styles.blendBadge}>{blendMode}</span>
+      ) : null}
     </div>
   );
 }

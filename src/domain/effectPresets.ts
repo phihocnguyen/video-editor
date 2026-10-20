@@ -31,6 +31,36 @@ export const EFFECT_PRESETS: EffectPreset[] = [
     },
   },
   {
+    id: "montage",
+    label: "Montage",
+    swatch:
+      "linear-gradient(145deg, #0284c7 0%, #1e293b 50%, #f97316 100%)",
+    patch: {
+      brightness: 1.05,
+      contrast: 1.25,
+      saturation: 1.35,
+      blur: 0,
+      grayscale: false,
+      vignette: 0.55,
+      sharpen: 0.45,
+    },
+  },
+  {
+    id: "cyber",
+    label: "Cyber Glow",
+    swatch:
+      "linear-gradient(145deg, #00f2fe 0%, #4facfe 50%, #0d1b2a 100%)",
+    patch: {
+      brightness: 1.08,
+      contrast: 1.3,
+      saturation: 1.45,
+      blur: 0,
+      grayscale: false,
+      vignette: 0.6,
+      sharpen: 0.5,
+    },
+  },
+  {
     id: "warm",
     label: "Warm",
     swatch:

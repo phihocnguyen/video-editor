@@ -63,6 +63,15 @@ function textDecorationCss(style: {
   return parts.length ? parts.join(" ") : undefined;
 }
 
+function whiteFlashFilter(flash: number): string | undefined {
+  if (flash <= 0.001) return undefined;
+  return (
+    `brightness(${(1 + 3 * flash).toFixed(2)}) ` +
+    `saturate(${(1 - flash).toFixed(2)}) ` +
+    `drop-shadow(0 0 ${(8 * flash).toFixed(1)}px rgba(255,255,255,${(0.85 * flash).toFixed(2)}))`
+  );
+}
+
 export function TextOverlayLayer({
   items,
   canvasWidth,
@@ -146,6 +155,11 @@ export function TextOverlayLayer({
         el.style.top = `${(posY / live.canvasHeight) * 100}%`;
         el.style.opacity = String(tr.opacity * anim.opacity);
         el.style.mixBlendMode = blendModeToCss(clip.transform.blendMode);
+        const contentEl = el.firstElementChild as HTMLElement | null;
+        if (contentEl) {
+          contentEl.style.clipPath = anim.clipPath ?? "";
+          contentEl.style.filter = whiteFlashFilter(anim.whiteFlash) ?? "";
+        }
         el.style.transform =
           `translate(-50%, -50%) translate(${(anim.offsetX * stageScale).toFixed(2)}px, ` +
           `${(anim.offsetY * stageScale).toFixed(2)}px) scale(${(anim.scale * Math.abs(sx)).toFixed(4)}, ${(anim.scale * Math.abs(sy)).toFixed(4)})` +
@@ -349,6 +363,8 @@ export function TextOverlayLayer({
           textDecoration: textDecorationCss(style),
           color: style.color,
           textAlign: style.align,
+          clipPath: anim.clipPath ?? undefined,
+          filter: whiteFlashFilter(anim.whiteFlash),
           ...(style.backgroundColor
             ? {
                 display: "inline",

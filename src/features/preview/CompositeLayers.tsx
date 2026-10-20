@@ -7,8 +7,11 @@ import {
   type TintOverlay,
   effectsAtProgress,
   fadeOpacityMultiplier,
-  strobeIsFlashFrame,
+  shakeAt,
+  shakeScaleAt,
+  strobeFlashOpacity,
   vignetteOverlayOpacity,
+  zoomScaleAt,
   findNextClipOnTrack,
   findPreviousClipOnTrack,
   incomingTransitionProgress,
@@ -193,6 +196,8 @@ interface LayerStyle {
   tint: TintOverlay | null;
   /** Solid flash colour for Vegas-style strobe frame, or null. */
   strobeFlash: string | null;
+  /** Smoothed flash strength (0..1) for the strobe tail. */
+  strobeFlashOpacity: number;
   /** CSS transform for the whole layer (centring + scale + rotation). */
   transform: string;
   mixBlendMode: string;
@@ -217,15 +222,32 @@ function layerVisualStyle(
       ? Math.min(1, Math.max(0, (playheadTicks - clip.startTicks) / durationTicks))
       : 0;
   const effects = effectsAtProgress(clip.effects, clip.effectKeyframes, progress);
+  const fps = project.canvas.frameRate;
   const fadeMul = fadeOpacityMultiplier(effects, localSec, durationSec);
-  const flash = strobeIsFlashFrame(effects, localSec, project.canvas.frameRate);
+  const flashOpacity = strobeFlashOpacity(effects, localSec, fps);
+  const zoom = zoomScaleAt(effects, localSec, fps);
+  const shake = shakeAt(effects, localSec);
+  const baseGeom = geometryAtPlayhead(clip, asset, canvasWidth, canvasHeight, progress);
+  const shakeScale = shakeScaleAt(
+    effects,
+    baseGeom.fitWidth > 0 && baseGeom.fitHeight > 0
+      ? Math.max(canvasWidth / baseGeom.fitWidth, canvasHeight / baseGeom.fitHeight)
+      : 1,
+  );
   const txVisual = transitionVisualMul(project, clip, playheadTicks);
   const opacityMul = txVisual.opacity;
   // Pre-mounted ahead of the blend window: hold fully invisible until it opens.
   const preMount = isPreTransitionMount(project, clip, playheadTicks) ? 0 : 1;
   const filter = cssFilterFromEffects(effects, pxScale) || undefined;
 
-  const geom = geometryAtPlayhead(clip, asset, canvasWidth, canvasHeight, progress);
+  const geom = {
+    ...baseGeom,
+    centerX: baseGeom.centerX + shake.x * canvasWidth,
+    centerY: baseGeom.centerY + shake.y * canvasHeight,
+    rotation: baseGeom.rotation + shake.rotation,
+    scaleX: baseGeom.scaleX * zoom * shakeScale,
+    scaleY: baseGeom.scaleY * zoom * shakeScale,
+  };
   const parts = [
     "translate(-50%, -50%)",
     `rotate(${geom.rotation}deg)`,
@@ -249,13 +271,18 @@ function layerVisualStyle(
     heightPct: (geom.fitHeight / Math.max(1, canvasHeight)) * 100,
     vignetteOpacity: vignetteOverlayOpacity(effects),
     tint: tintOverlayFromEffects(effects),
-    strobeFlash: flash ? effects.strobeColor : null,
+    strobeFlash: flashOpacity > 0.001 ? effects.strobeColor : null,
+    strobeFlashOpacity: flashOpacity,
     transform: parts.join(" "),
     mixBlendMode: blendModeToCss(clip.transform.blendMode),
   };
 }
 
-function syncStrobeFlash(host: HTMLElement, color: string | null) {
+function syncStrobeFlash(
+  host: HTMLElement,
+  color: string | null,
+  opacity: number,
+) {
   let flash = host.querySelector("[data-strobe]") as HTMLElement | null;
   if (!color) {
     flash?.remove();
@@ -268,6 +295,7 @@ function syncStrobeFlash(host: HTMLElement, color: string | null) {
     host.appendChild(flash);
   }
   flash.style.background = color;
+  flash.style.opacity = String(opacity);
 }
 
 function syncTintOverlay(host: HTMLElement, tint: TintOverlay | null) {
@@ -317,6 +345,7 @@ type StyleCache = {
   vignetteOpacity: number;
   tintKey: string;
   strobeFlash: string | null;
+  strobeFlashOpacity: number;
   mixBlendMode: string;
 };
 
@@ -391,6 +420,7 @@ function applyMediaStyle(
     ? `${style.tint.color}|${style.tint.opacity}|${style.tint.blend}`
     : "";
   const strobeFlash = style.strobeFlash;
+  const strobeFlashOpacity = style.strobeFlashOpacity;
   const mixBlendMode = style.mixBlendMode;
   const prev = styleCache.get(target);
   if (
@@ -407,6 +437,7 @@ function applyMediaStyle(
     prev.vignetteOpacity === vignetteOpacity &&
     prev.tintKey === tintKey &&
     prev.strobeFlash === strobeFlash &&
+    prev.strobeFlashOpacity === strobeFlashOpacity &&
     prev.mixBlendMode === mixBlendMode
   ) {
     return;
@@ -424,6 +455,7 @@ function applyMediaStyle(
     vignetteOpacity,
     tintKey,
     strobeFlash,
+    strobeFlashOpacity,
     mixBlendMode,
   });
   target.style.zIndex = String(style.zIndex);
@@ -443,7 +475,7 @@ function applyMediaStyle(
   if (grade instanceof HTMLElement) grade.style.filter = filter;
   syncTintOverlay(target, style.tint);
   syncVignetteOverlay(target, vignetteOpacity);
-  syncStrobeFlash(target, strobeFlash);
+  syncStrobeFlash(target, strobeFlash, strobeFlashOpacity);
 }
 
 /** True when opacity is still changing this frame (fade / transition). */
@@ -481,6 +513,8 @@ function needsPerFrameVisual(
   if (hasTransformKeyframes(clip.transformKeyframes)) return true;
   const effects = normalizeClipEffects(clip.effects);
   if (effects.strobeFrames > 0) return true;
+  if (effects.zoom > 0.0001) return true;
+  if (effects.shake > 0.0001) return true;
   const dur = ticksToSeconds(clipDurationTicks(clip));
   const local = Math.max(0, ticksToSeconds(playheadTicks - clip.startTicks));
   if (effects.fadeInSec > 0.001 && local <= effects.fadeInSec + 0.08) return true;
@@ -1449,7 +1483,10 @@ export function CompositeLayers({
                 <div
                   className={styles.strobeFlash}
                   data-strobe
-                  style={{ background: style.strobeFlash }}
+                  style={{
+                    background: style.strobeFlash,
+                    opacity: style.strobeFlashOpacity,
+                  }}
                 />
               ) : null}
             </div>

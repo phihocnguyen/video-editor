@@ -29,4 +29,12 @@ describe("text clips", () => {
     expect(project.clips[0].text?.content).toBe("Updated");
     expect(project.clips[0].text?.fontSize).toBe(72);
   });
+
+  it("supports custom transform blendMode when adding text", () => {
+    const project = addTextClip(createEmptyProject(), {
+      text: { content: "GOODBYE" },
+      transform: { blendMode: "screen" },
+    });
+    expect(project.clips[0].transform.blendMode).toBe("screen");
+  });
 });

@@ -346,3 +346,10 @@ export const InfoIcon = (p: IconProps) => (
     <path d="M8 7.2v3.4M8 5.2h.01" />
   </Svg>
 );
+
+export const BlendIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="6.2" cy="8" r="4" />
+    <circle cx="9.8" cy="8" r="4" />
+  </Svg>
+);

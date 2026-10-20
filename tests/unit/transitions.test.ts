@@ -188,6 +188,28 @@ describe("transitions", () => {
     expect(settled.opacity).toBe(1);
   });
 
+  it("text wipes reveal with clip-path and fade-white flashes", async () => {
+    const { textAnimVisual, DEFAULT_TEXT_ANIMATION } = await import(
+      "../../src/domain/project"
+    );
+    const wipe = textAnimVisual(
+      { ...DEFAULT_TEXT_ANIMATION, in: "wipeRight", inDurationSec: 1 },
+      { fadeInSec: 0, fadeOutSec: 0 },
+      0.5,
+      4,
+    );
+    expect(wipe.clipPath).toContain("inset(");
+    expect(wipe.opacity).toBe(1);
+    const white = textAnimVisual(
+      { ...DEFAULT_TEXT_ANIMATION, in: "fadeWhite", inDurationSec: 1 },
+      { fadeInSec: 0, fadeOutSec: 0 },
+      0.5,
+      4,
+    );
+    expect(white.whiteFlash).toBeGreaterThan(0);
+    expect(white.clipPath).toBeNull();
+  });
+
   it("hands visibility from clip1 to clip2 across a centered dissolve", () => {
     let project = createEmptyProject();
     const mk = (id: string, name: string): MediaAsset => ({

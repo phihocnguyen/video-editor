@@ -31,6 +31,46 @@ describe("effect keyframes", () => {
     expect(effectsAtProgress(DEFAULT_CLIP_EFFECTS, kf, 1).blur).toBeCloseTo(10, 5);
   });
 
+  it("applies CapCut-style easing curves to keyframes", () => {
+    const kf = normalizeEffectKeyframes({
+      tracks: [
+        {
+          param: "shake",
+          easing: "easeIn",
+          points: [
+            { id: "a", atProgress: 0, value: 0 },
+            { id: "b", atProgress: 1, value: 0.2 },
+          ],
+        },
+      ],
+    });
+    expect(kf?.tracks[0]?.easing).toBe("easeIn");
+    expect(effectsAtProgress(DEFAULT_CLIP_EFFECTS, kf, 0.5).shake).toBeCloseTo(
+      0.2 * 0.125,
+      5,
+    );
+    expect(effectsAtProgress(DEFAULT_CLIP_EFFECTS, kf, 0.9).shake).toBeGreaterThan(
+      0.14,
+    );
+  });
+
+  it("blends zoom keyframes linearly", () => {
+    const kf = normalizeEffectKeyframes({
+      tracks: [
+        {
+          param: "zoom",
+          points: [
+            { id: "a", atProgress: 0, value: 0 },
+            { id: "b", atProgress: 1, value: 0.4 },
+          ],
+        },
+      ],
+    });
+    expect(effectsAtProgress(DEFAULT_CLIP_EFFECTS, kf, 0).zoom).toBeCloseTo(0, 5);
+    expect(effectsAtProgress(DEFAULT_CLIP_EFFECTS, kf, 0.5).zoom).toBeCloseTo(0.2, 5);
+    expect(effectsAtProgress(DEFAULT_CLIP_EFFECTS, kf, 1).zoom).toBeCloseTo(0.4, 5);
+  });
+
   it("applies from a mid keyframe and turns off at the next", () => {
     const kf = normalizeEffectKeyframes({
       tracks: [

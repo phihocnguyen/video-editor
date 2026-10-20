@@ -14,6 +14,7 @@ import {
   effectsAtProgress,
   findKeyframeNear,
   getParamTrack,
+  interpolateParamEased,
   mediaGeometry,
   mediaCenter,
   normalizeBlendMode,
@@ -25,7 +26,11 @@ import {
   DEFAULT_CLIP_EFFECTS,
   findPreviousClipOnTrack,
   setClipEffectKeyframes,
+  setEffectKeyframeEasing,
   setEffectParamAtPlayhead,
+  setParamTrackPoints,
+  EASING_OPTIONS,
+  type EasingType,
   toggleEffectKeyframeAtPlayhead,
   TEXT_ANIM_OPTIONS,
   TRANSITION_DEFS,
@@ -42,15 +47,18 @@ import {
   updateClipText,
   updateClipTransition,
   updateClipVolume,
+  upsertParamKeyframe,
   withListStyle,
   type BlendMode,
   type Clip,
+  type EffectKeyframe,
   type EffectParamKey,
   type TransformParamKey,
   type TextAnimType,
   type TextStyle,
   type TransitionType,
 } from "../../domain";
+import { cn } from "../../lib/utils";
 import {
   listFontOptions,
   pickBrowserFontFile,
@@ -77,6 +85,252 @@ const TRANSITION_ITEMS: PresetItem[] = TRANSITION_DEFS.map((d) => ({
   hint: d.hint,
   group: d.group,
 }));
+
+const EFFECT_PARAM_LABELS: Partial<Record<EffectParamKey, string>> = {
+  brightness: "Brightness",
+  contrast: "Contrast",
+  saturation: "Saturation",
+  blur: "Blur",
+  vignette: "Vignette",
+  sharpen: "Sharpen",
+  grayscale: "Grayscale",
+  strobeFrames: "Strobe",
+  zoom: "Zoom",
+  shake: "Shake",
+};
+
+function EffectCurveGraph({
+  points,
+  easing,
+  fallback,
+  progress,
+  editable = false,
+  valueMin,
+  valueMax,
+  onCommitPoints,
+  onAddPoint,
+  onRemovePoint,
+}: {
+  points: EffectKeyframe[];
+  easing: EasingType;
+  fallback: number;
+  progress: number;
+  editable?: boolean;
+  valueMin?: number;
+  valueMax?: number;
+  onCommitPoints?: (points: EffectKeyframe[]) => void;
+  onAddPoint?: (atProgress: number, value: number) => void;
+  onRemovePoint?: (id: string) => void;
+}) {
+  const W = 240;
+  const H = 64;
+  const padX = 8;
+  const padY = 8;
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const draftRef = useRef<EffectKeyframe[] | null>(null);
+  const [draft, setDraft] = useState<EffectKeyframe[] | null>(null);
+  const draggingRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!draggingRef.current) {
+      draftRef.current = null;
+      setDraft(null);
+    }
+  }, [points]);
+
+  const shown = draft ?? points;
+  const values = shown.length ? shown.map((p) => p.value) : [fallback];
+  const min = valueMin ?? Math.min(...values, fallback, 0);
+  const max = valueMax ?? Math.max(...values, fallback + 0.0001);
+  const range = Math.max(0.0001, max - min);
+  const x = (u: number) => padX + u * (W - padX * 2);
+  const y = (v: number) => H - padY - ((v - min) / range) * (H - padY * 2);
+  const valueAt = (u: number) =>
+    shown.length
+      ? interpolateParamEased(shown, u, shown[0]!.value, easing)
+      : fallback;
+  let path = `M${x(0).toFixed(2)} ${y(valueAt(0)).toFixed(2)}`;
+  for (let i = 1; i <= 96; i += 1) {
+    const u = i / 96;
+    path += ` L${x(u).toFixed(2)} ${y(valueAt(u)).toFixed(2)}`;
+  }
+  const headX = x(clamp(progress, 0, 1));
+
+  function pointFromEvent(event: {
+    clientX: number;
+    clientY: number;
+    currentTarget: SVGSVGElement;
+  }) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const vx = ((event.clientX - rect.left) / Math.max(1, rect.width)) * W;
+    const vy = ((event.clientY - rect.top) / Math.max(1, rect.height)) * H;
+    const atProgress = clamp((vx - padX) / (W - padX * 2), 0, 1);
+    const value =
+      min +
+      clamp((H - padY - vy) / (H - padY * 2), 0, 1) * range;
+    return { atProgress, value };
+  }
+
+  function updateDraft(next: EffectKeyframe[]) {
+    draftRef.current = next;
+    setDraft(next);
+  }
+
+  function beginDrag(
+    event: ReactPointerEvent<SVGCircleElement>,
+    id: string,
+  ) {
+    if (!editable || !onCommitPoints) return;
+    event.preventDefault();
+    event.stopPropagation();
+    svgRef.current?.setPointerCapture(event.pointerId);
+    draggingRef.current = id;
+    updateDraft(points.map((point) => ({ ...point })));
+  }
+
+  function moveDrag(event: ReactPointerEvent<SVGSVGElement>) {
+    if (!draggingRef.current) return;
+    const current = draftRef.current;
+    if (!current) return;
+    event.preventDefault();
+    const nextPoint = pointFromEvent(event);
+    updateDraft(
+      current.map((point) =>
+        point.id === draggingRef.current
+          ? {
+              ...point,
+              atProgress: nextPoint.atProgress,
+              value: nextPoint.value,
+            }
+          : point,
+      ),
+    );
+  }
+
+  function endDrag(event: ReactPointerEvent<SVGSVGElement>) {
+    const id = draggingRef.current;
+    if (!id) return;
+    event.preventDefault();
+    const committed = draftRef.current;
+    draggingRef.current = null;
+    if (svgRef.current?.hasPointerCapture(event.pointerId)) {
+      svgRef.current.releasePointerCapture(event.pointerId);
+    }
+    draftRef.current = null;
+    setDraft(null);
+    if (committed && onCommitPoints) onCommitPoints(committed);
+  }
+
+  return (
+    <svg
+      ref={svgRef}
+      viewBox={`0 0 ${W} ${H}`}
+      className={cn(
+        "h-16 w-full text-primary",
+        editable && "touch-none select-none",
+      )}
+      preserveAspectRatio="none"
+      onPointerMove={moveDrag}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      onDoubleClick={(event) => {
+        if (!editable || !onAddPoint) return;
+        const nextPoint = pointFromEvent(event);
+        onAddPoint(nextPoint.atProgress, nextPoint.value);
+      }}
+      aria-hidden={!editable}
+    >
+      <rect width={W} height={H} fill="transparent" />
+      <path
+        d={`M${padX} ${H / 2} H${W - padX}`}
+        stroke="currentColor"
+        strokeWidth="1"
+        opacity="0.12"
+      />
+      <path
+        d={path}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        vectorEffect="non-scaling-stroke"
+        strokeLinejoin="round"
+      />
+      {shown.map((point) => (
+        <circle
+          key={point.id}
+          cx={x(clamp(point.atProgress, 0, 1))}
+          cy={y(point.value)}
+          r={editable ? 3.4 : 2.6}
+          fill="currentColor"
+          className={editable ? "cursor-grab active:cursor-grabbing" : undefined}
+          onPointerDown={(event) => beginDrag(event, point.id)}
+          onDoubleClick={(event) => {
+            if (!editable || !onRemovePoint) return;
+            event.preventDefault();
+            event.stopPropagation();
+            onRemovePoint(point.id);
+          }}
+        />
+      ))}
+      <line
+        x1={headX}
+        y1="3"
+        x2={headX}
+        y2={H - 3}
+        stroke="currentColor"
+        strokeWidth="1"
+        strokeDasharray="3 3"
+        opacity="0.65"
+      />
+    </svg>
+  );
+}
+
+function EasingPicker({
+  current,
+  label,
+  disabled,
+  onSelect,
+}: {
+  current: EasingType;
+  label: string;
+  disabled?: boolean;
+  onSelect: (easing: EasingType) => void;
+}) {
+  return (
+    <div className="flex items-center gap-0.5">
+      {EASING_OPTIONS.map((option) => {
+        const active = current === option.id;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            title={option.label}
+            aria-label={`${label} ${option.label}`}
+            aria-pressed={active}
+            disabled={disabled}
+            className={cn(
+              "grid size-6 place-items-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-35",
+              active
+                ? "border-primary bg-primary/15 text-primary"
+                : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground",
+            )}
+            onClick={() => onSelect(option.id)}
+          >
+            <svg width="18" height="14" viewBox="0 0 28 18" fill="none" aria-hidden>
+              <path
+                d={option.path}
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 type AlignEdge = "left" | "centerH" | "right" | "top" | "middle" | "bottom";
 
@@ -473,6 +727,11 @@ export function PropertiesPanel() {
     selected.effectKeyframes,
     clipProgress,
   );
+  const shakeTrack = getParamTrack(selected.effectKeyframes, "shake");
+  const shakeEasing = shakeTrack?.easing ?? "linear";
+  const shakeKeyframeHere = Boolean(
+    shakeTrack && findKeyframeNear(shakeTrack.points, clipProgress),
+  );
   const transition = normalizeClipTransition(selected.transitionIn);
 
   function kfProps(param: EffectParamKey) {
@@ -492,6 +751,91 @@ export function PropertiesPanel() {
     commitProjectChange((p) =>
       setEffectParamAtPlayhead(p, selected.id, param, value, playheadTicks),
     );
+  }
+
+  function toggleShakeKeyframe() {
+    if (shakeKeyframeHere) {
+      commitProjectChange((p) =>
+        toggleEffectKeyframeAtPlayhead(
+          p,
+          selected.id,
+          "shake",
+          playheadTicks,
+        ),
+      );
+      return;
+    }
+    commitProjectChange((p) => {
+      const clip = p.clips.find((item) => item.id === selected.id);
+      if (!clip) return p;
+      const value = effectsAtProgress(
+        clip.effects,
+        clip.effectKeyframes,
+        clipProgress,
+      ).shake;
+      return setClipEffectKeyframes(
+        p,
+        selected.id,
+        upsertParamKeyframe(
+          clip.effectKeyframes,
+          "shake",
+          clipProgress,
+          value,
+        ),
+      );
+    });
+  }
+
+  function commitShakePoints(points: EffectKeyframe[]) {
+    commitProjectChange((p) => {
+      const clip = p.clips.find((item) => item.id === selected.id);
+      if (!clip) return p;
+      return setClipEffectKeyframes(
+        p,
+        selected.id,
+        setParamTrackPoints(
+          clip.effectKeyframes,
+          "shake",
+          points,
+          shakeTrack?.easing,
+        ),
+      );
+    });
+  }
+
+  function addShakePoint(atProgress: number, value: number) {
+    commitProjectChange((p) => {
+      const clip = p.clips.find((item) => item.id === selected.id);
+      if (!clip) return p;
+      return setClipEffectKeyframes(
+        p,
+        selected.id,
+        upsertParamKeyframe(
+          clip.effectKeyframes,
+          "shake",
+          atProgress,
+          value,
+        ),
+      );
+    });
+  }
+
+  function removeShakePoint(id: string) {
+    commitProjectChange((p) => {
+      const clip = p.clips.find((item) => item.id === selected.id);
+      if (!clip) return p;
+      const track = getParamTrack(clip.effectKeyframes, "shake");
+      return setClipEffectKeyframes(
+        p,
+        selected.id,
+        setParamTrackPoints(
+          clip.effectKeyframes,
+          "shake",
+          (track?.points ?? []).filter((point) => point.id !== id),
+          shakeTrack?.easing,
+        ),
+      );
+    });
   }
   const prev = findPreviousClipOnTrack(project, selected.id);
   const canTransition = showEffects && Boolean(prev);
@@ -1024,6 +1368,51 @@ export function PropertiesPanel() {
                   />
                 </div>
               </Section>
+              <Section title="Blend mode">
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {(
+                    [
+                      { id: "normal", label: "Normal" },
+                      { id: "screen", label: "Screen" },
+                      { id: "overlay", label: "Overlay" },
+                      { id: "softLight", label: "Soft Light" },
+                      { id: "colorDodge", label: "Color Dodge" },
+                      { id: "difference", label: "Difference" },
+                    ] as const
+                  ).map((bm) => {
+                    const active = normalizeBlendMode(selected.transform.blendMode) === bm.id;
+                    return (
+                      <button
+                        key={bm.id}
+                        type="button"
+                        className={cn(
+                          "px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors",
+                          active
+                            ? "bg-primary text-primary-foreground shadow-sm"
+                            : "bg-secondary/60 text-secondary-foreground hover:bg-secondary hover:text-foreground",
+                        )}
+                        onClick={() => patchTransform({ blendMode: bm.id })}
+                      >
+                        {bm.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <label className={styles.blendSelect} title="All blend modes">
+                  <select
+                    value={normalizeBlendMode(selected.transform.blendMode)}
+                    onChange={(e) =>
+                      patchTransform({ blendMode: e.target.value as BlendMode })
+                    }
+                  >
+                    {BLEND_MODE_OPTIONS.map((opt) => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </Section>
               <Section
                 title="Background"
                 action={
@@ -1410,6 +1799,145 @@ export function PropertiesPanel() {
                     {...kfProps("sharpen")}
                   />
                   <StepperField
+                    label="Zoom"
+                    value={Math.round(effects.zoom * 100)}
+                    display={
+                      effects.zoom <= 0.0001
+                        ? "Off"
+                        : `${Math.round(effects.zoom * 100)}%`
+                    }
+                    min={0}
+                    max={50}
+                    step={1}
+                    onChange={(pct) => setParam("zoom", pct / 100)}
+                    {...kfProps("zoom")}
+                  />
+                  {effects.zoom > 0.0001 ||
+                  paramHasKeyframes(selected.effectKeyframes, "zoom") ? (
+                    <StepperField
+                      label="Zoom pulse"
+                      value={effects.zoomFrames}
+                      display={
+                        effects.zoomFrames <= 0
+                          ? "Steady"
+                          : `${effects.zoomFrames}f`
+                      }
+                      min={0}
+                      max={60}
+                      step={1}
+                      onChange={(zoomFrames) =>
+                        commitProjectChange((p) =>
+                          updateClipEffects(p, selected.id, {
+                            zoomFrames: Math.round(zoomFrames),
+                          }),
+                        )
+                      }
+                    />
+                  ) : null}
+                  <StepperField
+                    label="Shake"
+                    value={Math.round(effects.shake * 100)}
+                    display={
+                      effects.shake <= 0.0001
+                        ? "Off"
+                        : `${Math.round(effects.shake * 100)}%`
+                    }
+                    min={0}
+                    max={20}
+                    step={1}
+                    onChange={(pct) => setParam("shake", pct / 100)}
+                    {...kfProps("shake")}
+                  />
+                  {effects.shake > 0.0001 ||
+                  paramHasKeyframes(selected.effectKeyframes, "shake") ? (
+                    <>
+                      <StepperField
+                        label="Shake speed"
+                        value={Math.round(effects.shakeSpeed)}
+                        display={`${Math.round(effects.shakeSpeed)}Hz`}
+                        min={1}
+                        max={30}
+                        step={1}
+                        onChange={(shakeSpeed) =>
+                          commitProjectChange((p) =>
+                            updateClipEffects(p, selected.id, {
+                              shakeSpeed: Math.round(shakeSpeed),
+                            }),
+                          )
+                        }
+                      />
+                      <StepperField
+                        label="Shake rotation"
+                        value={Math.round(effects.shakeRotation)}
+                        display={
+                          effects.shakeRotation <= 0
+                            ? "Off"
+                            : `${Math.round(effects.shakeRotation)}°`
+                        }
+                        min={0}
+                        max={15}
+                        step={1}
+                        onChange={(shakeRotation) =>
+                          commitProjectChange((p) =>
+                            updateClipEffects(p, selected.id, {
+                              shakeRotation: Math.round(shakeRotation),
+                            }),
+                          )
+                        }
+                      />
+                      <div className="rounded-xl border border-border/70 bg-secondary/25 p-2.5">
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Shake curve
+                          </span>
+                          <button
+                            type="button"
+                            className="rounded-md border border-border/70 bg-background/60 px-2 py-1 text-[10px] font-semibold text-foreground transition-colors hover:bg-accent"
+                            onClick={toggleShakeKeyframe}
+                          >
+                            {shakeKeyframeHere
+                              ? "Remove keyframe"
+                              : "Add keyframe"}
+                          </button>
+                        </div>
+                        <EffectCurveGraph
+                          points={shakeTrack?.points ?? []}
+                          easing={shakeEasing}
+                          fallback={effects.shake}
+                          progress={clipProgress}
+                          editable
+                          valueMin={0}
+                          valueMax={0.2}
+                          onCommitPoints={commitShakePoints}
+                          onAddPoint={addShakePoint}
+                          onRemovePoint={removeShakePoint}
+                        />
+                        <div className="mt-1 flex items-center justify-between gap-2">
+                          <span className="text-[10px] text-muted-foreground">
+                            {shakeTrack?.points.length
+                              ? `${shakeTrack.points.length} keyframes · drag points`
+                              : "Double-click graph to add a keyframe"}
+                          </span>
+                          <EasingPicker
+                            current={shakeEasing}
+                            label="Shake"
+                            disabled={!shakeTrack?.points.length}
+                            onSelect={(easing) =>
+                              commitProjectChange((p) =>
+                                setEffectKeyframeEasing(
+                                  p,
+                                  selected.id,
+                                  "shake",
+                                  easing,
+                                ),
+                              )
+                            }
+                          />
+                        </div>
+                      </div>
+                    </>
+                  ) : null}
+                  <StepperField
                     label="Strobe"
                     value={effects.strobeFrames}
                     display={
@@ -1450,6 +1978,52 @@ export function PropertiesPanel() {
                           )
                         }
                       />
+                    </div>
+                  ) : null}
+                  {(selected.effectKeyframes?.tracks ?? []).some(
+                    (track) =>
+                      track.param !== "shake" && track.points.length > 0,
+                  ) ? (
+                    <div className="mt-1 space-y-2 rounded-lg border border-border/70 bg-secondary/25 p-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Other curves
+                      </div>
+                      {(selected.effectKeyframes?.tracks ?? [])
+                        .filter(
+                          (track) =>
+                            track.param !== "shake" && track.points.length > 0,
+                        )
+                        .map((track) => {
+                          const current =
+                            track.easing ??
+                            (track.param === "zoom" ? "linear" : "hold");
+                          return (
+                            <div
+                              key={track.param}
+                              className="flex items-center justify-between gap-2"
+                            >
+                              <span className="text-[11px] font-medium text-muted-foreground">
+                                {EFFECT_PARAM_LABELS[track.param] ?? track.param}
+                              </span>
+                              <EasingPicker
+                                current={current}
+                                label={
+                                  EFFECT_PARAM_LABELS[track.param] ?? track.param
+                                }
+                                onSelect={(easing) =>
+                                  commitProjectChange((p) =>
+                                    setEffectKeyframeEasing(
+                                      p,
+                                      selected.id,
+                                      track.param,
+                                      easing,
+                                    ),
+                                  )
+                                }
+                              />
+                            </div>
+                          );
+                        })}
                     </div>
                   ) : null}
                   <StepperField
